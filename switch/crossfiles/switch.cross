@@ -1,0 +1,29 @@
+# Copyright © 2026 PalindromicBreadLoaf (palindromicbreadloaf@tuta.com)
+# SPDX-License-Identifier: MIT
+#
+# Meson CROSS file for the Nintendo Switch (Horizon/aarch64/GM20B).
+
+[binaries]
+c         = '/opt/devkitpro/devkitA64/bin/aarch64-none-elf-gcc'
+cpp       = '/opt/devkitpro/devkitA64/bin/aarch64-none-elf-g++'
+ar        = '/opt/devkitpro/devkitA64/bin/aarch64-none-elf-gcc-ar'
+strip     = '/opt/devkitpro/devkitA64/bin/aarch64-none-elf-strip'
+pkgconfig = '/opt/devkitpro/portlibs/switch/bin/aarch64-none-elf-pkg-config'
+
+[built-in options]
+c_args        = ['-D__SWITCH__','-D_GNU_SOURCE','-D_DEFAULT_SOURCE','-DVK_USE_PLATFORM_VI_NN','-I/opt/switch-cross-include','-I/opt/devkitpro/portlibs/switch/include','-isystem','/opt/devkitpro/libnx/include','-march=armv8-a+crc+crypto','-mtune=cortex-a57','-mtp=soft','-fPIC','-ftls-model=local-exec','-O2','-ffunction-sections','-fdata-sections']
+cpp_args      = ['-D__SWITCH__','-D_GNU_SOURCE','-D_DEFAULT_SOURCE','-DVK_USE_PLATFORM_VI_NN','-I/opt/switch-cross-include','-I/opt/devkitpro/portlibs/switch/include','-isystem','/opt/devkitpro/libnx/include','-march=armv8-a+crc+crypto','-mtune=cortex-a57','-mtp=soft','-fPIC','-ftls-model=local-exec','-O2','-ffunction-sections','-fdata-sections']
+c_link_args   = ['-march=armv8-a+crc+crypto','-mtune=cortex-a57','-mtp=soft','-fPIC','-ftls-model=local-exec','-L/opt/devkitpro/portlibs/switch/lib','-L/opt/devkitpro/libnx/lib','-lnx','-lc','-lm']
+cpp_link_args = ['-march=armv8-a+crc+crypto','-mtune=cortex-a57','-mtp=soft','-fPIC','-ftls-model=local-exec','-L/opt/devkitpro/portlibs/switch/lib','-L/opt/devkitpro/libnx/lib','-lnx','-lc','-lm']
+
+[host_machine]
+system     = 'horizon'
+cpu_family = 'aarch64'
+cpu        = 'cortex-a57'
+endian     = 'little'
+
+[target_machine]
+system     = 'horizon'
+cpu_family = 'aarch64'
+cpu        = 'cortex-a57'
+endian     = 'little'

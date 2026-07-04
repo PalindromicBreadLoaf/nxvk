@@ -1,0 +1,10 @@
+# Copyright © 2026 PalindromicBreadLoaf (palindromicbreadloaf@tuta.com)
+# SPDX-License-Identifier: MIT
+#
+# Meson NATIVE file. Build-time host tools MUST use the x86 pkg-config/llvm-config
+
+[binaries]
+pkg-config  = 'pkg-config'
+pkgconfig   = 'pkg-config'
+llvm-config = '/usr/bin/llvm-config-15'
+cmake       = 'cmake'
