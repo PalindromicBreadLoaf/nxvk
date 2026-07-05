@@ -27,7 +27,12 @@
 #ifndef U_ENDIAN_H
 #define U_ENDIAN_H
 
-#ifdef HAVE_ENDIAN_H
+#if defined(__SWITCH__)
+/* Hard-define little endian on Switch to not have to deal with autodetection. */
+#define UTIL_ARCH_LITTLE_ENDIAN 1
+#define UTIL_ARCH_BIG_ENDIAN 0
+
+#elif defined(HAVE_ENDIAN_H)
 #include <endian.h>
 
 /* glibc */

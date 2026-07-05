@@ -404,13 +404,13 @@ __normal_user(void)
 #endif
 }
 
-#ifndef HAVE_SECURE_GETENV
+#if !defined(HAVE_SECURE_GETENV) && !DETECT_OS_HORIZON
 static inline char *secure_getenv(const char *name)
 {
    return getenv(name);
 }
 #endif
-
+/* newlib declares secure_getenv() in <stdlib.h> but does not define it. */
 #define DEBUG_GET_ONCE_BOOL_OPTION(sufix, name, dfault) \
 static bool \
 debug_get_option_ ## sufix (void) \

@@ -57,7 +57,7 @@
 #  include <unistd.h>
 #  include <log/log.h>
 #  include <cutils/properties.h>
-#elif DETECT_OS_LINUX || DETECT_OS_CYGWIN || DETECT_OS_SOLARIS || DETECT_OS_HURD || DETECT_OS_MANAGARM
+#elif DETECT_OS_LINUX || DETECT_OS_CYGWIN || DETECT_OS_SOLARIS || DETECT_OS_HURD || DETECT_OS_MANAGARM || DETECT_OS_HORIZON
 #  include <unistd.h>
 #elif DETECT_OS_OPENBSD || DETECT_OS_FREEBSD
 #  include <sys/resource.h>
@@ -284,7 +284,7 @@ exit_mutex:
 bool
 os_get_total_physical_memory(uint64_t *size)
 {
-#if DETECT_OS_LINUX || DETECT_OS_CYGWIN || DETECT_OS_SOLARIS || DETECT_OS_HURD || DETECT_OS_MANAGARM
+#if DETECT_OS_LINUX || DETECT_OS_CYGWIN || DETECT_OS_SOLARIS || DETECT_OS_HURD || DETECT_OS_MANAGARM || DETECT_OS_HORIZON
    const long phys_pages = sysconf(_SC_PHYS_PAGES);
    const long page_size = sysconf(_SC_PAGE_SIZE);
 
@@ -412,7 +412,11 @@ os_get_available_system_memory(uint64_t *size)
 bool
 os_get_page_size(uint64_t *size)
 {
-#if DETECT_OS_POSIX_LITE && !DETECT_OS_APPLE && !DETECT_OS_HAIKU
+#if DETECT_OS_HORIZON
+   /* Force 4KiB to prevent potential issues */
+   *size = 4096;
+   return true;
+#elif DETECT_OS_POSIX_LITE && !DETECT_OS_APPLE && !DETECT_OS_HAIKU
    const long page_size = sysconf(_SC_PAGE_SIZE);
 
    if (page_size <= 0)
