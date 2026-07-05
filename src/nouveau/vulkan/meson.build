@@ -76,6 +76,7 @@ if host_machine.system() == 'horizon'
     'nvkmd/nvgpu/nvkmd_nvgpu_dev.c',
     'nvkmd/nvgpu/nvkmd_nvgpu_mem.c',
     'nvkmd/nvgpu/nvkmd_nvgpu_pdev.c',
+    'nvkmd/nvgpu/nvkmd_nvgpu_sync.c',
     'nvkmd/nvgpu/nvkmd_nvgpu_va.c',
   )
 else
