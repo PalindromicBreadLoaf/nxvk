@@ -97,7 +97,11 @@ struct vk_instance;
 
 struct driOptionCache;
 
+#ifdef VK_USE_PLATFORM_VI_NN
+#define VK_ICD_WSI_PLATFORM_MAX (VK_ICD_WSI_PLATFORM_VI + 1)
+#else
 #define VK_ICD_WSI_PLATFORM_MAX (VK_ICD_WSI_PLATFORM_METAL + 1)
+#endif
 
 struct wsi_device {
    /* Allocator for the instance */

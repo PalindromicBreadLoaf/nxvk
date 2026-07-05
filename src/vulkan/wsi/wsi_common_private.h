@@ -423,6 +423,12 @@ VkResult wsi_metal_init_wsi(struct wsi_device *wsi_device,
 void wsi_metal_finish_wsi(struct wsi_device *wsi_device,
                           const VkAllocationCallbacks *alloc);
 
+VkResult wsi_switch_init_wsi(struct wsi_device *wsi_device,
+                            const VkAllocationCallbacks *alloc,
+                            VkPhysicalDevice physical_device);
+void wsi_switch_finish_wsi(struct wsi_device *wsi_device,
+                           const VkAllocationCallbacks *alloc);
+
 
 VkResult
 wsi_display_init_wsi(struct wsi_device *wsi_device,

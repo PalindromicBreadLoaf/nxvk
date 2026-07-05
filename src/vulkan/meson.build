@@ -76,6 +76,9 @@ if with_platform_macos
     modules : ['QuartzCore', 'Metal']
   )
 endif
+if host_machine.system() == 'horizon'
+  vulkan_wsi_list += '-DVK_USE_PLATFORM_VI_NN'
+endif
 
 idep_vulkan_wsi_defines = declare_dependency(
   compile_args : vulkan_wsi_list,

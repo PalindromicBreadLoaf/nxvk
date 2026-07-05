@@ -60,6 +60,9 @@ static const struct vk_instance_extension_table instance_extensions = {
 #ifndef VK_USE_PLATFORM_WIN32_KHR
    .EXT_headless_surface = true,
 #endif
+#ifdef VK_USE_PLATFORM_VI_NN
+   .NN_vi_surface = true,
+#endif
    .KHR_device_group_creation = true,
    .KHR_external_fence_capabilities = true,
    .KHR_external_memory_capabilities = true,
