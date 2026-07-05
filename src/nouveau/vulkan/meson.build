@@ -65,15 +65,29 @@ nvk_files = files(
   'nvk_upload_queue.h',
   'nvk_wsi.c',
   'nvk_wsi.h',
-  'nvkmd/nouveau/nvkmd_nouveau.h',
-  'nvkmd/nouveau/nvkmd_nouveau_ctx.c',
-  'nvkmd/nouveau/nvkmd_nouveau_dev.c',
-  'nvkmd/nouveau/nvkmd_nouveau_mem.c',
-  'nvkmd/nouveau/nvkmd_nouveau_pdev.c',
-  'nvkmd/nouveau/nvkmd_nouveau_va.c',
   'nvkmd/nvkmd.c',
   'nvkmd/nvkmd.h',
 )
+
+if host_machine.system() == 'horizon'
+  nvk_files += files(
+    'nvkmd/nvgpu/nvkmd_nvgpu.h',
+    'nvkmd/nvgpu/nvkmd_nvgpu_ctx.c',
+    'nvkmd/nvgpu/nvkmd_nvgpu_dev.c',
+    'nvkmd/nvgpu/nvkmd_nvgpu_mem.c',
+    'nvkmd/nvgpu/nvkmd_nvgpu_pdev.c',
+    'nvkmd/nvgpu/nvkmd_nvgpu_va.c',
+  )
+else
+  nvk_files += files(
+    'nvkmd/nouveau/nvkmd_nouveau.h',
+    'nvkmd/nouveau/nvkmd_nouveau_ctx.c',
+    'nvkmd/nouveau/nvkmd_nouveau_dev.c',
+    'nvkmd/nouveau/nvkmd_nouveau_mem.c',
+    'nvkmd/nouveau/nvkmd_nouveau_pdev.c',
+    'nvkmd/nouveau/nvkmd_nouveau_va.c',
+  )
+endif
 
 nvk_entrypoints = custom_target(
   'nvk_entrypoints',
