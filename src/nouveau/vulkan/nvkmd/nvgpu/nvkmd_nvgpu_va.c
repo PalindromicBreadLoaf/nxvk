@@ -5,8 +5,79 @@
 
 #include "nvkmd_nvgpu.h"
 
+#include "util/bitscan.h"
+#include "util/macros.h"
+#include "util/u_math.h"
 #include "util/u_memory.h"
 #include "vk_log.h"
+
+#include <inttypes.h>
+
+#include <switch/result.h>
+
+static VkResult MUST_CHECK
+alloc_va_addr_locked(struct nvkmd_nvgpu_dev *dev,
+                     struct vk_object_base *log_obj,
+                     enum nvkmd_va_flags flags,
+                     uint64_t size_B, uint64_t align_B,
+                     uint64_t fixed_addr, uint64_t *addr_out)
+{
+   if (flags & NVKMD_VA_ALLOC_FIXED) {
+      assert(flags & NVKMD_VA_REPLAY);
+
+      if (fixed_addr & (align_B - 1)) {
+         return vk_errorf(log_obj, VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS,
+                          "Unaligned capture address: 0x%" PRIx64, fixed_addr);
+      }
+
+      if (!util_vma_heap_alloc_addr(&dev->replay_heap, fixed_addr, size_B)) {
+         return vk_errorf(log_obj, VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS,
+                          "Replay address collision: 0x%" PRIx64, fixed_addr);
+      }
+
+      *addr_out = fixed_addr;
+   } else if (flags & NVKMD_VA_REPLAY) {
+      *addr_out = util_vma_heap_alloc(&dev->replay_heap, size_B, align_B);
+      if (*addr_out == 0)
+         return vk_errorf(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                          "Failed to allocate virtual address range");
+   } else {
+      *addr_out = util_vma_heap_alloc(&dev->heap, size_B, align_B);
+      if (*addr_out == 0)
+         return vk_errorf(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                          "Failed to allocate virtual address range");
+   }
+
+   return VK_SUCCESS;
+}
+
+static VkResult MUST_CHECK
+alloc_va_addr(struct nvkmd_nvgpu_dev *dev,
+              struct vk_object_base *log_obj,
+              enum nvkmd_va_flags flags,
+              uint64_t size_B, uint64_t align_B,
+              uint64_t fixed_addr, uint64_t *addr_out)
+{
+   simple_mtx_lock(&dev->heap_mutex);
+   VkResult result = alloc_va_addr_locked(dev, log_obj, flags,
+                                          size_B, align_B,
+                                          fixed_addr, addr_out);
+   simple_mtx_unlock(&dev->heap_mutex);
+   return result;
+}
+
+static void
+free_va_addr(struct nvkmd_nvgpu_dev *dev,
+             enum nvkmd_va_flags flags,
+             uint64_t addr, uint64_t size_B)
+{
+   simple_mtx_lock(&dev->heap_mutex);
+   if (flags & NVKMD_VA_REPLAY)
+      util_vma_heap_free(&dev->replay_heap, addr, size_B);
+   else
+      util_vma_heap_free(&dev->heap, addr, size_B);
+   simple_mtx_unlock(&dev->heap_mutex);
+}
 
 VkResult
 nvkmd_nvgpu_alloc_va(struct nvkmd_dev *_dev,
@@ -15,14 +86,52 @@ nvkmd_nvgpu_alloc_va(struct nvkmd_dev *_dev,
                      uint64_t size_B, uint64_t align_B,
                      uint64_t fixed_addr, struct nvkmd_va **va_out)
 {
-   /* TODO: sub-allocate an address range from the device VA arena. */
-   return vk_error(log_obj, VK_ERROR_FEATURE_NOT_PRESENT);
+   struct nvkmd_nvgpu_dev *dev = nvkmd_nvgpu_dev(_dev);
+   VkResult result;
+
+   struct nvkmd_nvgpu_va *va = CALLOC_STRUCT(nvkmd_nvgpu_va);
+   if (va == NULL)
+      return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   const uint32_t min_align_B = _dev->pdev->bind_align_B;
+   size_B = align64(size_B, min_align_B);
+
+   assert(util_is_power_of_two_or_zero64(align_B));
+   align_B = MAX2(align_B, min_align_B);
+
+   assert((fixed_addr == 0) == !(flags & NVKMD_VA_ALLOC_FIXED));
+
+   result = alloc_va_addr(dev, log_obj, flags, size_B, align_B,
+                          fixed_addr, &va->base.addr);
+   if (result != VK_SUCCESS)
+      goto fail_alloc;
+
+   va->base.ops = &nvkmd_nvgpu_va_ops;
+   va->base.dev = &dev->base;
+   va->base.flags = flags;
+   va->base.pte_kind = pte_kind;
+   va->base.size_B = size_B;
+
+   *va_out = &va->base;
+
+   return VK_SUCCESS;
+
+fail_alloc:
+   FREE(va);
+
+   return result;
 }
 
 static void
 nvkmd_nvgpu_va_free(struct nvkmd_va *_va)
 {
+   struct nvkmd_nvgpu_dev *dev = nvkmd_nvgpu_dev(_va->dev);
    struct nvkmd_nvgpu_va *va = nvkmd_nvgpu_va(_va);
+
+   /* The mem path binds one whole-buffer mapping at the VA base. */
+   nvioctlNvhostAsGpu_UnmapBuffer(dev->addr_space.fd, va->base.addr);
+
+   free_va_addr(dev, va->base.flags, va->base.addr, va->base.size_B);
 
    FREE(va);
 }
@@ -35,8 +144,29 @@ nvkmd_nvgpu_va_bind_mem(struct nvkmd_va *_va,
                         uint64_t mem_offset_B,
                         uint64_t range_B)
 {
-   /* TODO: FIXED map the nvmap inside the arena at the small page size. */
-   return vk_error(log_obj, VK_ERROR_FEATURE_NOT_PRESENT);
+   struct nvkmd_nvgpu_dev *dev = nvkmd_nvgpu_dev(_va->dev);
+   struct nvkmd_nvgpu_va *va = nvkmd_nvgpu_va(_va);
+   struct nvkmd_nvgpu_mem *mem = nvkmd_nvgpu_mem(_mem);
+
+   assert(_mem->dev == _va->dev);
+
+   /* The libnx nvAddressSpaceMapFixed wrapper always maps the whole buffer. */
+   const iova_t target = va->base.addr + va_offset_B;
+   iova_t mapped = 0;
+   Result rc = nvioctlNvhostAsGpu_MapBufferEx(
+      dev->addr_space.fd, NvMapBufferFlags_FixedOffset,
+      (uint32_t)va->base.pte_kind, mem->nvmap.handle,
+      (uint32_t)NVKMD_NVGPU_SMALL_PAGE_SIZE_B,
+      mem_offset_B /* buffer_offset */, range_B /* mapping_size */,
+      target /* input_offset */, &mapped);
+   if (R_FAILED(rc)) {
+      return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
+                       "MapBufferEx() failed: 0x%x", (unsigned)rc);
+   }
+
+   assert(mapped == target);
+
+   return VK_SUCCESS;
 }
 
 static VkResult
@@ -45,8 +175,18 @@ nvkmd_nvgpu_va_unbind(struct nvkmd_va *_va,
                       uint64_t va_offset_B,
                       uint64_t range_B)
 {
-   /* TODO: unmap the arena range. */
-   return vk_error(log_obj, VK_ERROR_FEATURE_NOT_PRESENT);
+   struct nvkmd_nvgpu_dev *dev = nvkmd_nvgpu_dev(_va->dev);
+   struct nvkmd_nvgpu_va *va = nvkmd_nvgpu_va(_va);
+
+   /* UnmapBuffer keys on the mapping base so range_B is implied by the bind. */
+   Result rc = nvioctlNvhostAsGpu_UnmapBuffer(dev->addr_space.fd,
+                                              va->base.addr + va_offset_B);
+   if (R_FAILED(rc)) {
+      return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
+                       "UnmapBuffer() failed: 0x%x", (unsigned)rc);
+   }
+
+   return VK_SUCCESS;
 }
 
 const struct nvkmd_va_ops nvkmd_nvgpu_va_ops = {
