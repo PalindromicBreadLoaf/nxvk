@@ -76,7 +76,7 @@ struct vk_image {
    /* wsi_image_create_info::scanout */
    bool wsi_legacy_scanout;
 
-#if DETECT_OS_LINUX || DETECT_OS_BSD
+#if DETECT_OS_LINUX || DETECT_OS_BSD || DETECT_OS_HORIZON
    /* VK_EXT_drm_format_modifier
     *
     * Initialized by vk_image_create/init() to DRM_FORMAT_MOD_INVALID.  It's
@@ -85,6 +85,9 @@ struct vk_image {
     *
     * Must be DRM_FORMAT_MOD_INVALID unless tiling is
     * VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT.
+    *
+    * On Horizon this must exist so NVK/NIL sees MOD_INVALID and does not force
+    * every image to a linear layout.
     */
    uint64_t drm_format_mod;
 #endif
