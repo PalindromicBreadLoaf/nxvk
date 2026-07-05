@@ -9,6 +9,7 @@
 #include "util/simple_mtx.h"
 #include "util/vma.h"
 #include "vk_sync.h"
+#include "vk_sync_timeline.h"
 
 #include <switch/nvidia/address_space.h>
 #include <switch/nvidia/fence.h>
@@ -27,11 +28,18 @@
 struct nvkmd_nvgpu_pdev {
    struct nvkmd_pdev base;
 
-   struct vk_sync_type syncobj_sync_type;
-   const struct vk_sync_type *sync_types[2];
+   /* Timeline semaphores are emulated on top of the binary NvFence syncobj. */
+   struct vk_sync_timeline_type syncobj_timeline_type;
+   const struct vk_sync_type *sync_types[3];
 };
 
 NVKMD_DECL_SUBCLASS(pdev, nvgpu);
+
+/* Binary vk_sync backed by an nvgpu channel completion NvFence. */
+extern const struct vk_sync_type nvkmd_nvgpu_syncobj_type;
+
+/* Route a channel completion fence into a signalled syncobj. */
+void nvkmd_nvgpu_syncobj_set_fence(struct vk_sync *sync, const NvFence *fence);
 
 VkResult nvkmd_nvgpu_try_create_pdev(struct vk_object_base *log_obj,
                                      enum nvk_debug debug_flags,

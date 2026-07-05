@@ -106,9 +106,7 @@ nvkmd_nvgpu_create_exec_ctx(struct nvkmd_dev *_dev,
    ctx->base.ops = &nvkmd_nvgpu_exec_ctx_ops;
    ctx->base.dev = &dev->base;
 
-   /* NVK binds its own engines in-stream via SET_OBJECT, so the channel does
-    * not need a kernel subchannel bind per requested engine.
-    */
+   /* The channel does not need a kernel subchannel bind per requested engine. */
    Result rc = nvGpuChannelCreate(&ctx->channel, &dev->addr_space,
                                   NvChannelPriority_Medium);
    if (R_FAILED(rc)) {
@@ -272,7 +270,18 @@ nvkmd_nvgpu_exec_ctx_signal(struct nvkmd_ctx *_ctx,
    struct nvkmd_nvgpu_exec_ctx *ctx = nvkmd_nvgpu_exec_ctx(_ctx);
 
    /* signal() implies flush() */
-   return nvkmd_nvgpu_exec_ctx_flush(&ctx->base, log_obj);
+   VkResult result = nvkmd_nvgpu_exec_ctx_flush(&ctx->base, log_obj);
+   if (result != VK_SUCCESS)
+      return result;
+
+   /* Route the completion fence into each signalled syncobj so a later CPU
+    * wait resolves against it.
+    */
+   const NvFence *fence = ctx->has_fence ? &ctx->last_fence : NULL;
+   for (uint32_t i = 0; i < signal_count; i++)
+      nvkmd_nvgpu_syncobj_set_fence(signals[i].sync, fence);
+
+   return VK_SUCCESS;
 }
 
 static VkResult

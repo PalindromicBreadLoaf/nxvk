@@ -121,8 +121,12 @@ nvkmd_nvgpu_try_create_pdev(struct vk_object_base *log_obj,
 
    pdev->base.bind_align_B = (uint32_t)NVKMD_NVGPU_SMALL_PAGE_SIZE_B;
 
-   /* No GPU-fence-backed sync types are advertised yet. */
-   pdev->sync_types[0] = NULL;
+   /* Binary NvFence syncobj, plus a timeline emulated on top of it. */
+   pdev->syncobj_timeline_type =
+      vk_sync_timeline_get_type(&nvkmd_nvgpu_syncobj_type);
+   pdev->sync_types[0] = &nvkmd_nvgpu_syncobj_type;
+   pdev->sync_types[1] = &pdev->syncobj_timeline_type.sync;
+   pdev->sync_types[2] = NULL;
    pdev->base.sync_types = pdev->sync_types;
 
    *pdev_out = &pdev->base;
