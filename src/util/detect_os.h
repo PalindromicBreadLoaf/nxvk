@@ -91,6 +91,14 @@
 #define DETECT_OS_POSIX 1
 #endif
 
+/*
+ * Horizon (libnx defines SWITCH)
+ */
+#if defined(__SWITCH__)
+#define DETECT_OS_HORIZON 1
+#define DETECT_OS_POSIX 1
+#endif
+
 
 /*
  * Make sure DETECT_OS_* are always defined, so that they can be used with #if
@@ -115,6 +123,9 @@
 #endif
 #ifndef DETECT_OS_HAIKU
 #define DETECT_OS_HAIKU 0
+#endif
+#ifndef DETECT_OS_HORIZON
+#define DETECT_OS_HORIZON 0
 #endif
 #ifndef DETECT_OS_FUCHSIA
 #define DETECT_OS_FUCHSIA 0
