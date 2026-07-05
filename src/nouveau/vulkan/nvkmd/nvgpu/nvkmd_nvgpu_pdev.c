@@ -77,8 +77,19 @@ nvkmd_nvgpu_try_create_pdev(struct vk_object_base *log_obj,
                        "nvMapInit() failed: 0x%x", (unsigned)rc);
    }
 
+   /* Channel submit fences are waited on through nvFenceWait. */
+   rc = nvFenceInit();
+   if (R_FAILED(rc)) {
+      nvMapExit();
+      nvGpuExit();
+      nvExit();
+      return vk_errorf(log_obj, VK_ERROR_INCOMPATIBLE_DRIVER,
+                       "nvFenceInit() failed: 0x%x", (unsigned)rc);
+   }
+
    const nvioctl_gpu_characteristics *chars = nvGpuGetCharacteristics();
    if (chars == NULL) {
+      nvFenceExit();
       nvMapExit();
       nvGpuExit();
       nvExit();
@@ -88,6 +99,7 @@ nvkmd_nvgpu_try_create_pdev(struct vk_object_base *log_obj,
 
    struct nvkmd_nvgpu_pdev *pdev = CALLOC_STRUCT(nvkmd_nvgpu_pdev);
    if (pdev == NULL) {
+      nvFenceExit();
       nvMapExit();
       nvGpuExit();
       nvExit();
@@ -123,6 +135,7 @@ nvkmd_nvgpu_pdev_destroy(struct nvkmd_pdev *_pdev)
 {
    struct nvkmd_nvgpu_pdev *pdev = nvkmd_nvgpu_pdev(_pdev);
 
+   nvFenceExit();
    nvMapExit();
    nvGpuExit();
    nvExit();
