@@ -69,8 +69,17 @@ nvkmd_nvgpu_try_create_pdev(struct vk_object_base *log_obj,
                        "nvGpuInit() failed: 0x%x", (unsigned)rc);
    }
 
+   rc = nvMapInit();
+   if (R_FAILED(rc)) {
+      nvGpuExit();
+      nvExit();
+      return vk_errorf(log_obj, VK_ERROR_INCOMPATIBLE_DRIVER,
+                       "nvMapInit() failed: 0x%x", (unsigned)rc);
+   }
+
    const nvioctl_gpu_characteristics *chars = nvGpuGetCharacteristics();
    if (chars == NULL) {
+      nvMapExit();
       nvGpuExit();
       nvExit();
       return vk_errorf(log_obj, VK_ERROR_INCOMPATIBLE_DRIVER,
@@ -79,6 +88,7 @@ nvkmd_nvgpu_try_create_pdev(struct vk_object_base *log_obj,
 
    struct nvkmd_nvgpu_pdev *pdev = CALLOC_STRUCT(nvkmd_nvgpu_pdev);
    if (pdev == NULL) {
+      nvMapExit();
       nvGpuExit();
       nvExit();
       return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -113,6 +123,7 @@ nvkmd_nvgpu_pdev_destroy(struct nvkmd_pdev *_pdev)
 {
    struct nvkmd_nvgpu_pdev *pdev = nvkmd_nvgpu_pdev(_pdev);
 
+   nvMapExit();
    nvGpuExit();
    nvExit();
    FREE(pdev);
