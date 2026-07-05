@@ -168,6 +168,8 @@ nvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       nvk_create_drm_physical_device;
    instance->vk.physical_devices.destroy = nvk_physical_device_destroy;
 
+   STATIC_ASSERT(sizeof(instance->driver_build_sha) == SHA1_DIGEST_LENGTH);
+#ifdef HAVE_DL_ITERATE_PHDR
    const struct build_id_note *note =
       build_id_find_nhdr_for_addr(nvk_CreateInstance);
    if (!note) {
@@ -183,8 +185,13 @@ nvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       goto fail_init;
    }
 
-   STATIC_ASSERT(sizeof(instance->driver_build_sha) == SHA1_DIGEST_LENGTH);
    memcpy(instance->driver_build_sha, build_id_data(note), SHA1_DIGEST_LENGTH);
+#else
+   /* Horizon has no dl_iterate_phdr to locate the ELF build-id note.
+    * Instead, derive a stable driver SHA from the package version instead. */
+   _mesa_sha1_compute(PACKAGE_VERSION, strlen(PACKAGE_VERSION),
+                      instance->driver_build_sha);
+#endif
 
 #if DETECT_OS_ANDROID
    struct u_gralloc *u_gralloc = vk_android_init_ugralloc();
