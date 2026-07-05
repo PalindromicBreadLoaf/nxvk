@@ -21,6 +21,9 @@
 /* Size of the small-page VA arena reserved at device init. */
 #define NVKMD_NVGPU_VA_ARENA_SIZE_B ((uint64_t)8 << 30)
 
+/* Top slice of the arena. */
+#define NVKMD_NVGPU_REPLAY_HEAP_SIZE_B ((uint64_t)1 << 30)
+
 struct nvkmd_nvgpu_pdev {
    struct nvkmd_pdev base;
 

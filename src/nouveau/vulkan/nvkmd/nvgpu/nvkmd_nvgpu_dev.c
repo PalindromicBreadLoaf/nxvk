@@ -9,6 +9,7 @@
 #include "vk_log.h"
 
 #include <switch/nvidia/gpu.h>
+#include <switch/result.h>
 
 VkResult
 nvkmd_nvgpu_create_dev(struct nvkmd_pdev *_pdev,
@@ -16,6 +17,7 @@ nvkmd_nvgpu_create_dev(struct nvkmd_pdev *_pdev,
                        struct nvkmd_dev **dev_out)
 {
    struct nvkmd_nvgpu_pdev *pdev = nvkmd_nvgpu_pdev(_pdev);
+   VkResult result;
 
    struct nvkmd_nvgpu_dev *dev = CALLOC_STRUCT(nvkmd_nvgpu_dev);
    if (dev == NULL)
@@ -28,13 +30,57 @@ nvkmd_nvgpu_create_dev(struct nvkmd_pdev *_pdev,
    simple_mtx_init(&dev->base.mems_mutex, mtx_plain);
    simple_mtx_init(&dev->heap_mutex, mtx_plain);
 
-   /* TODO: create the GPU address space, reserve the non-fixed small-page VA
-    * arena, and point base.va_start/va_end and both heaps inside it.
+   /* The address space carries the big-page half of the split.
+    * every small-page mapping lands in the low half out of the arena reserved below.
     */
+   const nvioctl_gpu_characteristics *chars = nvGpuGetCharacteristics();
+   Result rc = nvAddressSpaceCreate(&dev->addr_space, chars->big_page_size);
+   if (R_FAILED(rc)) {
+      result = vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
+                         "nvAddressSpaceCreate() failed: 0x%x", (unsigned)rc);
+      goto fail_locks;
+   }
+
+   /* A FIXED map is only legal inside a region reserved non-fixed first. */
+   const uint32_t arena_pages =
+      (uint32_t)(NVKMD_NVGPU_VA_ARENA_SIZE_B / NVKMD_NVGPU_SMALL_PAGE_SIZE_B);
+   iova_t arena_addr = 0;
+   rc = nvioctlNvhostAsGpu_AllocSpace(dev->addr_space.fd, arena_pages,
+                                      (uint32_t)NVKMD_NVGPU_SMALL_PAGE_SIZE_B,
+                                      0 /* non-fixed, non-sparse */,
+                                      NVKMD_NVGPU_SMALL_PAGE_SIZE_B /* align */,
+                                      &arena_addr);
+   if (R_FAILED(rc)) {
+      result = vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
+                         "GPU VA arena reservation failed: 0x%x", (unsigned)rc);
+      goto fail_as;
+   }
+
+   dev->va_arena_addr = arena_addr;
+   dev->va_arena_size_B = NVKMD_NVGPU_VA_ARENA_SIZE_B;
+
+   /* NVK's default heap sits outside nvgpu's addressable range, so point the
+    * whole usable range and both heaps inside the arena.
+    */
+   dev->base.va_start = arena_addr;
+   dev->base.va_end = arena_addr + NVKMD_NVGPU_VA_ARENA_SIZE_B;
+
+   const uint64_t replay_size_B = NVKMD_NVGPU_REPLAY_HEAP_SIZE_B;
+   const uint64_t heap_size_B = NVKMD_NVGPU_VA_ARENA_SIZE_B - replay_size_B;
+   util_vma_heap_init(&dev->heap, arena_addr, heap_size_B);
+   util_vma_heap_init(&dev->replay_heap, arena_addr + heap_size_B, replay_size_B);
 
    *dev_out = &dev->base;
 
    return VK_SUCCESS;
+
+fail_as:
+   nvAddressSpaceClose(&dev->addr_space);
+fail_locks:
+   simple_mtx_destroy(&dev->heap_mutex);
+   simple_mtx_destroy(&dev->base.mems_mutex);
+   FREE(dev);
+   return result;
 }
 
 static void
@@ -42,7 +88,16 @@ nvkmd_nvgpu_dev_destroy(struct nvkmd_dev *_dev)
 {
    struct nvkmd_nvgpu_dev *dev = nvkmd_nvgpu_dev(_dev);
 
-   /* TODO: tear down the VA arena and address space. */
+   util_vma_heap_finish(&dev->replay_heap);
+   util_vma_heap_finish(&dev->heap);
+
+   const uint32_t arena_pages =
+      (uint32_t)(dev->va_arena_size_B / NVKMD_NVGPU_SMALL_PAGE_SIZE_B);
+   nvioctlNvhostAsGpu_FreeSpace(dev->addr_space.fd, dev->va_arena_addr,
+                                arena_pages,
+                                (uint32_t)NVKMD_NVGPU_SMALL_PAGE_SIZE_B);
+   nvAddressSpaceClose(&dev->addr_space);
+
    simple_mtx_destroy(&dev->heap_mutex);
    simple_mtx_destroy(&dev->base.mems_mutex);
    FREE(dev);
