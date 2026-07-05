@@ -164,8 +164,12 @@ nvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    nvk_init_debug_flags(instance);
    nvk_init_dri_options(instance);
 
+#if DETECT_OS_HORIZON
+   instance->vk.physical_devices.enumerate = nvk_enumerate_physical_device;
+#else
    instance->vk.physical_devices.try_create_for_drm =
       nvk_create_drm_physical_device;
+#endif
    instance->vk.physical_devices.destroy = nvk_physical_device_destroy;
 
    STATIC_ASSERT(sizeof(instance->driver_build_sha) == BLAKE3_KEY_LEN);
