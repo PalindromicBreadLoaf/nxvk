@@ -1283,19 +1283,12 @@ nvk_get_vram_heap_available(struct nvk_physical_device *pdev)
    return pdev->info.vram_size_B - used;
 }
 
-VkResult
-nvk_create_drm_physical_device(struct vk_instance *_instance,
-                               struct _drmDevice *drm_device,
-                               struct vk_physical_device **pdev_out)
+static VkResult
+nvk_physical_device_create(struct nvk_instance *instance,
+                           struct nvkmd_pdev *nvkmd,
+                           struct vk_physical_device **pdev_out)
 {
-   struct nvk_instance *instance = (struct nvk_instance *)_instance;
    VkResult result;
-
-   struct nvkmd_pdev *nvkmd;
-   result = nvkmd_try_create_pdev_for_drm(drm_device, &instance->vk.base,
-                                          instance->debug_flags, &nvkmd);
-   if (result != VK_SUCCESS)
-      return result;
 
    /* We don't support anything pre-Kepler */
    if (nvkmd->dev_info.cls_eng3d < KEPLER_A) {
@@ -1483,6 +1476,46 @@ fail_nvkmd:
    nvkmd_pdev_destroy(nvkmd);
    return result;
 }
+
+VkResult
+nvk_create_drm_physical_device(struct vk_instance *_instance,
+                               struct _drmDevice *drm_device,
+                               struct vk_physical_device **pdev_out)
+{
+   struct nvk_instance *instance = (struct nvk_instance *)_instance;
+
+   struct nvkmd_pdev *nvkmd;
+   VkResult result =
+      nvkmd_try_create_pdev_for_drm(drm_device, &instance->vk.base,
+                                    instance->debug_flags, &nvkmd);
+   if (result != VK_SUCCESS)
+      return result;
+
+   return nvk_physical_device_create(instance, nvkmd, pdev_out);
+}
+
+#ifdef __SWITCH__
+VkResult
+nvk_enumerate_physical_device(struct vk_instance *_instance)
+{
+   struct nvk_instance *instance = (struct nvk_instance *)_instance;
+
+   struct nvkmd_pdev *nvkmd;
+   VkResult result = nvkmd_try_create_pdev(&instance->vk.base,
+                                           instance->debug_flags, &nvkmd);
+   if (result != VK_SUCCESS)
+      return result;
+
+   struct vk_physical_device *pdev;
+   result = nvk_physical_device_create(instance, nvkmd, &pdev);
+   if (result != VK_SUCCESS)
+      return result;
+
+   list_addtail(&pdev->link, &instance->vk.physical_devices.list);
+
+   return VK_SUCCESS;
+}
+#endif
 
 void
 nvk_physical_device_destroy(struct vk_physical_device *vk_pdev)
