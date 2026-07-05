@@ -97,6 +97,21 @@ struct nvkmd_nvgpu_exec_ctx {
    struct nvkmd_ctx base;
 
    NvGpuChannel channel;
+
+   /* Zcull context bound to the channel. */
+   struct nvkmd_mem *zcull_mem;
+
+   /* Builtin buffer holding the syncpt-increment and the L2-flush fence cmdlist. */
+   struct nvkmd_mem *fence_mem;
+   iova_t fence_cmds_addr;
+   uint32_t fence_cmds_dw;
+
+   /* Whether pushbufs have been appended since the last kickoff, and the
+    * completion fence returned by said kickoff.
+    */
+   bool has_pending;
+   bool has_fence;
+   NvFence last_fence;
 };
 
 NVKMD_DECL_SUBCLASS(ctx, nvgpu_exec);
