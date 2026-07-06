@@ -238,6 +238,13 @@ struct nvkmd_mem_ops {
 
    /** Handle to use for NVK_DEBUG_VM logging */
    uint32_t (*log_handle)(struct nvkmd_mem *mem);
+
+   /** Optionally fetch the raw scanout id/handle backing this memory so it can
+    * be handed to a display compositor for zero-copy present. NULL when the
+    * backend has no such concept.
+    */
+   bool (*get_scanout_ids)(struct nvkmd_mem *mem,
+                           uint32_t *id_out, uint32_t *handle_out);
 };
 
 struct nvkmd_mem {
@@ -563,6 +570,16 @@ nvkmd_mem_export_dma_buf(struct nvkmd_mem *mem,
    assert(mem->flags & NVKMD_MEM_SHARED);
 
    return mem->ops->export_dma_buf(mem, log_obj, fd_out);
+}
+
+static inline bool
+nvkmd_mem_get_scanout_ids(struct nvkmd_mem *mem,
+                          uint32_t *id_out, uint32_t *handle_out)
+{
+   if (mem->ops->get_scanout_ids == NULL)
+      return false;
+
+   return mem->ops->get_scanout_ids(mem, id_out, handle_out);
 }
 
 void
