@@ -9,6 +9,7 @@
 #include "vk_physical_device.h"
 #include "vk_util.h"
 
+#include "util/log.h"
 #include "util/u_math.h"
 
 #include "wsi_common_entrypoints.h"
@@ -244,9 +245,22 @@ wsi_switch_surface_get_present_rectangles(VkIcdSurfaceBase *icd_surface,
    return vk_outarray_status(&out);
 }
 
+/* Everything the compositor needs to scan a single slot's buffer out of an nvmap. */
+struct wsi_switch_scanout {
+   uint32_t nvmap_id;
+   uint32_t nvmap_handle;
+   uint32_t offset;
+   uint32_t pitch_b;  /* block-linear row stride in bytes */
+   uint32_t stride_px;
+   uint32_t size;
+   uint8_t block_height_log2;
+   uint8_t kind;
+};
+
 struct wsi_switch_image {
    struct wsi_image base;
    bool busy;
+   struct wsi_switch_scanout scanout;
 };
 
 /* Tegra block-linear GOB is 64 bytes wide by 8 rows.
@@ -265,17 +279,19 @@ struct wsi_switch_swapchain {
 
    NWindow *window;
 
+   bool zero_copy;
+
+   uint32_t bpp;
+   NvColorFormat color_format;
+   uint32_t pixel_format;
+
+   /* CPU-copy fallback only. Unused when zero_copy. */
    NvMap scanout_map;
    uint8_t *scanout_cpu;
    uint32_t fb_size;
-
-   uint32_t bpp;
    uint32_t pitch_b;          /* block-linear row stride in bytes */
-   uint32_t width_aligned_px; /* pitch_p/bpp */
+   uint32_t width_aligned_px; /* pitch_b/bpp */
    uint32_t height_aligned;
-
-   NvColorFormat color_format;
-   uint32_t pixel_format;
 
    struct wsi_switch_image images[0];
 };
@@ -349,6 +365,8 @@ static void
 build_graphic_buffer(NvGraphicBuffer *gb,
                      const struct wsi_switch_swapchain *chain, uint32_t slot)
 {
+   const struct wsi_switch_scanout *so = &chain->images[slot].scanout;
+
    memset(gb, 0, sizeof(*gb));
 
    /* The producer only marshals num_ints words past the NativeHandle header. */
@@ -356,14 +374,14 @@ build_graphic_buffer(NvGraphicBuffer *gb,
    gb->header.num_fds = 0;
 
    gb->unk0 = -1;
-   gb->nvmap_id = chain->scanout_map.id;
+   gb->nvmap_id = so->nvmap_id;
    gb->magic = 0xDAFFCAFF;
    gb->pid = 42;
    gb->usage = 0xb00;
    gb->format = chain->pixel_format;
    gb->ext_format = chain->pixel_format;
-   gb->stride = chain->width_aligned_px;
-   gb->total_size = chain->fb_size;
+   gb->stride = so->stride_px;
+   gb->total_size = so->size;
    gb->num_planes = 1;
 
    NvSurface *p = &gb->planes[0];
@@ -371,13 +389,13 @@ build_graphic_buffer(NvGraphicBuffer *gb,
    p->height = chain->extent.height;
    p->color_format = chain->color_format;
    p->layout = NvLayout_BlockLinear;
-   p->pitch = chain->pitch_b;
-   p->unused = chain->scanout_map.handle;
-   p->offset = slot * chain->fb_size;
-   p->kind = NvKind_Generic_16BX2;
-   p->block_height_log2 = WSI_SWITCH_BLOCK_HEIGHT_LOG2;
+   p->pitch = so->pitch_b;
+   p->unused = so->nvmap_handle;
+   p->offset = so->offset;
+   p->kind = so->kind;
+   p->block_height_log2 = so->block_height_log2;
    p->scan = NvDisplayScanFormat_Progressive;
-   p->size = chain->fb_size;
+   p->size = so->size;
 }
 
 static struct wsi_image *
@@ -422,24 +440,45 @@ wsi_switch_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
 
    struct wsi_image *image = &chain->images[image_index].base;
 
-   /* The image to buffer blit was submitted with this fence right before we were
-    * called. Wait for it so cpu_map holds the finished linear pixels. */
+   /* wsi_common submitted the render/blit fence right before calling.
+    * Wait for it so the scanout buffer holds finished pixels. */
    if (chain->base.fences[image_index] != VK_NULL_HANDLE)
       chain->base.wsi->WaitForFences(chain->base.device, 1,
                                      &chain->base.fences[image_index],
                                      true, UINT64_MAX);
 
-   swizzle_to_scanout(chain, image_index, image->cpu_map,
-                      image->row_pitches[0]);
+   if (!chain->zero_copy) {
+      swizzle_to_scanout(chain, image_index, image->cpu_map,
+                         image->row_pitches[0]);
 
-   uint8_t *fb = chain->scanout_cpu + (size_t)image_index * chain->fb_size;
-   armDCacheFlush(fb, chain->fb_size);
+      uint8_t *fb = chain->scanout_cpu + (size_t)image_index * chain->fb_size;
+      armDCacheFlush(fb, chain->fb_size);
+   }
 
    Result rc = nwindowQueueBuffer(chain->window, image_index, NULL);
 
    chain->images[image_index].busy = false;
 
    return R_FAILED(rc) ? VK_ERROR_OUT_OF_DATE_KHR : VK_SUCCESS;
+}
+
+static void
+wsi_switch_destroy_images(struct wsi_switch_swapchain *chain)
+{
+   for (uint32_t i = 0; i < chain->base.image_count; i++) {
+      if (chain->images[i].base.image != VK_NULL_HANDLE) {
+         wsi_destroy_image(&chain->base, &chain->images[i].base);
+         memset(&chain->images[i], 0, sizeof(chain->images[i]));
+      }
+   }
+
+   if (chain->scanout_map.has_init) {
+      nvMapClose(&chain->scanout_map);
+      memset(&chain->scanout_map, 0, sizeof(chain->scanout_map));
+   }
+
+   free(chain->scanout_cpu);
+   chain->scanout_cpu = NULL;
 }
 
 static VkResult
@@ -449,18 +488,11 @@ wsi_switch_swapchain_destroy(struct wsi_swapchain *wsi_chain,
    struct wsi_switch_swapchain *chain =
       (struct wsi_switch_swapchain *)wsi_chain;
 
-   for (uint32_t i = 0; i < chain->base.image_count; i++) {
-      if (chain->images[i].base.image != VK_NULL_HANDLE)
-         wsi_destroy_image(&chain->base, &chain->images[i].base);
-   }
+   wsi_switch_destroy_images(chain);
 
+   /* window is NULL once a newer swapchain has taken ownership of it. */
    if (chain->window != NULL)
       nwindowReleaseBuffers(chain->window);
-
-   if (chain->scanout_map.has_init)
-      nvMapClose(&chain->scanout_map);
-
-   free(chain->scanout_cpu);
 
    nvFenceExit();
    nvMapExit();
@@ -470,6 +502,198 @@ wsi_switch_swapchain_destroy(struct wsi_swapchain *wsi_chain,
    vk_free(pAllocator, chain);
 
    return VK_SUCCESS;
+}
+
+static VkResult
+wsi_switch_create_native_image_mem(const struct wsi_swapchain *wsi_chain,
+                                   UNUSED const struct wsi_image_info *info,
+                                   struct wsi_image *image)
+{
+   const struct wsi_device *wsi = wsi_chain->wsi;
+   VkResult result;
+
+   VkMemoryRequirements reqs;
+   wsi->GetImageMemoryRequirements(wsi_chain->device, image->image, &reqs);
+
+   const VkMemoryDedicatedAllocateInfo dedicated = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+      .image = image->image,
+   };
+   const VkMemoryAllocateInfo mem_info = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .pNext = &dedicated,
+      .allocationSize = reqs.size,
+      .memoryTypeIndex = wsi_select_device_memory_type(wsi, reqs.memoryTypeBits),
+   };
+
+   result = wsi->AllocateMemory(wsi_chain->device, &mem_info,
+                                &wsi_chain->alloc, &image->memory);
+   if (result != VK_SUCCESS)
+      return result;
+
+   image->num_planes = 1;
+   image->sizes[0] = reqs.size;
+   image->offsets[0] = 0;
+   image->row_pitches[0] = 0;
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+wsi_switch_init_zero_copy(struct wsi_switch_swapchain *chain,
+                          struct wsi_device *wsi_device, VkDevice device,
+                          const VkSwapchainCreateInfoKHR *pCreateInfo)
+{
+   VkResult result;
+
+   /* Replace the CPU config from wsi_swapchain_init with a block-linear image
+    * that is itself the scanout buffer. */
+   wsi_destroy_image_info(&chain->base, &chain->base.image_info);
+   chain->base.blit.type = WSI_SWAPCHAIN_NO_BLIT;
+
+   result = wsi_configure_image(&chain->base, pCreateInfo, 0,
+                                &chain->base.image_info);
+   if (result != VK_SUCCESS)
+      return result;
+   chain->base.image_info.create_mem = wsi_switch_create_native_image_mem;
+
+   for (uint32_t i = 0; i < chain->base.image_count; i++) {
+      struct wsi_switch_image *img = &chain->images[i];
+
+      result = wsi_create_image(&chain->base, &chain->base.image_info,
+                                &img->base);
+      if (result != VK_SUCCESS)
+         return result;
+      img->busy = false;
+
+      struct wsi_vi_scanout_params sp;
+      if (!wsi_device->vi.get_scanout_params(device, img->base.image,
+                                             img->base.memory, &sp))
+         return VK_ERROR_INITIALIZATION_FAILED;
+
+      img->scanout = (struct wsi_switch_scanout) {
+         .nvmap_id = sp.nvmap_id,
+         .nvmap_handle = sp.nvmap_handle,
+         .offset = sp.offset,
+         .pitch_b = sp.row_stride_B,
+         .stride_px = sp.row_stride_B / chain->bpp,
+         .size = img->base.sizes[0],
+         .block_height_log2 = sp.block_height_log2,
+         .kind = sp.pte_kind,
+      };
+
+      NvGraphicBuffer gb;
+      build_graphic_buffer(&gb, chain, i);
+      if (R_FAILED(nwindowConfigureBuffer(chain->window, i, &gb)))
+         return VK_ERROR_INITIALIZATION_FAILED;
+   }
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+wsi_switch_init_cpu_copy(struct wsi_switch_swapchain *chain,
+                         const VkSwapchainCreateInfoKHR *pCreateInfo)
+{
+   VkResult result;
+
+   /* Linear render images blitted into a shared block-linear scanout nvmap. */
+   wsi_destroy_image_info(&chain->base, &chain->base.image_info);
+   chain->base.blit.type = WSI_SWAPCHAIN_BUFFER_BLIT;
+
+   struct wsi_cpu_image_params cpu_params = {
+      .base.image_type = WSI_IMAGE_TYPE_CPU,
+   };
+   result = wsi_configure_cpu_image(&chain->base, pCreateInfo, &cpu_params,
+                                    &chain->base.image_info);
+   if (result != VK_SUCCESS)
+      return result;
+
+   uint32_t block_h_px = GOB_SIZE_Y << WSI_SWITCH_BLOCK_HEIGHT_LOG2;
+   chain->pitch_b = align(chain->extent.width * chain->bpp, GOB_SIZE_X_B);
+   chain->width_aligned_px = chain->pitch_b / chain->bpp;
+   chain->height_aligned = align(chain->extent.height, block_h_px);
+   chain->fb_size = chain->pitch_b * chain->height_aligned;
+
+   uint32_t total = align(chain->base.image_count * chain->fb_size, 0x20000);
+   chain->scanout_cpu = memalign(0x20000, total);
+   if (chain->scanout_cpu == NULL)
+      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+   memset(chain->scanout_cpu, 0, total);
+
+   if (R_FAILED(nvMapCreate(&chain->scanout_map, chain->scanout_cpu, total,
+                            0x20000, NvKind_Pitch, true)))
+      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+
+   for (uint32_t i = 0; i < chain->base.image_count; i++) {
+      chain->images[i].scanout = (struct wsi_switch_scanout) {
+         .nvmap_id = chain->scanout_map.id,
+         .nvmap_handle = chain->scanout_map.handle,
+         .offset = i * chain->fb_size,
+         .pitch_b = chain->pitch_b,
+         .stride_px = chain->width_aligned_px,
+         .size = chain->fb_size,
+         .block_height_log2 = WSI_SWITCH_BLOCK_HEIGHT_LOG2,
+         .kind = NvKind_Generic_16BX2,
+      };
+
+      NvGraphicBuffer gb;
+      build_graphic_buffer(&gb, chain, i);
+      if (R_FAILED(nwindowConfigureBuffer(chain->window, i, &gb)))
+         return VK_ERROR_INITIALIZATION_FAILED;
+   }
+
+   for (uint32_t i = 0; i < chain->base.image_count; i++) {
+      result = wsi_create_image(&chain->base, &chain->base.image_info,
+                                &chain->images[i].base);
+      if (result != VK_SUCCESS)
+         return result;
+      chain->images[i].busy = false;
+   }
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+wsi_switch_init_images(struct wsi_switch_swapchain *chain,
+                       struct wsi_device *wsi_device, VkDevice device,
+                       const VkSwapchainCreateInfoKHR *pCreateInfo)
+{
+   if (wsi_device->vi.get_scanout_params != NULL) {
+      VkResult result =
+         wsi_switch_init_zero_copy(chain, wsi_device, device, pCreateInfo);
+      if (result == VK_SUCCESS) {
+         chain->zero_copy = true;
+         mesa_logi("nvk wsi: zero-copy ENABLED");
+         return VK_SUCCESS;
+      }
+
+      wsi_switch_destroy_images(chain);
+      nwindowReleaseBuffers(chain->window);
+      mesa_logi("nvk wsi: zero-copy FAILED");
+   }
+
+   chain->zero_copy = false;
+   return wsi_switch_init_cpu_copy(chain, pCreateInfo);
+}
+
+/* On recreate the app hands us the old swapchain and destroys it after we
+ * return. Both share this surface's NWindow, so take ownership away from the
+ * old one, then reset the queue and pick up the possibly-changed dimensions. */
+static void
+wsi_switch_adopt_window(struct wsi_switch_swapchain *chain,
+                        VkSwapchainKHR old_handle)
+{
+   if (old_handle == VK_NULL_HANDLE)
+      return;
+
+   struct wsi_switch_swapchain *old =
+      wsi_switch_swapchain_from_handle(old_handle);
+   old->window = NULL;
+
+   nwindowReleaseBuffers(chain->window);
+   nwindowSetDimensions(chain->window, chain->extent.width,
+                        chain->extent.height);
 }
 
 static VkResult
@@ -528,51 +752,18 @@ wsi_switch_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    chain->color_format = color_format;
    chain->pixel_format = pixel_format;
 
-   uint32_t block_h_px = GOB_SIZE_Y << WSI_SWITCH_BLOCK_HEIGHT_LOG2;
-   chain->pitch_b = align(chain->extent.width * bpp, GOB_SIZE_X_B);
-   chain->width_aligned_px = chain->pitch_b / bpp;
-   chain->height_aligned = align(chain->extent.height, block_h_px);
-   chain->fb_size = chain->pitch_b * chain->height_aligned;
+   wsi_switch_adopt_window(chain, pCreateInfo->oldSwapchain);
 
    nvMapInit();
    nvFenceInit();
 
-   uint32_t total = align(num_images * chain->fb_size, 0x20000);
-   chain->scanout_cpu = memalign(0x20000, total);
-   if (chain->scanout_cpu == NULL) {
-      result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+   result = wsi_switch_init_images(chain, wsi_device, device, pCreateInfo);
+   if (result != VK_SUCCESS)
       goto fail;
-   }
-   memset(chain->scanout_cpu, 0, total);
-
-   Result rc = nvMapCreate(&chain->scanout_map, chain->scanout_cpu, total,
-                           0x20000, NvKind_Pitch, true);
-   if (R_FAILED(rc)) {
-      result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
-      goto fail;
-   }
-
-   for (uint32_t i = 0; i < chain->base.image_count; i++) {
-      NvGraphicBuffer gb;
-      build_graphic_buffer(&gb, chain, i);
-      if (R_FAILED(nwindowConfigureBuffer(chain->window, i, &gb))) {
-         result = VK_ERROR_INITIALIZATION_FAILED;
-         goto fail;
-      }
-   }
 
    uint32_t swap_interval =
       chain->base.present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? 0 : 1;
    nwindowSetSwapInterval(chain->window, swap_interval);
-
-   for (uint32_t i = 0; i < chain->base.image_count; i++) {
-      result = wsi_create_image(&chain->base, &chain->base.image_info,
-                                &chain->images[i].base);
-      if (result != VK_SUCCESS)
-         goto fail;
-
-      chain->images[i].busy = false;
-   }
 
    *swapchain_out = &chain->base;
 
