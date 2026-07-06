@@ -99,6 +99,18 @@ struct driOptionCache;
 
 #ifdef VK_USE_PLATFORM_VI_NN
 #define VK_ICD_WSI_PLATFORM_MAX (VK_ICD_WSI_PLATFORM_VI + 1)
+
+/* Parameters describing how a WSI image can be handed to the Horizon
+ * compositor for direct scanout.
+ */
+struct wsi_vi_scanout_params {
+   uint32_t nvmap_id;
+   uint32_t nvmap_handle;
+   uint64_t offset;
+   uint32_t row_stride_B;
+   uint8_t block_height_log2;
+   uint8_t pte_kind;
+};
 #else
 #define VK_ICD_WSI_PLATFORM_MAX (VK_ICD_WSI_PLATFORM_METAL + 1)
 #endif
@@ -180,6 +192,14 @@ struct wsi_device {
                                       const VkAllocationCallbacks *alloc,
                                       VkDeviceMemory *out);
    } win32;
+
+#ifdef VK_USE_PLATFORM_VI_NN
+   struct {
+      bool (*get_scanout_params)(VkDevice device, VkImage image,
+                                 VkDeviceMemory memory,
+                                 struct wsi_vi_scanout_params *params);
+   } vi;
+#endif
 
    bool sw;
 
