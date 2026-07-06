@@ -200,6 +200,16 @@ nvkmd_nvgpu_mem_log_handle(struct nvkmd_mem *_mem)
    return nvkmd_nvgpu_mem(_mem)->nvmap.handle;
 }
 
+static bool
+nvkmd_nvgpu_mem_get_scanout_ids(struct nvkmd_mem *_mem,
+                                uint32_t *id_out, uint32_t *handle_out)
+{
+   const NvMap *nvmap = &nvkmd_nvgpu_mem(_mem)->nvmap;
+   *id_out = nvmap->id;
+   *handle_out = nvmap->handle;
+   return true;
+}
+
 const struct nvkmd_mem_ops nvkmd_nvgpu_mem_ops = {
    .free = nvkmd_nvgpu_mem_free,
    .map = nvkmd_nvgpu_mem_map,
@@ -207,4 +217,5 @@ const struct nvkmd_mem_ops nvkmd_nvgpu_mem_ops = {
    .overmap = nvkmd_nvgpu_mem_overmap,
    .export_dma_buf = nvkmd_nvgpu_mem_export_dma_buf,
    .log_handle = nvkmd_nvgpu_mem_log_handle,
+   .get_scanout_ids = nvkmd_nvgpu_mem_get_scanout_ids,
 };
