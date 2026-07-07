@@ -16,7 +16,9 @@
 #include "nvk_shader.h"
 #include "nvk_wsi.h"
 #include "nvkmd/nvkmd.h"
+#ifndef __SWITCH__
 #include "nvkmd/nouveau/nvkmd_nouveau.h"
+#endif
 #include "git_sha1.h"
 #include "util/detect_os.h"
 #include "util/disk_cache.h"

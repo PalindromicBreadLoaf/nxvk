@@ -6,6 +6,7 @@
 #define NVKMD_H 1
 
 #include "nv_device_info.h"
+#include "util/detect_os.h"
 #include "util/list.h"
 #include "util/simple_mtx.h"
 #include "util/u_atomic.h"
@@ -383,6 +384,13 @@ nvkmd_try_create_pdev_for_drm(struct _drmDevice *drm_device,
                               struct vk_object_base *log_obj,
                               enum nvk_debug debug_flags,
                               struct nvkmd_pdev **pdev_out);
+
+#if DETECT_OS_HORIZON
+VkResult MUST_CHECK
+nvkmd_try_create_pdev(struct vk_object_base *log_obj,
+                      enum nvk_debug debug_flags,
+                      struct nvkmd_pdev **pdev_out);
+#endif
 
 static inline void
 nvkmd_pdev_destroy(struct nvkmd_pdev *pdev)

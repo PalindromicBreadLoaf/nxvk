@@ -4,7 +4,14 @@
  */
 
 #include "nvkmd.h"
+
+#include "util/detect_os.h"
+
+#if DETECT_OS_HORIZON
+#include "nvgpu/nvkmd_nvgpu.h"
+#else
 #include "nouveau/nvkmd_nouveau.h"
+#endif
 #include "nv_push.h"
 #include "util/cache_ops.h"
 #include "util/u_math.h"
@@ -88,9 +95,23 @@ nvkmd_try_create_pdev_for_drm(struct _drmDevice *drm_device,
                               enum nvk_debug debug_flags,
                               struct nvkmd_pdev **pdev_out)
 {
+#if DETECT_OS_HORIZON
+   return VK_ERROR_INCOMPATIBLE_DRIVER;
+#else
    return nvkmd_nouveau_try_create_pdev(drm_device, log_obj,
                                         debug_flags, pdev_out);
+#endif
 }
+
+#if DETECT_OS_HORIZON
+VkResult
+nvkmd_try_create_pdev(struct vk_object_base *log_obj,
+                      enum nvk_debug debug_flags,
+                      struct nvkmd_pdev **pdev_out)
+{
+   return nvkmd_nvgpu_try_create_pdev(log_obj, debug_flags, pdev_out);
+}
+#endif
 
 VkResult MUST_CHECK
 nvkmd_dev_alloc_mem(struct nvkmd_dev *dev,
