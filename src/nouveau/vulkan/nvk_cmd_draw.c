@@ -152,7 +152,12 @@ nvk_push_draw_state_init(struct nvk_queue *queue, struct nv_push *p)
     * dEQP-VK.subgroups.vote.frag_helper.subgroupallequal_bvec2_fragment will
     * occasionally fail.
     */
-   if (pdev->info.cls_eng3d >= MAXWELL_B) {
+
+   /* SET_FALCON04 routes these through the FECS falcon, which an unprivileged
+    * Maxwell SoC channel cannot drive. */
+   const bool priv_reg_ok = pdev->info.type != NV_DEVICE_TYPE_SOC;
+
+   if (pdev->info.cls_eng3d >= MAXWELL_B && priv_reg_ok) {
       unsigned reg = pdev->info.cls_eng3d >= VOLTA_A ? 0x419ba4 : 0x419f78;
       P_1INC(p, NV9097, CALL_MME_MACRO(NVK_MME_SET_PRIV_REG));
       P_INLINE_DATA(p, 0);
@@ -206,7 +211,7 @@ nvk_push_draw_state_init(struct nvk_queue *queue, struct nv_push *p)
     *
     * This clears bit 14 of gr_gpcs_tpcs_sms_hww_warp_esr_report_mask
     */
-   if (pdev->info.cls_eng3d >= MAXWELL_B) {
+   if (pdev->info.cls_eng3d >= MAXWELL_B && priv_reg_ok) {
       unsigned reg = pdev->info.cls_eng3d >= VOLTA_A ? 0x419ea8 : 0x419e44;
       P_1INC(p, NV9097, CALL_MME_MACRO(NVK_MME_SET_PRIV_REG));
       P_INLINE_DATA(p, 0);
