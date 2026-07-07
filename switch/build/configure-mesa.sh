@@ -16,7 +16,14 @@ NATIVE_PREFIX="${NATIVE_PREFIX:-$SRC/switch/build/native-tools}"
 # find_program('mesa_clc'/'vtn_bindgen', native:true) resolves off PATH.
 export PATH="$NATIVE_PREFIX/bin:$PATH"
 
-meson setup "$BUILD" "$SRC" \
+# Keep local cross target stubs available.
+cp -r "$SRC/switch/docker/cross-include/." /opt/switch-cross-include/ 2>/dev/null || true
+
+# --wipe when the build dir already exists
+RECONF=""
+[ -f "$BUILD/build.ninja" ] && RECONF="--wipe"
+
+meson setup $RECONF "$BUILD" "$SRC" \
   --cross-file "$SRC/switch/crossfiles/switch.cross" \
   --cross-file "$SRC/switch/crossfiles/rust.cross" \
   --native-file "$SRC/switch/crossfiles/native.txt" \

@@ -52,6 +52,9 @@ RUN mkdir -p /opt/switch-cross-include/libdrm \
     && cp -r /usr/include/libdrm/* /opt/switch-cross-include/libdrm/ 2>/dev/null || true \
     && ls /opt/switch-cross-include/ | head
 
+# Cross target stubs resolved by GCC and bindgen from -I/opt/switch-cross-include.
+COPY cross-include/ /opt/switch-cross-include/
+
 # Bake the host CLC/SPIR-V .pc files into the Switch CROSS pkg-config dir.
 RUN XDIR=/opt/devkitpro/portlibs/switch/lib/pkgconfig; mkdir -p "$XDIR"; \
     for name in libclc LLVMSPIRVLib SPIRV-Tools SPIRV-Tools-shared SPIRV-Headers; do \
@@ -59,7 +62,7 @@ RUN XDIR=/opt/devkitpro/portlibs/switch/lib/pkgconfig; mkdir -p "$XDIR"; \
       if [ -n "$f" ]; then cp "$f" "$XDIR/"; echo "baked $f"; fi; \
     done
 
-# Empty libdl.a output for now
+# Provide an empty libdl.a for static dlopen fallbacks.
 RUN /opt/devkitpro/devkitA64/bin/aarch64-none-elf-ar rcs \
         /opt/devkitpro/portlibs/switch/lib/libdl.a
 
