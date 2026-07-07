@@ -14,8 +14,12 @@
 #include <switch/nvidia/gpu.h>
 #include <switch/result.h>
 
-/* Maxwell channel GPFIFO host class (0xB06F) SYNCPOINTA. */
-#define NVGPU_HOST_SYNCPOINTA 0x0070
+/* Maxwell channel GPFIFO host class (0xB06F) syncpoint methods.
+ * SYNCPOINTB takes OPERATION at bit 0 and SYNCPT_INDEX at bits 19:8.
+ */
+#define NVGPU_HOST_SYNCPOINTA           0x0070
+#define NVGPU_HOST_SYNCPOINTB_OP_INCR   (1u << 0)
+#define NVGPU_HOST_SYNCPOINTB_IDX_SHIFT 8
 
 /* GPU submit wait bound (us) */
 #define NVGPU_SUBMIT_TIMEOUT_US 10000000
@@ -25,13 +29,22 @@ gen_fence_cmdlist(uint32_t *cmds, uint32_t syncpt_id)
 {
    cmds[0] = 0x20000000u | (2u << 16) | (NVGPU_HOST_SYNCPOINTA >> 2);
    cmds[1] = 0;
-   cmds[2] = syncpt_id | (1u << 20) | (1u << 16);
+   cmds[2] = NVGPU_HOST_SYNCPOINTB_OP_INCR |
+             (syncpt_id << NVGPU_HOST_SYNCPOINTB_IDX_SHIFT);
    return 3;
 }
 
-/* Tegra nvgpu grows the per-channel submit staging pool lazily with submit
- * size, so NVK's first large init stream can time out before the pool has
- * grown.
+static unsigned
+nvkmd_nvgpu_channel_err(struct nvkmd_nvgpu_exec_ctx *ctx)
+{
+   NvNotification notif = {0};
+   if (R_FAILED(nvGpuChannelGetErrorNotification(&ctx->channel, &notif)))
+      return 0;
+   return notif.info32;
+}
+
+/* Ramp inert fence-only kickoffs to ≥ any expected init IB size,
+ * verifying each step so a stall is pinned to the size that caused it.
  */
 static VkResult
 nvkmd_nvgpu_warmup_channel(struct nvkmd_nvgpu_exec_ctx *ctx,
@@ -75,15 +88,22 @@ nvkmd_nvgpu_warmup_channel(struct nvkmd_nvgpu_exec_ctx *ctx,
       rc = nvGpuChannelKickoff(&ctx->channel);
       if (R_FAILED(rc)) {
          result = vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
-                            "warmup kickoff failed: 0x%x", (unsigned)rc);
+                            "warmup kickoff failed at %u dw: 0x%x notif=%u",
+                            dw, (unsigned)rc, nvkmd_nvgpu_channel_err(ctx));
+         goto out;
+      }
+
+      NvFence f;
+      nvGpuChannelGetFence(&ctx->channel, &f);
+      rc = nvFenceWait(&f, NVGPU_SUBMIT_TIMEOUT_US);
+      if (R_FAILED(rc)) {
+         result = vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
+                            "warmup drain failed at %u dw (id=%u val=%u): "
+                            "0x%x notif=%u", dw, f.id, f.value, (unsigned)rc,
+                            nvkmd_nvgpu_channel_err(ctx));
          goto out;
       }
    }
-
-   /* Drain so the GPU is done reading the buffer before it is freed. */
-   NvFence f;
-   nvGpuChannelGetFence(&ctx->channel, &f);
-   nvFenceWait(&f, NVGPU_SUBMIT_TIMEOUT_US);
 
 out:
    nvkmd_mem_unref(mem);
@@ -185,7 +205,8 @@ nvkmd_nvgpu_exec_ctx_flush(struct nvkmd_ctx *_ctx,
    rc = nvGpuChannelKickoff(&ctx->channel);
    if (R_FAILED(rc)) {
       return vk_errorf(log_obj, VK_ERROR_DEVICE_LOST,
-                       "nvGpuChannelKickoff() failed: 0x%x", (unsigned)rc);
+                       "nvGpuChannelKickoff() failed: 0x%x notif=%u",
+                       (unsigned)rc, nvkmd_nvgpu_channel_err(ctx));
    }
 
    nvGpuChannelGetFence(&ctx->channel, &ctx->last_fence);
@@ -300,7 +321,9 @@ nvkmd_nvgpu_exec_ctx_sync(struct nvkmd_ctx *_ctx,
    Result rc = nvFenceWait(&ctx->last_fence, NVGPU_SUBMIT_TIMEOUT_US);
    if (R_FAILED(rc)) {
       return vk_errorf(log_obj, VK_ERROR_DEVICE_LOST,
-                       "nvFenceWait() failed: 0x%x", (unsigned)rc);
+                       "nvFenceWait(id=%u val=%u) failed: 0x%x notif=%u",
+                       ctx->last_fence.id, ctx->last_fence.value,
+                       (unsigned)rc, nvkmd_nvgpu_channel_err(ctx));
    }
 
    return VK_SUCCESS;
