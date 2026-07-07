@@ -106,6 +106,7 @@ nvkmd_nouveau_try_create_pdev(struct _drmDevice *drm_device,
                           ws_dev->info.cls_eng3d >= TURING_A) ||
                          (ws_dev->nouveau_version >= 0x01000402 &&
                           ws_dev->info.cls_eng3d >= AMPERE_A),
+      .has_sparse = true,
    };
 
    /* We get this ourselves */
