@@ -321,6 +321,7 @@ nvk_get_device_extensions(const struct nvk_instance *instance,
 static void
 nvk_get_device_features(const struct nv_device_info *info,
                         const struct vk_device_extension_table *supported_extensions,
+                        bool has_sparse,
                         struct vk_features *features)
 {
    /* TU11x uses the same shader model as other Turing but don't support the same features. */
@@ -372,14 +373,14 @@ nvk_get_device_features(const struct nv_device_info *info,
       .shaderInt16 = true,
       .shaderResourceResidency = info->cls_eng3d >= VOLTA_A,
       .shaderResourceMinLod = info->cls_eng3d >= VOLTA_A,
-      .sparseBinding = info->cls_eng3d >= MAXWELL_B,
-      .sparseResidency2Samples = info->cls_eng3d >= MAXWELL_B,
-      .sparseResidency4Samples = info->cls_eng3d >= MAXWELL_B,
-      .sparseResidency8Samples = info->cls_eng3d >= MAXWELL_B,
-      .sparseResidencyAliased = info->cls_eng3d >= MAXWELL_B,
-      .sparseResidencyBuffer = info->cls_eng3d >= MAXWELL_B,
-      .sparseResidencyImage2D = info->cls_eng3d >= MAXWELL_B,
-      .sparseResidencyImage3D = info->cls_eng3d >= MAXWELL_B,
+      .sparseBinding = has_sparse && info->cls_eng3d >= MAXWELL_B,
+      .sparseResidency2Samples = has_sparse && info->cls_eng3d >= MAXWELL_B,
+      .sparseResidency4Samples = has_sparse && info->cls_eng3d >= MAXWELL_B,
+      .sparseResidency8Samples = has_sparse && info->cls_eng3d >= MAXWELL_B,
+      .sparseResidencyAliased = has_sparse && info->cls_eng3d >= MAXWELL_B,
+      .sparseResidencyBuffer = has_sparse && info->cls_eng3d >= MAXWELL_B,
+      .sparseResidencyImage2D = has_sparse && info->cls_eng3d >= MAXWELL_B,
+      .sparseResidencyImage3D = has_sparse && info->cls_eng3d >= MAXWELL_B,
       .variableMultisampleRate = true,
       .inheritedQueries = true,
 
@@ -725,7 +726,7 @@ nvk_get_device_features(const struct nv_device_info *info,
 
       /* VK_EXT_shader_image_atomic_int64 */
       .shaderImageInt64Atomics = info->cls_eng3d >= KEPLER_B,
-      .sparseImageInt64Atomics = info->cls_eng3d >= MAXWELL_A,
+      .sparseImageInt64Atomics = has_sparse && info->cls_eng3d >= MAXWELL_A,
 
       /* VK_EXT_shader_module_identifier */
       .shaderModuleIdentifier = true,
@@ -1469,7 +1470,7 @@ nvk_physical_device_create(struct nvk_instance *instance,
 
    struct vk_features supported_features;
    nvk_get_device_features(&nvkmd->dev_info, &supported_extensions,
-                           &supported_features);
+                           nvkmd->kmd_info.has_sparse, &supported_features);
 
    struct vk_properties properties;
    nvk_get_device_properties(instance, &nvkmd->dev_info, &properties);
@@ -1599,13 +1600,13 @@ nvk_physical_device_create(struct nvk_instance *instance,
       .queue_flags = VK_QUEUE_GRAPHICS_BIT |
                      VK_QUEUE_COMPUTE_BIT |
                      VK_QUEUE_TRANSFER_BIT |
-                     VK_QUEUE_SPARSE_BINDING_BIT,
+                     (nvkmd->kmd_info.has_sparse ? VK_QUEUE_SPARSE_BINDING_BIT : 0),
       .queue_count = 1,
    };
    if (pdev->info.has_transfer_queue) {
       pdev->queue_families[pdev->queue_family_count++] = (struct nvk_queue_family) {
          .queue_flags = VK_QUEUE_TRANSFER_BIT |
-                        VK_QUEUE_SPARSE_BINDING_BIT,
+                        (nvkmd->kmd_info.has_sparse ? VK_QUEUE_SPARSE_BINDING_BIT : 0),
          .queue_count = 2,
       };
    }

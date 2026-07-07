@@ -117,6 +117,7 @@ nvkmd_nvgpu_try_create_pdev(struct vk_object_base *log_obj,
       .has_alloc_tiled = true,
       .has_map_fixed = true,
       .has_overmap = false,
+      .has_sparse = false,
    };
 
    pdev->base.bind_align_B = (uint32_t)NVKMD_NVGPU_SMALL_PAGE_SIZE_B;
