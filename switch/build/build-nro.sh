@@ -35,13 +35,15 @@ STRIP=$DKP/devkitA64/bin/aarch64-none-elf-strip
 [ -f "$SMOKE/$APP.c" ] || { echo "ERROR: $SMOKE/$APP.c not found" >&2; exit 1; }
 
 ARCH="-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE"
+# Per-function/data sections so the final link can drop any dead code.
+SECTIONS="-ffunction-sections -fdata-sections"
 # Mesa's vendored Vulkan headers live in include/.
 INC="-I$SRC/include -I$DKP/libnx/include"
 DEFS="-D__SWITCH__ -D_GNU_SOURCE -D_DEFAULT_SOURCE -DVK_USE_PLATFORM_VI_NN"
 
 echo "=== compiling $APP.c ==="
-$GCC -c "$SMOKE/$APP.c"     -o "$OBJ/$APP.o"        $ARCH $DEFS $INC -O2 -Wall -Wno-unused-function
-$GCC -c "$SMOKE/nvk_compat.c" -o "$OBJ/nvk_compat.o" $ARCH $DEFS $INC -O2 -Wall
+$GCC -c "$SMOKE/$APP.c"     -o "$OBJ/$APP.o"        $ARCH $SECTIONS $DEFS $INC -O2 -Wall -Wno-unused-function
+$GCC -c "$SMOKE/nvk_compat.c" -o "$OBJ/nvk_compat.o" $ARCH $SECTIONS $DEFS $INC -O2 -Wall
 
 # Support archives libnvk.a pulls in, in dependency order.
 cd "$BUILD"
@@ -60,13 +62,14 @@ ARCHIVES="
 PORTLIBS="$DKP/portlibs/switch/lib/libz.a $DKP/portlibs/switch/lib/libexpat.a"
 
 echo "=== linking ELF ==="
-# libnvk.a is whole-archived so Vulkan entrypoints are reached via dispatch tables,
 $GXX -specs="$DKP/libnx/switch.specs" $ARCH \
   -L$DKP/portlibs/switch/lib -L$DKP/libnx/lib \
   -o "$OBJ/$APP.elf" \
+  -Wl,--gc-sections \
+  -Wl,-u,vk_icdGetInstanceProcAddr \
   "$OBJ/$APP.o" "$OBJ/nvk_compat.o" \
-  -Wl,--whole-archive src/nouveau/vulkan/libnvk.a -Wl,--no-whole-archive \
   -Wl,--start-group \
+    src/nouveau/vulkan/libnvk.a \
     $ARCHIVES $PORTLIBS \
     -lnx -lc -lm -lstdc++ -pthread \
   -Wl,--end-group
