@@ -105,6 +105,7 @@ nvkmd_nouveau_try_create_pdev(struct _drmDevice *drm_device,
       .has_alloc_tiled = nouveau_ws_device_has_tiled_bo(ws_dev),
       .has_map_fixed = true,
       .has_overmap = true,
+      .has_sparse = true,
    };
 
    /* Nouveau uses the OS page size for all pages, regardless of whether they
