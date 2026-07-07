@@ -505,7 +505,7 @@ wsi_switch_swapchain_destroy(struct wsi_swapchain *wsi_chain,
 }
 
 /* Tegra X1 is UMA with no VRAM Prefer DEVICE_LOCAL when it
- * exists, otherwise take the first type the image allows. 
+ * exists, otherwise take the first type the image allows.
  */
 static uint32_t
 wsi_switch_select_memory_type(const struct wsi_device *wsi, uint32_t type_bits)
