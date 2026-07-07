@@ -13,7 +13,9 @@
 #include "util/u_atomic.h"
 
 #include <inttypes.h>
-#include <sys/mman.h>
+#ifndef __SWITCH__
+#include <sys/mman.h> /* absent on Horizon */
+#endif
 
 /* Supports opaque fd only */
 const VkExternalMemoryProperties nvk_opaque_fd_mem_props = {

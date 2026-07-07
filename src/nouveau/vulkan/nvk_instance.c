@@ -164,6 +164,8 @@ nvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       nvk_create_drm_physical_device;
    instance->vk.physical_devices.destroy = nvk_physical_device_destroy;
 
+   STATIC_ASSERT(sizeof(instance->driver_build_sha) == BLAKE3_KEY_LEN);
+#ifdef HAVE_DL_ITERATE_PHDR
    const struct build_id_note *note =
       build_id_find_nhdr_for_addr(nvk_CreateInstance);
    if (!note) {
@@ -179,8 +181,13 @@ nvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       goto fail_init;
    }
 
-   STATIC_ASSERT(sizeof(instance->driver_build_sha) == BLAKE3_KEY_LEN);
    copy_build_id_to_sha1(instance->driver_build_sha, note);
+#else
+   /* Horizon has no dl_iterate_phdr to locate the ELF build-id note.
+    * Instead, derive a stable driver SHA from the package version. */
+   _mesa_blake3_compute(PACKAGE_VERSION, strlen(PACKAGE_VERSION),
+                        instance->driver_build_sha);
+#endif
 
    *pInstance = nvk_instance_to_handle(instance);
    return VK_SUCCESS;

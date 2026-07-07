@@ -31,7 +31,9 @@
 #include "vk_shader_module.h"
 #include "vulkan/wsi/wsi_common.h"
 
-#include <sys/sysmacros.h>
+#ifndef __SWITCH__
+#include <sys/sysmacros.h> /* absent on Horizon */
+#endif
 
 #include "nv_push.h"
 #include "cl90c0.h"
@@ -1549,6 +1551,7 @@ nvk_create_drm_physical_device(struct vk_instance *_instance,
    struct vk_properties properties;
    nvk_get_device_properties(instance, &nvkmd->dev_info, &properties);
 
+#ifndef __SWITCH__
    if (nvkmd->drm.render_dev) {
       properties.drmHasRender = true;
       properties.drmRenderMajor = major(nvkmd->drm.render_dev);
@@ -1560,6 +1563,7 @@ nvk_create_drm_physical_device(struct vk_instance *_instance,
       properties.drmPrimaryMajor = major(nvkmd->drm.primary_dev);
       properties.drmPrimaryMinor = minor(nvkmd->drm.primary_dev);
    }
+#endif
 
    result = vk_physical_device_init(&pdev->vk, &instance->vk,
                                     &supported_extensions,
