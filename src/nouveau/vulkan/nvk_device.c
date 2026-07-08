@@ -261,7 +261,9 @@ nvk_CreateDevice(VkPhysicalDevice physicalDevice,
       dev->vk.command_buffer_ops = &nvk_cmd_buffer_ops;
 
       dev->vk.get_timestamp = nvk_device_get_timestamp;
+#ifndef __SWITCH__
       dev->vk.copy_sync_payloads = vk_drm_syncobj_copy_payloads;
+#endif
 
       result = nvk_upload_queue_init(dev, &dev->upload);
       if (result != VK_SUCCESS)
