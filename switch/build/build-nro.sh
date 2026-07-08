@@ -61,14 +61,15 @@ ARCHIVES="
 PORTLIBS="$DKP/portlibs/switch/lib/libz.a $DKP/portlibs/switch/lib/libexpat.a"
 
 echo "=== linking ELF ==="
+# libnvk.a must be whole-archived fun fact
 $GXX -specs="$DKP/libnx/switch.specs" $ARCH \
   -L$DKP/portlibs/switch/lib -L$DKP/libnx/lib \
   -o "$OBJ/$APP.elf" \
   -Wl,--gc-sections \
   -Wl,-u,vk_icdGetInstanceProcAddr \
   "$OBJ/$APP.o" "$OBJ/nvk_compat.o" \
+  -Wl,--whole-archive src/nouveau/vulkan/libnvk.a -Wl,--no-whole-archive \
   -Wl,--start-group \
-    src/nouveau/vulkan/libnvk.a \
     $ARCHIVES $PORTLIBS \
     -lnx -lc -lm -lstdc++ -pthread \
   -Wl,--end-group
