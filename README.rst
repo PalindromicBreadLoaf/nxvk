@@ -1,6 +1,13 @@
+nxvk - NVK on the Nintendo Switch
+=================================
+
+NXVK is a downstream fork that ports the NVK Vulkan driver to the Nintendo Switch (Tegra X1/GM20B).
+If you are here for the Switch port see `switch/README.md <switch/README.md>`_.
+
+The unmodified Mesa README follows.
+
 `Mesa <https://mesa3d.org>`_ - The 3D Graphics Library
 ======================================================
-
 
 Source
 ------
