@@ -36,6 +36,9 @@ nvkmd_nvgpu_get_dev_info(const nvioctl_gpu_characteristics *chars,
       .mp_per_tpc = 1,
       .max_warps_per_mp = 64,
 
+      /* Cortex-A57 D-cache line must be non-zero */
+      .nc_atom_size_B = 64,
+
       .cls_copy = chars->dma_copy_class,
       .cls_eng2d = chars->twod_class,
       .cls_eng3d = chars->threed_class,
