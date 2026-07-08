@@ -13,8 +13,11 @@ SRC="${SRC:-$(pwd)}"
 BUILD="${NATIVE_BUILD:-$SRC/switch/build/native}"
 PREFIX="${NATIVE_PREFIX:-$SRC/switch/build/native-tools}"
 
-# Minimual Mesa. The only thing we want out of it is the host mesa_clc + vtn_bindgen binaries.
-meson setup "$BUILD" "$SRC" \
+# The only thing we want out of it is the host mesa_clc + vtn_bindgen2 binaries.
+RECONF=""
+[ -f "$BUILD/build.ninja" ] && RECONF="--wipe"
+
+meson setup $RECONF "$BUILD" "$SRC" \
   --native-file "$SRC/switch/crossfiles/native.txt" \
   --prefix "$PREFIX" \
   --buildtype release \
@@ -38,11 +41,11 @@ meson setup "$BUILD" "$SRC" \
 
 ninja -C "$BUILD" \
   src/compiler/clc/mesa_clc \
-  src/compiler/spirv/vtn_bindgen
+  src/compiler/spirv/vtn_bindgen2
 
-install -Dm755 "$BUILD/src/compiler/clc/mesa_clc"     "$PREFIX/bin/mesa_clc"
-install -Dm755 "$BUILD/src/compiler/spirv/vtn_bindgen" "$PREFIX/bin/vtn_bindgen"
+install -Dm755 "$BUILD/src/compiler/clc/mesa_clc"      "$PREFIX/bin/mesa_clc"
+install -Dm755 "$BUILD/src/compiler/spirv/vtn_bindgen2" "$PREFIX/bin/vtn_bindgen2"
 
 echo "=== native tools installed ==="
-ls -l "$PREFIX/bin/mesa_clc" "$PREFIX/bin/vtn_bindgen"
+ls -l "$PREFIX/bin/mesa_clc" "$PREFIX/bin/vtn_bindgen2"
 "$PREFIX/bin/mesa_clc" --help >/dev/null 2>&1 && echo "mesa_clc runs: OK" || echo "mesa_clc runs: (no --help, non-fatal)"

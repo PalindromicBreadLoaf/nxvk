@@ -48,13 +48,12 @@ $GCC -c "$SMOKE/nvk_compat.c" -o "$OBJ/nvk_compat.o" $ARCH $SECTIONS $DEFS $INC 
 # Support archives libnvk.a pulls in, in dependency order.
 cd "$BUILD"
 ARCHIVES="
-  src/nouveau/codegen/libnouveau_codegen.a
-  src/util/libmesa_util.a src/util/libmesa_util_sse41.a src/util/blake3/libblake3.a
+  src/util/libmesa_util.a src/util/libmesa_util_simd.a src/util/blake3/libblake3.a
   src/c11/impl/libmesa_util_c11.a
   src/nouveau/compiler/libnak.a src/nouveau/compiler/libnak_rs.a
   src/compiler/rust/libcompiler_c_helpers.a
   src/nouveau/headers/libnvidia_headers_c.a
-  src/nouveau/nil/liblibnil.a src/nouveau/nil/liblibnil_format_table.a
+  src/nouveau/nil/libnil.a src/nouveau/nil/liblibnil_format_table.a
   src/compiler/nir/libnir.a src/compiler/libcompiler.a
   src/nouveau/mme/libnouveau_mme.a src/nouveau/winsys/libnouveau_ws.a
   src/vulkan/util/libvulkan_util.a src/compiler/spirv/libvtn.a
