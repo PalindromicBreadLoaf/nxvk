@@ -60,15 +60,34 @@ ARCHIVES="
   src/util/libxmlconfig.a"
 PORTLIBS="$DKP/portlibs/switch/lib/libz.a $DKP/portlibs/switch/lib/libexpat.a"
 
+# Zink/Gallium/GL frontend statics added only for gl_* apps so Vulkan .nros stay lean.
+GL_ARCHIVES="
+  src/mesa/libmesa.a
+  src/mesa/glapi/shared-glapi/libglapi.a src/mesa/glapi/glapi/libglapi_bridge.a
+  src/gallium/auxiliary/libgallium.a src/gallium/drivers/zink/libzink.a
+  src/gallium/winsys/zink/drm/libzinkwinsys.a
+  src/gallium/winsys/sw/null/libws_null.a src/gallium/winsys/sw/wrapper/libwsw.a"
+GL_WHOLE=""
+case "$APP" in
+gl_*)
+  [ -f "$BUILD/src/gallium/drivers/zink/libzink.a" ] || {
+     echo "ERROR: $BUILD/src/gallium/drivers/zink/libzink.a not found — build the" >&2
+     echo "       Zink stack first (CROSS_BUILD=$SRC/switch/build/cross-zink)." >&2
+     exit 1
+  }
+  GL_WHOLE="$GL_ARCHIVES"
+  ;;
+esac
+
 echo "=== linking ELF ==="
-# libnvk.a must be whole-archived fun fact
+# libnvk.a (and the GL set for gl_* apps) must be whole-archived
 $GXX -specs="$DKP/libnx/switch.specs" $ARCH \
   -L$DKP/portlibs/switch/lib -L$DKP/libnx/lib \
   -o "$OBJ/$APP.elf" \
   -Wl,--gc-sections \
   -Wl,-u,vk_icdGetInstanceProcAddr \
   "$OBJ/$APP.o" "$OBJ/nvk_compat.o" \
-  -Wl,--whole-archive src/nouveau/vulkan/libnvk.a -Wl,--no-whole-archive \
+  -Wl,--whole-archive $GL_WHOLE src/nouveau/vulkan/libnvk.a -Wl,--no-whole-archive \
   -Wl,--start-group \
     $ARCHIVES $PORTLIBS \
     -lnx -lc -lm -lstdc++ -pthread \
