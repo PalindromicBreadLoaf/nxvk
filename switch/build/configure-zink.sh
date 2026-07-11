@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Copyright © 2026 PalindromicBreadLoaf (palindromicbreadloaf@tuta.com)
+# SPDX-License-Identifier: MIT
+#
+# Cross-configure Mesa for Horizon (aarch64/GM20B) building NVK *and* the
+# Zink/Gallium/GL/EGL stack on top of it. This is configure-mesa.sh (NVK-only)
+# with the GL-related options flipped on.
+#
+# Run inside the toolchain image with the repo bind-mounted at /work:
+#   podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build \
+#       bash switch/build/configure-zink.sh
+set -euo pipefail
+
+SRC="${SRC:-$(pwd)}"
+BUILD="${CROSS_BUILD:-$SRC/switch/build/cross-zink}"
+NATIVE_PREFIX="${NATIVE_PREFIX:-$SRC/switch/build/native-tools}"
+
+# find_program('mesa_clc'/'vtn_bindgen', native:true) resolves off PATH.
+export PATH="$NATIVE_PREFIX/bin:$PATH"
+
+# Keep local cross target stubs available.
+cp -r "$SRC/switch/docker/cross-include/." /opt/switch-cross-include/ 2>/dev/null || true
+
+# --wipe when the build dir already exists
+RECONF=""
+[ -f "$BUILD/build.ninja" ] && RECONF="--wipe"
+
+meson setup $RECONF "$BUILD" "$SRC" \
+  --cross-file "$SRC/switch/crossfiles/switch.cross" \
+  --cross-file "$SRC/switch/crossfiles/rust.cross" \
+  --native-file "$SRC/switch/crossfiles/native.txt" \
+  --buildtype release \
+  -Dmesa-clc=system \
+  -Dprecomp-compiler=system \
+  -Dllvm=disabled \
+  -Dvulkan-drivers=nouveau \
+  -Dgallium-drivers=zink \
+  -Dopengl=true \
+  -Dgles1=disabled \
+  -Dgles2=enabled \
+  -Degl=disabled \
+  -Dglvnd=disabled \
+  -Dplatforms= \
+  -Dglx=disabled \
+  -Dgbm=disabled \
+  -Dvideo-codecs= \
+  -Dvulkan-layers= \
+  -Dvulkan-beta=false \
+  -Dshader-cache=disabled \
+  -Dzstd=disabled \
+  -Dlibunwind=disabled \
+  -Dlmsensors=disabled \
+  -Dvalgrind=disabled \
+  -Dperfetto=false \
+  -Dandroid-libbacktrace=disabled \
+  -Dbuild-tests=false
+
+echo "=== configured; building Zink + Gallium + GL archives ==="
