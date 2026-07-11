@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <unistd.h>
 #include <regex.h>
+#include <signal.h>
 
 #include <switch.h>
 
@@ -67,3 +68,12 @@ int regexec(const regex_t *preg, const char *string, size_t nmatch,
 }
 
 void regfree(regex_t *preg) { (void)preg; }
+
+/* Gallium's worker threads (u_queue.c) block signals. */
+int pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset)
+{
+   (void)how; (void)set;
+   if (oldset)
+      *oldset = 0;
+   return 0;
+}
