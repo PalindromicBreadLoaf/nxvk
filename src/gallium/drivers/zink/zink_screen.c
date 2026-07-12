@@ -3422,6 +3422,19 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
 
    u_trace_state_init();
 
+#ifdef __SWITCH__
+   /* Feed Zink the ICD entrypoint directly.
+    * The device resolver is Mesa's common GetDeviceProcAddr. */
+   extern VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+      vk_icdGetInstanceProcAddr(VkInstance instance, const char *pName);
+   extern VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+      vk_common_GetDeviceProcAddr(VkDevice device, const char *pName);
+   screen->loader_lib = NULL;
+   screen->vk_GetInstanceProcAddr =
+      (PFN_vkGetInstanceProcAddr)vk_icdGetInstanceProcAddr;
+   screen->vk_GetDeviceProcAddr =
+      (PFN_vkGetDeviceProcAddr)vk_common_GetDeviceProcAddr;
+#else
    screen->loader_lib = util_dl_open(VK_LIBNAME);
    if (!screen->loader_lib) {
       if (!screen->driver_name_is_inferred)
@@ -3437,6 +3450,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
          mesa_loge("ZINK: failed to get proc address");
       goto fail;
    }
+#endif
 
    if (config) {
       driParseConfigFiles(config->options, config->options_info,
