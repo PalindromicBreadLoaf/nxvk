@@ -41,8 +41,18 @@ SECTIONS="-ffunction-sections -fdata-sections"
 INC="-I$SRC/include -I$DKP/libnx/include"
 DEFS="-D__SWITCH__ -D_GNU_SOURCE -D_DEFAULT_SOURCE -DVK_USE_PLATFORM_VI_NN"
 
+# Gallium/Zink client headers for gl_* apps.
+GL_INC=""
+case "$APP" in
+gl_*)
+  GL_INC="-I$SRC/src/gallium/include -I$SRC/src/gallium/auxiliary
+          -I$SRC/src/gallium/drivers/zink -I$SRC/src -I$SRC/src/util
+          -I$SRC/src/util/format -I$BUILD/src -I$BUILD/src/util"
+  ;;
+esac
+
 echo "=== compiling $APP.c ==="
-$GCC -c "$SMOKE/$APP.c"     -o "$OBJ/$APP.o"        $ARCH $SECTIONS $DEFS $INC -O2 -Wall -Wno-unused-function
+$GCC -c "$SMOKE/$APP.c"     -o "$OBJ/$APP.o"        $ARCH $SECTIONS $DEFS $INC $GL_INC -O2 -Wall -Wno-unused-function
 $GCC -c "$SMOKE/nvk_compat.c" -o "$OBJ/nvk_compat.o" $ARCH $SECTIONS $DEFS $INC -O2 -Wall
 
 # Support archives libnvk.a pulls in, in dependency order.
