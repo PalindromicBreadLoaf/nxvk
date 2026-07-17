@@ -3389,6 +3389,30 @@ zink_cl_cts_version(struct pipe_screen *pscreen)
    return "v2024-08-08-00";
 }
 
+#ifdef __SWITCH__
+extern VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+vk_icdGetInstanceProcAddr(VkInstance instance, const char *pName);
+extern VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+vk_common_GetDeviceProcAddr(VkDevice device, const char *pName);
+
+/* Properly enumerate layers so that Zink doesn't silently fail on start with NULL */
+static VKAPI_ATTR VkResult VKAPI_CALL
+switch_EnumerateInstanceLayerProperties(uint32_t *pCount, VkLayerProperties *pProps)
+{
+   *pCount = 0;
+   return VK_SUCCESS;
+}
+
+static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+switch_GetInstanceProcAddr(VkInstance instance, const char *pName)
+{
+   if (instance == VK_NULL_HANDLE && pName &&
+       !strcmp(pName, "vkEnumerateInstanceLayerProperties"))
+      return (PFN_vkVoidFunction)switch_EnumerateInstanceLayerProperties;
+   return vk_icdGetInstanceProcAddr(instance, pName);
+}
+#endif
+
 static struct zink_screen *
 zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev_major, int64_t dev_minor, uint64_t adapter_luid)
 {
@@ -3425,13 +3449,9 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
 #ifdef __SWITCH__
    /* Feed Zink the ICD entrypoint directly.
     * The device resolver is Mesa's common GetDeviceProcAddr. */
-   extern VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
-      vk_icdGetInstanceProcAddr(VkInstance instance, const char *pName);
-   extern VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
-      vk_common_GetDeviceProcAddr(VkDevice device, const char *pName);
    screen->loader_lib = NULL;
    screen->vk_GetInstanceProcAddr =
-      (PFN_vkGetInstanceProcAddr)vk_icdGetInstanceProcAddr;
+      (PFN_vkGetInstanceProcAddr)switch_GetInstanceProcAddr;
    screen->vk_GetDeviceProcAddr =
       (PFN_vkGetDeviceProcAddr)vk_common_GetDeviceProcAddr;
 #else
