@@ -34,8 +34,21 @@ int main(void)
    setenv("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER", "1", 1);
    setenv("MESA_SHADER_CACHE_DISABLE", "1", 1);
 
+   /* Capture zink/mesa's own diagnostics and redirect from stderr. */
+   setenv("MESA_LOG_LEVEL", "debug", 1);
+   if (!freopen("sdmc:/gl_gallium_mesa.log", "w", stderr))
+      LOG("WARN: could not redirect stderr to sdmc:/gl_gallium_mesa.log");
+   setvbuf(stderr, NULL, _IONBF, 0);
+   LOG("mesa/zink diagnostics -> sdmc:/gl_gallium_mesa.log");
+
    pscreen = zink_create_screen(NULL, NULL);
-   if (!pscreen) { LOG("FAIL: zink_create_screen returned NULL"); goto out; }
+   fflush(stderr);
+   if (!pscreen) {
+      LOG("FAIL: zink_create_screen returned NULL");
+      LOG("  -> read sdmc:/gl_gallium_mesa.log for the 'ZINK: ...' stage line");
+      fflush(stderr);
+      goto out;
+   }
    LOG("screen up: vendor='%s' name='%s'",
        pscreen->get_vendor(pscreen), pscreen->get_name(pscreen));
 
