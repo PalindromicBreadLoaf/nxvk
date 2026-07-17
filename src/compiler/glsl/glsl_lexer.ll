@@ -23,6 +23,12 @@
  */
 #include <ctype.h>
 #include <limits.h>
+/* newlib hides LLONG_MAX from C++ unless __ISO_C_VISIBLE >= 1999.
+ * This is a hack, and I don't like doing this, but it's the easiest solution
+ * I currently have. */
+#ifndef LLONG_MAX
+#define LLONG_MAX __LONG_LONG_MAX__
+#endif
 #include "util/strtod.h"
 #include "ast.h"
 #include "glsl_parser_extras.h"
