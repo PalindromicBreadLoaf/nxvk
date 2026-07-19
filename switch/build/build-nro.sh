@@ -43,16 +43,27 @@ DEFS="-D__SWITCH__ -D_GNU_SOURCE -D_DEFAULT_SOURCE -DVK_USE_PLATFORM_VI_NN"
 
 # Gallium/Zink client headers for gl_* apps.
 GL_INC=""
+GL_DEFS=""
 case "$APP" in
 gl_*)
+  GL_DEFS="-DHAVE_PTHREAD"
   GL_INC="-I$SRC/src/gallium/include -I$SRC/src/gallium/auxiliary
-          -I$SRC/src/gallium/drivers/zink -I$SRC/src -I$SRC/src/util
-          -I$SRC/src/util/format -I$BUILD/src -I$BUILD/src/util"
+          -I$SRC/src/gallium/drivers/zink
+          -I$SRC/src -I$BUILD/src
+          -I$SRC/src/util -I$SRC/src/util/format
+          -I$BUILD/src/util -I$BUILD/src/util/format
+          -I$SRC/src/mesa -I$SRC/src/mesa/main
+          -I$BUILD/src/mesa -I$BUILD/src/mesa/libmesa.a.p
+          -I$BUILD/src/mesa/program -I$BUILD/src/mesa/glapi/glapi/gen
+          -I$SRC/src/compiler -I$BUILD/src/compiler
+          -I$SRC/src/compiler/nir -I$BUILD/src/compiler/nir
+          -I$BUILD/src/compiler/glsl -I$BUILD/src/compiler/spirv
+          -I$SRC/include -I$BUILD/include"
   ;;
 esac
 
 echo "=== compiling $APP.c ==="
-$GCC -c "$SMOKE/$APP.c"     -o "$OBJ/$APP.o"        $ARCH $SECTIONS $DEFS $INC $GL_INC -O2 -Wall -Wno-unused-function
+$GCC -c "$SMOKE/$APP.c"     -o "$OBJ/$APP.o"        $ARCH $SECTIONS $DEFS $GL_DEFS $INC $GL_INC -O2 -Wall -Wno-unused-function
 $GCC -c "$SMOKE/nvk_compat.c" -o "$OBJ/nvk_compat.o" $ARCH $SECTIONS $DEFS $INC -O2 -Wall
 
 # Support archives libnvk.a pulls in, in dependency order.
@@ -73,6 +84,7 @@ PORTLIBS="$DKP/portlibs/switch/lib/libz.a $DKP/portlibs/switch/lib/libexpat.a"
 # Zink/Gallium/GL frontend statics added only for gl_* apps so Vulkan .nros stay lean.
 GL_ARCHIVES="
   src/mesa/libmesa.a
+  src/compiler/glsl/libglsl.a src/compiler/glsl/glcpp/libglcpp.a
   src/mesa/glapi/shared-glapi/libglapi.a src/mesa/glapi/glapi/libglapi_bridge.a
   src/gallium/auxiliary/libgallium.a src/gallium/drivers/zink/libzink.a
   src/gallium/winsys/zink/drm/libzinkwinsys.a
