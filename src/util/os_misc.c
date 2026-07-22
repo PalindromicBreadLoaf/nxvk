@@ -416,7 +416,16 @@ os_get_total_physical_memory(uint64_t *size)
 bool
 os_get_available_system_memory(uint64_t *size)
 {
-#if DETECT_OS_LINUX
+#if DETECT_OS_HORIZON
+   /* Horizon has no live free memory figure to report. The kernel hands the
+    * process its whole heap up front, so InfoType_UsedMemorySize counts the
+    * reservation rather than what has been handed out, and subtracting it would
+    * report a few MiB free on a 3 GiB heap. Nothing else competes for that heap
+    * once it is reserved, so the total is the honest estimate of what is
+    * available to us.
+    */
+   return os_get_total_physical_memory(size);
+#elif DETECT_OS_LINUX
    char *meminfo = os_read_file("/proc/meminfo", NULL);
    if (!meminfo)
       return false;
