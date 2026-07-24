@@ -45,6 +45,14 @@ nvkmd_nvgpu_get_dev_info(const nvioctl_gpu_characteristics *chars,
       .cls_m2mf = chars->inline_to_memory_class,
       .cls_compute = chars->compute_class,
 
+      /* GM20B has 64 kB of shared memory per SMM and no configurable split,
+       * but like the rest of Kepler through Pascal a single workgroup can only
+       * address 48 kB of it.
+       */
+      .sm_smem_sizes_kB = { 64 },
+      .sm_smem_size_count = 1,
+      .max_smem_per_wg_kB = 48,
+
       .vram_size_B = 0,
       .bar_size_B = 0,
    };
