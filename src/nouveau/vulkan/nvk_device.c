@@ -248,6 +248,10 @@ nvk_CreateDevice(VkPhysicalDevice physicalDevice,
    dev->vk.shader_ops = &nvk_device_shader_ops;
    dev->vk.check_status = &nvk_device_check_status;
 
+   result = nvk_shader_cache_init(dev);
+   if (result != VK_SUCCESS)
+      goto fail_init;
+
    uint32_t queue_count = 0;
    for (uint32_t i = 0; i < pCreateInfo->queueCreateInfoCount; i++)
       queue_count += pCreateInfo->pQueueCreateInfos[i].queueCount;
@@ -457,6 +461,8 @@ nvk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
 
    if (dev->nvkmd)
       nvk_device_finish_meta(dev);
+
+   nvk_shader_cache_finish(dev);
 
    vk_pipeline_cache_destroy(dev->vk.mem_cache, NULL);
 

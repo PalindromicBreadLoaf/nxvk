@@ -83,6 +83,17 @@ uint16_t
 nvk_max_shader_push_dw(const struct nvk_physical_device *pdev,
                        mesa_shader_stage stage, bool last_vtgm);
 
+/* Device-global cache deduplicating NAK compiles by shader content identity.
+ * Pipelines built without VK_EXT_graphics_pipeline_library hash pipeline
+ * state into each stage's Mesa-runtime shader_key, so two pipelines that
+ * share a shader but differ in e.g. fragment/blend state get distinct keys
+ * and NAK would otherwise recompile the same shader once per pipeline that
+ * references it. This cache sits below that key entirely, keyed on the
+ * actual compile input, so it dedups regardless of what the caller's
+ * pipeline-level key looked like. */
+VkResult nvk_shader_cache_init(struct nvk_device *dev);
+void nvk_shader_cache_finish(struct nvk_device *dev);
+
 struct nvk_shader {
    struct vk_shader vk;
 

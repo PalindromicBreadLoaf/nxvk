@@ -21,9 +21,13 @@
 #include "nak.h"
 #include "nir.h"
 #include "nir_builder.h"
+#include "nir_serialize.h"
 #include "compiler/spirv/nir_spirv.h"
 
+#include "util/blob.h"
+#include "util/hash_table.h"
 #include "util/mesa-blake3.h"
+#include "util/simple_mtx.h"
 #include "util/u_debug.h"
 
 #include "cla097.h"
@@ -503,6 +507,99 @@ nvk_shader_dump(struct nvk_shader *shader)
 }
 #endif
 
+/* Cached NAK compile output, keyed on compile-input content identity rather
+ * than any Vulkan-level pipeline/shader-key. See nvk_shader_cache_key(). */
+struct nvk_shader_cache_entry {
+   struct nak_shader_info info;
+   uint32_t code_size;
+   void *code;
+   uint32_t data_size;
+   void *data;
+};
+
+VkResult
+nvk_shader_cache_init(struct nvk_device *dev)
+{
+   mtx_init(&dev->shader_cache_mutex, mtx_plain);
+   cnd_init(&dev->shader_cache_cond);
+
+   dev->shader_cache = _mesa_hash_table_u64_create(NULL);
+   dev->shader_cache_inflight = _mesa_hash_table_u64_create(NULL);
+   if (dev->shader_cache == NULL || dev->shader_cache_inflight == NULL) {
+      if (dev->shader_cache != NULL)
+         _mesa_hash_table_u64_destroy(dev->shader_cache);
+      if (dev->shader_cache_inflight != NULL)
+         _mesa_hash_table_u64_destroy(dev->shader_cache_inflight);
+      dev->shader_cache = NULL;
+      dev->shader_cache_inflight = NULL;
+      cnd_destroy(&dev->shader_cache_cond);
+      mtx_destroy(&dev->shader_cache_mutex);
+      return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+
+   return VK_SUCCESS;
+}
+
+void
+nvk_shader_cache_finish(struct nvk_device *dev)
+{
+   if (dev->shader_cache == NULL)
+      return;
+
+   hash_table_u64_foreach(dev->shader_cache, entry) {
+      struct nvk_shader_cache_entry *cache_entry = entry.data;
+      free(cache_entry->code);
+      free(cache_entry->data);
+      free(cache_entry);
+   }
+
+   _mesa_hash_table_u64_destroy(dev->shader_cache);
+   _mesa_hash_table_u64_destroy(dev->shader_cache_inflight);
+   cnd_destroy(&dev->shader_cache_cond);
+   mtx_destroy(&dev->shader_cache_mutex);
+}
+
+/* Drop this thread's in-flight claim on cache_key and wake anyone waiting on
+ * it. Every path out of nvk_compile_nir that took a claim must call this, or
+ * the waiters block forever. */
+static void
+nvk_shader_cache_release(struct nvk_device *dev, uint64_t cache_key)
+{
+   mtx_lock(&dev->shader_cache_mutex);
+   _mesa_hash_table_u64_remove(dev->shader_cache_inflight, cache_key);
+   cnd_broadcast(&dev->shader_cache_cond);
+   mtx_unlock(&dev->shader_cache_mutex);
+}
+
+/* Content-identity hash of exactly what nak_compile_shader's output depends
+ * on: the post-lowering NIR, the two robustness bits that affect codegen,
+ * and the fragment-only key. nak itself (GPU-specific config) is constant
+ * for the process lifetime and doesn't need to be part of the key. */
+static uint64_t
+nvk_shader_cache_key(const nir_shader *nir, nir_variable_mode robust2_modes,
+                     const struct nak_fs_key *fs_key)
+{
+   struct blob blob;
+   blob_init(&blob);
+   nir_serialize(&blob, nir, false);
+
+   struct mesa_blake3 ctx;
+   _mesa_blake3_init(&ctx);
+   _mesa_blake3_update(&ctx, blob.data, blob.size);
+   _mesa_blake3_update(&ctx, &robust2_modes, sizeof(robust2_modes));
+   if (fs_key != NULL)
+      _mesa_blake3_update(&ctx, fs_key, sizeof(*fs_key));
+
+   blake3_hash hash;
+   _mesa_blake3_final(&ctx, hash);
+
+   blob_finish(&blob);
+
+   uint64_t key;
+   memcpy(&key, hash, sizeof(key));
+   return key;
+}
+
 static VkResult
 nvk_compile_nir(struct nvk_device *dev, nir_shader *nir,
                 VkShaderCreateFlagsEXT shader_flags,
@@ -521,10 +618,72 @@ nvk_compile_nir(struct nvk_device *dev, nir_shader *nir,
    if (rs->storage_buffers == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT)
       robust2_modes |= nir_var_mem_ssbo;
 
+   /* dump_asm wants the freshly-compiled nak_shader_bin itself (for its asm
+    * string), so skip the cache on that debug-only path. */
+   const bool use_cache = !dump_asm;
+   const uint64_t cache_key = use_cache ?
+      nvk_shader_cache_key(nir, robust2_modes, fs_key) : 0;
+
+   /* Single-flight: only the first thread to miss on a key compiles it. The
+    * rest wait on shader_cache_cond and pick up the result, instead of all
+    * racing to compile the same shader (4-way races on the big PICA vertex
+    * ubershaders were costing seconds each). */
+   bool claimed_inflight = false;
+
+   if (use_cache) {
+      struct nvk_shader_cache_entry *cached = NULL;
+
+      mtx_lock(&dev->shader_cache_mutex);
+      for (;;) {
+         cached = _mesa_hash_table_u64_search(dev->shader_cache, cache_key);
+         if (cached != NULL)
+            break;
+
+         if (_mesa_hash_table_u64_search(dev->shader_cache_inflight,
+                                         cache_key) == NULL) {
+            _mesa_hash_table_u64_insert(dev->shader_cache_inflight, cache_key,
+                                        (void *)(uintptr_t)1);
+            claimed_inflight = true;
+            break;
+         }
+
+         cnd_wait(&dev->shader_cache_cond, &dev->shader_cache_mutex);
+      }
+
+      if (cached != NULL) {
+         shader->info = cached->info;
+         shader->code_size = cached->code_size;
+         shader->code_ptr = malloc(cached->code_size);
+         if (shader->code_ptr != NULL)
+            memcpy((void *)shader->code_ptr, cached->code, cached->code_size);
+         if (cached->data_size > 0) {
+            shader->data_size = cached->data_size;
+            shader->data_ptr = malloc(cached->data_size);
+            if (shader->data_ptr != NULL)
+               memcpy((void *)shader->data_ptr, cached->data, cached->data_size);
+         }
+      }
+      mtx_unlock(&dev->shader_cache_mutex);
+
+      if (cached != NULL) {
+         if (shader->code_ptr == NULL ||
+             (cached->data_size > 0 && shader->data_ptr == NULL))
+            return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+         /* shader->nak stays NULL here, exactly like nvk_deserialize_shader -
+          * nvk_shader_destroy already frees code_ptr/data_ptr directly
+          * instead of calling nak_shader_bin_destroy when nak is NULL. */
+         return VK_SUCCESS;
+      }
+   }
+
    shader->nak = nak_compile_shader(nir, dump_asm, pdev->nak,
                                     robust2_modes, fs_key);
-   if (!shader->nak)
+   if (!shader->nak) {
+      if (claimed_inflight)
+         nvk_shader_cache_release(dev, cache_key);
       return vk_errorf(pdev, VK_ERROR_UNKNOWN, "Internal compiler error in NAK");
+   }
 
    shader->info = shader->nak->info;
    shader->code_ptr = shader->nak->code;
@@ -535,8 +694,11 @@ nvk_compile_nir(struct nvk_device *dev, nir_shader *nir,
       uint32_t data_size = align(nir->constant_data_size, data_align);
 
       void *data = malloc(data_size);
-      if (data == NULL)
+      if (data == NULL) {
+         if (claimed_inflight)
+            nvk_shader_cache_release(dev, cache_key);
          return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
 
       memcpy(data, nir->constant_data, nir->constant_data_size);
 
@@ -550,6 +712,48 @@ nvk_compile_nir(struct nvk_device *dev, nir_shader *nir,
 
    if (dump_asm)
       shader->nir_str = nir_shader_as_str(nir, NULL);
+
+   if (use_cache) {
+      struct nvk_shader_cache_entry *entry = malloc(sizeof(*entry));
+      void *code_copy = entry != NULL ? malloc(shader->code_size) : NULL;
+      void *data_copy = (entry != NULL && shader->data_size > 0) ?
+         malloc(shader->data_size) : NULL;
+
+      const bool have_code_copy = code_copy != NULL || shader->code_size == 0;
+      const bool have_data_copy = data_copy != NULL || shader->data_size == 0;
+
+      if (entry != NULL && have_code_copy && have_data_copy) {
+         entry->info = shader->info;
+         entry->code_size = shader->code_size;
+         entry->code = code_copy;
+         if (code_copy != NULL)
+            memcpy(code_copy, shader->code_ptr, shader->code_size);
+         entry->data_size = shader->data_size;
+         entry->data = data_copy;
+         if (data_copy != NULL)
+            memcpy(data_copy, shader->data_ptr, shader->data_size);
+
+         mtx_lock(&dev->shader_cache_mutex);
+         if (_mesa_hash_table_u64_search(dev->shader_cache, cache_key) == NULL) {
+            _mesa_hash_table_u64_insert(dev->shader_cache, cache_key, entry);
+            entry = NULL;
+         }
+         mtx_unlock(&dev->shader_cache_mutex);
+      }
+
+      /* entry is non-NULL here if one of the allocations above failed (with
+       * single-flight, losing the insert race is no longer possible). Either
+       * way this compile's own shader is unaffected - it just won't be
+       * available to dedup future compiles against. */
+      if (entry != NULL) {
+         free(code_copy);
+         free(data_copy);
+         free(entry);
+      }
+   }
+
+   if (claimed_inflight)
+      nvk_shader_cache_release(dev, cache_key);
 
    return VK_SUCCESS;
 }

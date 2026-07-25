@@ -7,6 +7,8 @@
 
 #include "nvk_private.h"
 
+#include "c11/threads.h"
+
 #include "nvk_edb_bview_cache.h"
 #include "nvk_descriptor_table.h"
 #include "nvk_heap.h"
@@ -16,6 +18,7 @@
 #include "vk_meta.h"
 #include "vk_queue.h"
 
+struct hash_table_u64;
 struct nvk_physical_device;
 struct nvkmd_dev;
 struct nvkmd_mem;
@@ -55,6 +58,10 @@ struct nvk_device {
    struct nvk_descriptor_table images;
    struct nvk_descriptor_table samplers;
    struct nvk_edb_bview_cache edb_bview_cache;
+   struct hash_table_u64 *shader_cache;
+   struct hash_table_u64 *shader_cache_inflight;
+   mtx_t shader_cache_mutex;
+   cnd_t shader_cache_cond;
    struct nvk_heap shader_heap;
    struct nvk_heap event_heap;
    struct nvk_heap qmd_heap;
