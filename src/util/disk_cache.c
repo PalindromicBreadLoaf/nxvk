@@ -51,6 +51,10 @@
 #include "disk_cache.h"
 #include "disk_cache_os.h"
 
+#if DETECT_OS_HORIZON
+#include "disk_cache_horizon.h"
+#endif
+
 /* The cache version should be bumped whenever a change is made to the
  * structure of cache entries or the index. This will give any 3rd party
  * applications reading the cache entries a chance to adjust to the changes.
@@ -120,7 +124,10 @@ disk_cache_type_create(const char *gpu_name,
    cache->path_init_failed = true;
    cache->type = DISK_CACHE_NONE;
 
-   if (!disk_cache_enabled())
+   const bool enabled = disk_cache_enabled();
+
+   /* Skip straight to the blob callbacks installed at the end since we have no mmap().*/
+   if (!enabled || DETECT_OS_HORIZON)
       goto path_fail;
 
    const char *path =
@@ -204,6 +211,11 @@ disk_cache_type_create(const char *gpu_name,
    s_rand_xorshift128plus(cache->seed_xorshift128plus, true);
 
    ralloc_free(local);
+
+#if DETECT_OS_HORIZON
+   if (enabled)
+      disk_cache_horizon_init(cache, max_size);
+#endif
 
    return cache;
 
@@ -333,6 +345,12 @@ disk_cache_destroy(struct disk_cache *cache)
    if (cache && util_queue_is_initialized(&cache->cache_queue)) {
       util_queue_finish(&cache->cache_queue);
       util_queue_destroy(&cache->cache_queue);
+
+#if DETECT_OS_HORIZON
+      /* Nothing else in this build installs blob callbacks. */
+      if (cache->blob_put_cb != NULL)
+         disk_cache_horizon_fini();
+#endif
 
       if (cache->foz_ro_cache)
          disk_cache_destroy(cache->foz_ro_cache);
@@ -517,10 +535,17 @@ blob_get_compressed(struct disk_cache *cache, const cache_key key,
 {
    MESA_TRACE_FUNC();
 
+#if DETECT_OS_HORIZON
+   /* The store is local rather than an EGL blob cache, so it is not bound by
+    * the limit below.
+    */
+   const signed long max_blob_size = DISK_CACHE_HORIZON_MAX_BLOB;
+#else
    /* This is what Android EGL defines as the maxValueSize in egl_cache_t
     * class implementation.
     */
    const signed long max_blob_size = 64 * 1024;
+#endif
    struct blob_cache_entry *entry = malloc(max_blob_size);
    if (!entry)
       return NULL;

@@ -97,7 +97,6 @@ size_t __nx_heap_size   = 0;
 int main(void) {
     /* NVK refuses device creation without this. */
     setenv("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER", "1", 1);
-    setenv("MESA_SHADER_CACHE_DISABLE", "1", 1);
 
     PFN_vkCreateInstance CreateInstance =
         (PFN_vkCreateInstance)vk_icdGetInstanceProcAddr(NULL, "vkCreateInstance");
