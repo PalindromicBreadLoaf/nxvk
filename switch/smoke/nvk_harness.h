@@ -132,7 +132,7 @@ static VkResult nvk_bringup_ex(struct nvk_ctx *c,
 
    /*NVK refuses device creation without this. */
    setenv("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER", "1", 1);
-   setenv("MESA_SHADER_CACHE_DISABLE", "1", 1);
+   setenv("MESA_SHADER_CACHE_SHOW_STATS", "1", 1);
 
    if (!g_nvk_mesa_log) {
       g_nvk_mesa_log = fopen("sdmc:/nvk_mesa.log", "w");
