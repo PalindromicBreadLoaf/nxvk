@@ -84,6 +84,7 @@ static const struct {
    {_EGL_PLATFORM_SURFACELESS, "surfaceless"},
    {_EGL_PLATFORM_DEVICE, "device"},
    {_EGL_PLATFORM_WINDOWS, "windows"},
+   {_EGL_PLATFORM_HORIZON, "horizon"},
 };
 
 /**
