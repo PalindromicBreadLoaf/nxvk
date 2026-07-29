@@ -2,9 +2,8 @@
 # Copyright © 2026 PalindromicBreadLoaf (palindromicbreadloaf@tuta.com)
 # SPDX-License-Identifier: MIT
 #
-# Cross-configure Mesa for Horizon (aarch64/GM20B) building NVK *and* the
-# Zink/Gallium/GL/EGL stack on top of it. This is configure-mesa.sh (NVK-only)
-# with the GL-related options flipped on.
+# Cross-configure Mesa for Horizon for building NVK and Zink on top of it.
+# This is just configure-mesa.sh with the GL-related options flipped on.
 #
 # Run inside the toolchain image with the repo bind-mounted at /work:
 #   podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build \
@@ -38,15 +37,15 @@ meson setup $RECONF "$BUILD" "$SRC" \
   -Dopengl=true \
   -Dgles1=disabled \
   -Dgles2=enabled \
-  -Degl=disabled \
+  -Degl=enabled \
   -Dglvnd=disabled \
-  -Dplatforms= \
+  -Dplatforms=horizon \
   -Dglx=disabled \
   -Dgbm=disabled \
   -Dvideo-codecs= \
   -Dvulkan-layers= \
   -Dvulkan-beta=false \
-  -Dshader-cache=disabled \
+  -Dshader-cache=enabled \
   -Dzstd=disabled \
   -Dlibunwind=disabled \
   -Dlmsensors=disabled \
