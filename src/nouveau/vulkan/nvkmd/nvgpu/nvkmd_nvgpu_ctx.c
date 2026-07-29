@@ -69,6 +69,9 @@ nvkmd_nvgpu_warmup_channel(struct nvkmd_nvgpu_exec_ctx *ctx,
    for (uint32_t i = 0; i + fence_dw <= max_dw; i += fence_dw)
       memcpy(&cmds[i], fence, fence_dw * 4);
 
+   /* The map is CPU-cached and the host fetches the pushbuf from memory. */
+   nvkmd_mem_sync_map_to_gpu(mem, 0, mem->size_B);
+
    for (uint32_t r = 0; r < ARRAY_SIZE(ramp_dw); r++) {
       const uint32_t fences = ramp_dw[r] / fence_dw;
       const uint32_t dw = fences * fence_dw;
@@ -160,6 +163,9 @@ nvkmd_nvgpu_create_exec_ctx(struct nvkmd_dev *_dev,
    ctx->fence_cmds_dw = gen_fence_cmdlist(ctx->fence_mem->map,
                                           nvGpuChannelGetSyncpointId(&ctx->channel));
    ctx->fence_cmds_addr = ctx->fence_mem->va->addr;
+
+   /* Written once here, refetched from memory on every kickoff. */
+   nvkmd_mem_sync_map_to_gpu(ctx->fence_mem, 0, ctx->fence_mem->size_B);
 
    result = nvkmd_nvgpu_warmup_channel(ctx, log_obj);
    if (result != VK_SUCCESS)

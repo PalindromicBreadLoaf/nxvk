@@ -6,6 +6,7 @@
 #include "nvkmd_nvgpu.h"
 
 #include "util/bitscan.h"
+#include "util/cache_ops.h"
 #include "util/macros.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
@@ -13,6 +14,7 @@
 
 #include <inttypes.h>
 
+#include <switch/arm/cache.h>
 #include <switch/result.h>
 
 VkResult
@@ -37,6 +39,10 @@ create_mem_or_close_nvmap(struct nvkmd_nvgpu_dev *dev,
                           struct nvkmd_mem **mem_out)
 {
    const uint64_t size_B = nvmap->size;
+   /* nvMapClose() clears cpu_addr, so keep the backing pointer for the
+    * teardown path.
+    */
+   void *const cpu_addr = nvmap->cpu_addr;
    VkResult result;
 
    struct nvkmd_nvgpu_mem *mem = CALLOC_STRUCT(nvkmd_nvgpu_mem);
@@ -72,7 +78,7 @@ fail_mem:
    FREE(mem);
 fail_nvmap:
    nvMapClose(nvmap);
-   align_free(nvmap->cpu_addr);
+   align_free(cpu_addr);
 
    return result;
 }
@@ -104,16 +110,28 @@ nvkmd_nvgpu_alloc_tiled_mem(struct nvkmd_dev *_dev,
    assert(util_is_power_of_two_or_zero64(align_B));
    const uint64_t va_align_B = MAX2(mem_align_B, align_B);
 
+   if (_dev->pdev->debug_flags & NVK_DEBUG_FORCE_COHERENT)
+      flags |= NVKMD_MEM_COHERENT;
+
+   /* The GM20B is not IO-coherent. A coherent map is made uncached by
+    * nvMapCreate(), so it sees GPU writes once they are flushed out of the GPU
+    * L2 at submit time.
+    */
+   const bool is_cpu_cacheable = !(flags & NVKMD_MEM_COHERENT);
+
    void *cpu_addr = align_malloc(size_B, mem_align_B);
    if (cpu_addr == NULL)
       return vk_errorf(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY, "%m");
 
-   /* The GPU is not IO-coherent, so an uncached CPU view sees GPU writes once they are
-    * flushed out of the GPU L2 at submit time.
+   /* Write back what the previous owner of this heap memory left dirty, so no
+    * later eviction lands on top of GPU writes.
     */
+   if (is_cpu_cacheable)
+      util_flush_inval_range(cpu_addr, size_B);
+
    NvMap nvmap;
    Result rc = nvMapCreate(&nvmap, cpu_addr, size_B, mem_align_B,
-                           (NvKind)pte_kind, false /* is_cpu_cacheable */);
+                           (NvKind)pte_kind, is_cpu_cacheable);
    if (R_FAILED(rc)) {
       align_free(cpu_addr);
       return vk_errorf(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY,
@@ -186,6 +204,27 @@ nvkmd_nvgpu_mem_overmap(struct nvkmd_mem *_mem,
    return vk_error(log_obj, VK_ERROR_FEATURE_NOT_PRESENT);
 }
 
+/* Only reached if util_has_cache_ops() is false, which should not happen on
+ * aarch64.
+ */
+static void
+nvkmd_nvgpu_mem_sync_to_gpu(struct nvkmd_mem *_mem,
+                            uint64_t offset_B, uint64_t range_B)
+{
+   struct nvkmd_nvgpu_mem *mem = nvkmd_nvgpu_mem(_mem);
+
+   armDCacheClean((uint8_t *)nvMapGetCpuAddr(&mem->nvmap) + offset_B, range_B);
+}
+
+static void
+nvkmd_nvgpu_mem_sync_from_gpu(struct nvkmd_mem *_mem,
+                              uint64_t offset_B, uint64_t range_B)
+{
+   struct nvkmd_nvgpu_mem *mem = nvkmd_nvgpu_mem(_mem);
+
+   armDCacheFlush((uint8_t *)nvMapGetCpuAddr(&mem->nvmap) + offset_B, range_B);
+}
+
 static VkResult
 nvkmd_nvgpu_mem_export_dma_buf(struct nvkmd_mem *_mem,
                                struct vk_object_base *log_obj,
@@ -215,6 +254,8 @@ const struct nvkmd_mem_ops nvkmd_nvgpu_mem_ops = {
    .map = nvkmd_nvgpu_mem_map,
    .unmap = nvkmd_nvgpu_mem_unmap,
    .overmap = nvkmd_nvgpu_mem_overmap,
+   .sync_to_gpu = nvkmd_nvgpu_mem_sync_to_gpu,
+   .sync_from_gpu = nvkmd_nvgpu_mem_sync_from_gpu,
    .export_dma_buf = nvkmd_nvgpu_mem_export_dma_buf,
    .log_handle = nvkmd_nvgpu_mem_log_handle,
    .get_scanout_ids = nvkmd_nvgpu_mem_get_scanout_ids,
