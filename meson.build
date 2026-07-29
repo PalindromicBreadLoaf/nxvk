@@ -475,6 +475,8 @@ if _platforms.contains('auto')
     _platforms = ['windows']
   elif host_machine.system() == 'darwin'
     _platforms = ['x11', 'macos']
+  elif host_machine.system() == 'horizon'
+    _platforms = ['horizon']
   else
     error('Unknown OS @0@. Please pass -Dplatforms to set platforms. Patches gladly accepted to fix this.'.format(
           host_machine.system()))
@@ -487,6 +489,7 @@ with_platform_wayland = _platforms.contains('wayland')
 with_platform_haiku = _platforms.contains('haiku')
 with_platform_windows = _platforms.contains('windows')
 with_platform_macos = _platforms.contains('macos')
+with_platform_horizon = _platforms.contains('horizon')
 
 with_gfxstream_emulated_android = with_gfxstream_vk and with_platform_android and host_machine.system() == 'linux'
 if with_gfxstream_emulated_android
@@ -559,7 +562,7 @@ with_xlib_lease = get_option('xlib-lease') \
   .allowed()
 
 with_egl = get_option('egl') \
-  .require(with_platform_windows or with_platform_haiku or with_dri or with_platform_android, error_message : 'EGL requires DRI, Haiku, Windows or Android') \
+  .require(with_platform_windows or with_platform_haiku or with_dri or with_platform_android or with_platform_horizon, error_message : 'EGL requires DRI, Haiku, Windows, Android or Horizon') \
   .require(with_glx != 'xlib', error_message :'EGL requires DRI, but GLX is being built with xlib support') \
   .disable_auto_if(with_platform_haiku) \
   .allowed()
@@ -569,9 +572,12 @@ if with_gbm
 endif
 
 if with_egl
-  _platforms += 'surfaceless'
-  if with_gbm and not with_platform_android
-    _platforms += 'drm'
+  # Horizon has no DRI.
+  if not with_platform_horizon
+    _platforms += 'surfaceless'
+    if with_gbm and not with_platform_android
+      _platforms += 'drm'
+    endif
   endif
 
   # All the other platforms can be detected and cannot reach the native platform code

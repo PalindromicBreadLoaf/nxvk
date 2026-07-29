@@ -12,7 +12,7 @@ option(
   type : 'array',
   value : ['auto'],
   choices : [
-    'auto', 'x11', 'wayland', 'haiku', 'android', 'windows', 'macos',
+    'auto', 'x11', 'wayland', 'haiku', 'android', 'windows', 'macos', 'horizon',
   ],
   description : 'window systems to support. If this is set to `auto`, all ' +
                 'platforms applicable will be enabled.'
@@ -23,7 +23,7 @@ option(
   type : 'combo',
   value : 'auto',
   choices : [
-    'auto', 'x11', 'haiku', 'android', 'surfaceless',
+    'auto', 'x11', 'haiku', 'android', 'surfaceless', 'horizon',
   ],
   description : 'the window system EGL assumes for EGL_DEFAULT_DISPLAY',
 )
