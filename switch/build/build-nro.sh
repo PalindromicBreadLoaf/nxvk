@@ -83,6 +83,7 @@ PORTLIBS="$DKP/portlibs/switch/lib/libz.a $DKP/portlibs/switch/lib/libexpat.a"
 
 # Zink/Gallium/GL frontend statics added only for gl_* apps so Vulkan .nros stay lean.
 GL_ARCHIVES="
+  src/egl/libEGL.a
   src/mesa/libmesa.a
   src/compiler/glsl/libglsl.a src/compiler/glsl/glcpp/libglcpp.a
   src/mesa/glapi/shared-glapi/libglapi.a src/mesa/glapi/glapi/libglapi_bridge.a
