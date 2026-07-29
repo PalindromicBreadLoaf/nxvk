@@ -123,8 +123,7 @@ endif
 if with_gallium_or_lvp
   subdir('gallium')
 endif
-# These require libgallium (shared_glapi_lib)
-if with_gallium and (with_glx != 'disabled' or with_egl)
+if with_gallium and (with_glx != 'disabled' or with_egl) and not with_platform_horizon
   if with_gles1 and not with_glvnd
     subdir('mesa/glapi/es1api')
   endif
