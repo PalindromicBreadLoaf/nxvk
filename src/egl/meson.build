@@ -158,6 +158,16 @@ elif with_platform_windows
   incs_for_egl += [inc_wgl, inc_gallium, inc_gallium_aux, inc_mesa]
   link_for_egl += libgallium_wgl
 
+elif with_platform_horizon
+  files_egl += files('drivers/horizon/egl_horizon.c')
+  files_egl += main_dispatch_h
+
+  incs_for_egl += [
+    inc_gallium, inc_gallium_aux, inc_gallium_drivers, inc_gallium_winsys,
+    inc_mesa,
+  ]
+  link_for_egl += [libmesa, libgallium, libglapi]
+
 else
   error('No EGL driver available.')
 endif
@@ -204,6 +214,18 @@ if egl_native_platform != ''
   c_args_for_egl += '-D_EGL_NATIVE_PLATFORM=_EGL_PLATFORM_@0@'.format(egl_native_platform.to_upper())
 endif
 
+if with_platform_horizon
+  # Horizon links the whole stack statically into an .nro
+  libegl = static_library(
+    egl_lib_name,
+    files_egl,
+    c_args : [c_args_for_egl],
+    cpp_args : [cpp_args_for_egl],
+    include_directories : incs_for_egl,
+    dependencies : [deps_for_egl, dep_clock, dep_thread, idep_mesautil],
+  )
+else
+
 libegl = shared_library(
   egl_lib_name,
   files_egl,
@@ -223,6 +245,8 @@ libegl = shared_library(
   name_prefix : host_machine.system() == 'windows' ? 'lib' : [],  # always use lib, but avoid warnings on !windows
   vs_module_defs : egl_def
 )
+
+endif
 
 if with_glvnd
   configure_file(

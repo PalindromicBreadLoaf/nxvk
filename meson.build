@@ -581,7 +581,7 @@ if with_egl
   endif
 
   # All the other platforms can be detected and cannot reach the native platform code
-  _undetectable_platforms = ['x11', 'haiku', 'android', 'surfaceless']
+  _undetectable_platforms = ['x11', 'haiku', 'android', 'surfaceless', 'horizon']
 
   # Don't enforce the native platform if none of the undetectable platforms are enabled
   _undetectable_platforms_enabled = []
