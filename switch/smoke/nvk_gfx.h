@@ -302,7 +302,6 @@ static void nvk_target_copy_to_host(struct nvk_ctx *c, VkCommandBuffer cb,
 /* Read a pixel from the readback buffer after submit. */
 static uint32_t nvk_target_pixel(struct nvk_target *t, uint32_t x, uint32_t y)
 {
-   armDCacheFlush(t->readback.cpu, t->readback.size);
    const uint32_t *px = (const uint32_t *)t->readback.cpu;
    return px[(size_t)y * t->w + x];
 }

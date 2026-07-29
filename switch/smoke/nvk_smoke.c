@@ -108,9 +108,7 @@ int main(void)
    LOG("vkQueueWaitIdle -> %d", r);
    if (r != VK_SUCCESS) goto done;
 
-   /* GM20B is not IO-coherent with the CPU and this mapping is CPU-cacheable */
-   armDCacheFlush(cpu, FILL_BYTES);
-
+   /* HOST_COHERENT memory maps uncached. */
    uint32_t *w = (uint32_t *)cpu, bad = 0, first = 0;
    for (uint32_t i = 0; i < FILL_BYTES / 4; i++)
       if (w[i] != FILL_VALUE) { if (!bad) first = i; bad++; }
