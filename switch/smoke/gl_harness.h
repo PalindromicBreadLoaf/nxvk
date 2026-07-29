@@ -205,7 +205,7 @@ static void
 gl_headless_env(const char *mesa_log_path)
 {
    setenv("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER", "1", 1);
-   setenv("MESA_SHADER_CACHE_DISABLE", "1", 1);
+   setenv("MESA_SHADER_CACHE_SHOW_STATS", "1", 1);
    setenv("MESA_LOG_LEVEL", "debug", 1);
    if (!freopen(mesa_log_path, "w", stderr))
       LOG("WARN: could not redirect stderr to %s", mesa_log_path);
