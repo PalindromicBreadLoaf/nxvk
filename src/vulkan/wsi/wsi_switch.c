@@ -504,22 +504,43 @@ wsi_switch_swapchain_destroy(struct wsi_swapchain *wsi_chain,
    return VK_SUCCESS;
 }
 
-/* Tegra X1 is UMA with no VRAM Prefer DEVICE_LOCAL when it
- * exists, otherwise take the first type the image allows.
+/* Tegra X1 is UMA with no VRAM. The display engine scans these images out
+ * without snooping the CPU caches, so a coherent type is required. Prefer one
+ * that is also DEVICE_LOCAL and fall back to DEVICE_LOCAL alone.
  */
 static uint32_t
 wsi_switch_select_memory_type(const struct wsi_device *wsi, uint32_t type_bits)
 {
    uint32_t first = UINT32_MAX;
+   uint32_t coherent = UINT32_MAX;
+   uint32_t device_local = UINT32_MAX;
+
    for (uint32_t t = 0; t < wsi->memory_props.memoryTypeCount; t++) {
       if (!(type_bits & (1u << t)))
          continue;
+
+      const VkMemoryPropertyFlags props =
+         wsi->memory_props.memoryTypes[t].propertyFlags;
+
       if (first == UINT32_MAX)
          first = t;
-      if (wsi->memory_props.memoryTypes[t].propertyFlags &
-          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-         return t;
+
+      if (props & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
+         if (props & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+            return t;
+         if (coherent == UINT32_MAX)
+            coherent = t;
+      } else if (device_local == UINT32_MAX &&
+                 (props & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+         device_local = t;
+      }
    }
+
+   if (coherent != UINT32_MAX)
+      return coherent;
+   if (device_local != UINT32_MAX)
+      return device_local;
+
    return first;
 }
 
