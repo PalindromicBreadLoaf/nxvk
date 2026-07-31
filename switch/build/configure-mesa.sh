@@ -43,7 +43,7 @@ meson setup $RECONF "$BUILD" "$SRC" \
   -Dvideo-codecs= \
   -Dvulkan-layers= \
   -Dvulkan-beta=false \
-  -Dshader-cache=disabled \
+  -Dshader-cache=enabled \
   -Dzstd=disabled \
   -Dlibunwind=disabled \
   -Dlmsensors=disabled \
