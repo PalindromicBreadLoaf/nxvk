@@ -7,9 +7,7 @@ Currently, this is based on **Mesa 26.1.4**.
 
 ## Licensing
 
-Upstream Mesa code retains its existing licences. All new files added by this fork are MIT-licensed
-This fork does **not** copy any GPL-licensed source from the `switch-nvk` project.
-Hardware behaviour was learned from its documentation and then reimplemented by hand.
+Upstream Mesa code retains its existing licences. All new files added by this fork are MIT-licensed.
 
 ## Building
 
@@ -130,3 +128,6 @@ This is to both allow for easier rebasing on newer Mesa versions, and to provide
 
 All contributions are welcome, however, prior to doing any work I recommend opening an issue to discuss what you wish to do
 so that it aligns with the project's scope.
+
+## Support
+If you find NXVK useful and would like to support its development, you can [donate to PalindromicBreadLoaf on Ko-fi](https://ko-fi.com/palindromicbreadloaf).
