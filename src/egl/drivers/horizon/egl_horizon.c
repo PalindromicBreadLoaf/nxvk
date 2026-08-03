@@ -264,6 +264,9 @@ horizon_destroy_surface(_EGLDisplay *disp, _EGLSurface *base)
       for (unsigned i = 0; i < ST_ATTACHMENT_COUNT; i++)
          pipe_resource_reference(&surf->att[i], NULL);
 
+      /* Drop the framebuffer st caches for this drawable before it is freed. */
+      st_api_destroy_drawable(&surf->drawable);
+
       free(surf);
    }
    return EGL_TRUE;
@@ -416,6 +419,10 @@ horizon_initialize_impl(_EGLDisplay *disp)
    disp->Extensions.KHR_no_config_context = EGL_TRUE;
    disp->Extensions.KHR_surfaceless_context = EGL_TRUE;
 
+   disp->Extensions.EXT_create_context_robustness =
+      hdpy->pscreen->caps.device_reset_status_query;
+   disp->RobustBufferAccess = hdpy->pscreen->caps.robust_buffer_access_behavior;
+
    return horizon_add_configs(disp);
 }
 
@@ -478,6 +485,18 @@ horizon_context_attribs(_EGLContext *base, struct st_context_attribs *attribs)
 
    attribs->major = base->ClientMajorVersion;
    attribs->minor = base->ClientMinorVersion;
+
+   if (base->Flags & EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR)
+      attribs->flags |= ST_CONTEXT_FLAG_DEBUG;
+   if (base->Flags & EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR)
+      attribs->flags |= ST_CONTEXT_FLAG_FORWARD_COMPATIBLE;
+   if (base->NoError)
+      attribs->flags |= ST_CONTEXT_FLAG_NO_ERROR;
+
+   if (base->Flags & EGL_CONTEXT_OPENGL_ROBUST_ACCESS_BIT_KHR)
+      attribs->context_flags |= PIPE_CONTEXT_ROBUST_BUFFER_ACCESS;
+   if (base->ResetNotificationStrategy != EGL_NO_RESET_NOTIFICATION_KHR)
+      attribs->context_flags |= PIPE_CONTEXT_LOSE_CONTEXT_ON_RESET;
 
    attribs->visual.buffer_mask = ST_ATTACHMENT_BACK_LEFT_MASK |
                                  ST_ATTACHMENT_DEPTH_STENCIL_MASK;
