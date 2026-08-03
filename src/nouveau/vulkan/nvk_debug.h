@@ -42,6 +42,12 @@ enum nvk_debug {
 
    /* Force all memory allocations to go to GART */
    NVK_DEBUG_FORCE_COHERENT = 1ull << 8,
+
+   /* Log vk_error*() messages.
+    *
+    * A release build drops them unless the instance opts into debug logging
+    */
+   NVK_DEBUG_ERRORS = 1ull << 9,
 };
 
 #endif /* NVK_DEBUG_H */
