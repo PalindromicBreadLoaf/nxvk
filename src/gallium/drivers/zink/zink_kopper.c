@@ -170,6 +170,10 @@ destroy_swapchain(struct zink_screen *screen, struct kopper_swapchain *cswap)
 {
    if (!cswap)
       return;
+   /* A queued async present still submits against this swapchain, so let it
+    * drain before any tear down occurs.
+    */
+   util_queue_fence_wait(&cswap->present_fence);
    util_queue_fence_destroy(&cswap->present_fence);
    for (unsigned i = 0; i < cswap->num_images; i++) {
       /* Destroy the acquire semaphore directly, if any.  If acquire != NULL
@@ -203,9 +207,10 @@ prune_old_swapchains(struct zink_screen *screen, struct kopper_displaytarget *cd
    while (cdt->old_swapchain) {
       struct kopper_swapchain *cswap = cdt->old_swapchain;
       if (cswap->async_presents) {
-         if (wait)
-            continue;
-         return;
+         if (!wait)
+            return;
+
+         util_queue_fence_wait(&cswap->present_fence);
       }
       struct zink_batch_usage *u = cswap->batch_uses;
       if (!zink_screen_usage_check_completion(screen, u)) {
@@ -693,6 +698,12 @@ kill_swapchain(struct zink_context *ctx, struct zink_resource *res)
    mesa_loge("zink: swapchain killed %p\n", res);
    zink_batch_reference_resource(ctx, res);
    struct pipe_resource *pres = screen->base.resource_create(&screen->base, &res->base.b);
+   if (!pres) {
+      /* Out of memory. Leave res on its dead swapchain object instead of
+       * dereferencing.
+       */
+      return;
+   }
    zink_resource_object_reference(screen, &res->obj, zink_resource(pres)->obj);
    res->rebind_count++;
    res->layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -886,7 +897,7 @@ zink_kopper_present_queue(struct zink_screen *screen, struct zink_resource *res,
       mesa_loge("ZINK: failed to allocate cpi!");
       return;
    }
-      
+
    cpi->sem = res->obj->present;
    cpi->res = res;
    cpi->swapchain = cdt->swapchain;
@@ -910,7 +921,7 @@ zink_kopper_present_queue(struct zink_screen *screen, struct zink_resource *res,
       cpi->region.pRectangles = cpi->regions;
       for (unsigned i = 0; i < nrects; i++) {
          cpi->regions[i].offset.x = boxes[i].x;
-         /* 
+         /*
             2) Where is the origin of the VkRectLayerKHR?
 
             RESOLVED: The upper left corner of the presentable image(s) of the swapchain, per the definition of framebuffer coordinates.
