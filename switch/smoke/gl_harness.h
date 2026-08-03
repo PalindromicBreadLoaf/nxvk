@@ -207,10 +207,23 @@ gl_headless_env(const char *mesa_log_path)
    setenv("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER", "1", 1);
    setenv("MESA_SHADER_CACHE_SHOW_STATS", "1", 1);
    setenv("MESA_LOG_LEVEL", "debug", 1);
+   setenv("NVK_DEBUG", "errors", 1);
    if (!freopen(mesa_log_path, "w", stderr))
       LOG("WARN: could not redirect stderr to %s", mesa_log_path);
    setvbuf(stderr, NULL, _IONBF, 0);
    LOG("mesa/zink diagnostics -> %s", mesa_log_path);
+}
+
+PRINTFLIKE(1, 2) static void
+gl_mark(const char *fmt, ...)
+{
+   va_list ap;
+
+   fputs("APP: ", stderr);
+   va_start(ap, fmt);
+   vfprintf(stderr, fmt, ap);
+   va_end(ap);
+   fputc('\n', stderr);
 }
 
 #endif /* GL_HARNESS_H */
