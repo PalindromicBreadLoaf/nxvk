@@ -34,13 +34,55 @@ gen_fence_cmdlist(uint32_t *cmds, uint32_t syncpt_id)
    return 3;
 }
 
-static unsigned
-nvkmd_nvgpu_channel_err(struct nvkmd_nvgpu_exec_ctx *ctx)
+static const char *
+nvkmd_nvgpu_notif_str(uint32_t info32)
+{
+   switch (info32) {
+   case NvNotificationType_FifoErrorIdleTimeout:       return "fifo idle timeout";
+   case NvNotificationType_GrErrorSwNotify:            return "gr exception";
+   case NvNotificationType_GrSemaphoreTimeout:         return "gr semaphore timeout";
+   case NvNotificationType_GrIllegalNotify:            return "gr illegal notify";
+   case NvNotificationType_FifoErrorMmuErrFlt:         return "mmu fault";
+   case NvNotificationType_PbdmaError:                 return "pbdma error";
+   case NvNotificationType_ResetChannelVerifError:     return "reset channel verify error";
+   case NvNotificationType_PbdmaPushbufferCrcMismatch: return "pushbuffer crc mismatch";
+   default:                                            return "unknown";
+   }
+}
+
+/* nvgpu latches the first fault in the channel's error notifier, resets the
+ * channel, and then fails every later submit with Timeout. Report the latched
+ * fault as soon as it is visible, and say where it was noticed so the batch
+ * that raised it can be identified.
+ */
+static VkResult
+nvkmd_nvgpu_report_channel_err(struct nvkmd_nvgpu_exec_ctx *ctx,
+                               struct vk_object_base *log_obj,
+                               const char *when)
 {
    NvNotification notif = {0};
-   if (R_FAILED(nvGpuChannelGetErrorNotification(&ctx->channel, &notif)))
-      return 0;
-   return notif.info32;
+
+   if (R_FAILED(nvGpuChannelGetErrorNotification(&ctx->channel, &notif)) ||
+       notif.info32 == 0)
+      return VK_SUCCESS;
+
+   if (ctx->err_reported)
+      return VK_ERROR_DEVICE_LOST;
+   ctx->err_reported = true;
+
+   NvError err = {0};
+   if (R_FAILED(nvGpuChannelGetErrorInfo(&ctx->channel, &err))) {
+      return vk_errorf(log_obj, VK_ERROR_DEVICE_LOST,
+                       "channel fault %s: notif=%u (%s)", when,
+                       notif.info32, nvkmd_nvgpu_notif_str(notif.info32));
+   }
+
+   return vk_errorf(log_obj, VK_ERROR_DEVICE_LOST,
+                    "channel fault %s: notif=%u (%s) type=%u info=%08x %08x "
+                    "%08x %08x %08x %08x %08x %08x", when, notif.info32,
+                    nvkmd_nvgpu_notif_str(notif.info32), err.type,
+                    err.info[0], err.info[1], err.info[2], err.info[3],
+                    err.info[4], err.info[5], err.info[6], err.info[7]);
 }
 
 /* Ramp inert fence-only kickoffs to ≥ any expected init IB size,
@@ -90,9 +132,10 @@ nvkmd_nvgpu_warmup_channel(struct nvkmd_nvgpu_exec_ctx *ctx,
 
       rc = nvGpuChannelKickoff(&ctx->channel);
       if (R_FAILED(rc)) {
+         nvkmd_nvgpu_report_channel_err(ctx, log_obj, "on the warmup submit");
          result = vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
-                            "warmup kickoff failed at %u dw: 0x%x notif=%u",
-                            dw, (unsigned)rc, nvkmd_nvgpu_channel_err(ctx));
+                            "warmup kickoff failed at %u dw: 0x%x", dw,
+                            (unsigned)rc);
          goto out;
       }
 
@@ -100,10 +143,16 @@ nvkmd_nvgpu_warmup_channel(struct nvkmd_nvgpu_exec_ctx *ctx,
       nvGpuChannelGetFence(&ctx->channel, &f);
       rc = nvFenceWait(&f, NVGPU_SUBMIT_TIMEOUT_US);
       if (R_FAILED(rc)) {
+         nvkmd_nvgpu_report_channel_err(ctx, log_obj, "draining the warmup");
          result = vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
-                            "warmup drain failed at %u dw (id=%u val=%u): "
-                            "0x%x notif=%u", dw, f.id, f.value, (unsigned)rc,
-                            nvkmd_nvgpu_channel_err(ctx));
+                            "warmup drain failed at %u dw (id=%u val=%u): 0x%x",
+                            dw, f.id, f.value, (unsigned)rc);
+         goto out;
+      }
+
+      result = nvkmd_nvgpu_report_channel_err(ctx, log_obj, "during warmup");
+      if (result != VK_SUCCESS) {
+         result = VK_ERROR_INITIALIZATION_FAILED;
          goto out;
       }
    }
@@ -193,6 +242,11 @@ nvkmd_nvgpu_exec_ctx_flush(struct nvkmd_ctx *_ctx,
 {
    struct nvkmd_nvgpu_exec_ctx *ctx = nvkmd_nvgpu_exec_ctx(_ctx);
 
+   VkResult result =
+      nvkmd_nvgpu_report_channel_err(ctx, log_obj, "before this submit");
+   if (result != VK_SUCCESS)
+      return result;
+
    /* Skip empty submits. */
    if (!ctx->has_pending)
       return VK_SUCCESS;
@@ -210,9 +264,9 @@ nvkmd_nvgpu_exec_ctx_flush(struct nvkmd_ctx *_ctx,
 
    rc = nvGpuChannelKickoff(&ctx->channel);
    if (R_FAILED(rc)) {
+      nvkmd_nvgpu_report_channel_err(ctx, log_obj, "on this submit");
       return vk_errorf(log_obj, VK_ERROR_DEVICE_LOST,
-                       "nvGpuChannelKickoff() failed: 0x%x notif=%u",
-                       (unsigned)rc, nvkmd_nvgpu_channel_err(ctx));
+                       "nvGpuChannelKickoff() failed: 0x%x", (unsigned)rc);
    }
 
    nvGpuChannelGetFence(&ctx->channel, &ctx->last_fence);
@@ -259,30 +313,41 @@ nvkmd_nvgpu_exec_ctx_exec(struct nvkmd_ctx *_ctx,
 {
    struct nvkmd_nvgpu_exec_ctx *ctx = nvkmd_nvgpu_exec_ctx(_ctx);
 
-   for (uint32_t i = 0; i < exec_count; i++) {
-      /* Hardware limits shared by all current GPUs. */
-      assert((execs[i].addr % 4) == 0 && (execs[i].size_B % 4) == 0);
-      assert(execs[i].size_B < (1u << 23));
+   for (uint32_t i = 0; i < exec_count;) {
+      uint32_t run = 1;
+      while (execs[i + run - 1].incomplete && i + run < exec_count)
+         run++;
 
       /* Keep room for the trailing fence cmdlist entry. */
-      if (unlikely(ctx->channel.num_entries + 1 >= GPFIFO_QUEUE_SIZE)) {
+      if (unlikely(ctx->channel.num_entries + run >= GPFIFO_QUEUE_SIZE)) {
          VkResult result = nvkmd_nvgpu_exec_ctx_flush(&ctx->base, log_obj);
          if (result != VK_SUCCESS)
             return result;
+
+         if (unlikely(run >= GPFIFO_QUEUE_SIZE)) {
+            return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
+                             "%u chained pushes exceed the gpfifo queue", run);
+         }
       }
 
-      /* A prefetching main entry faults NVK's streams on Tegra. */
-      Result rc = nvGpuChannelAppendEntry(&ctx->channel, execs[i].addr,
-                                          execs[i].size_B / 4,
-                                          GPFIFO_ENTRY_NOT_MAIN |
-                                          GPFIFO_ENTRY_NO_PREFETCH, 0);
-      if (R_FAILED(rc)) {
-         return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
-                          "nvGpuChannelAppendEntry() failed: 0x%x",
-                          (unsigned)rc);
-      }
+      for (uint32_t j = 0; j < run; j++, i++) {
+         /* Hardware limits shared by all current GPUs. */
+         assert((execs[i].addr % 4) == 0 && (execs[i].size_B % 4) == 0);
+         assert(execs[i].size_B < (1u << 23));
 
-      ctx->has_pending = true;
+         /* A prefetching main entry faults NVK's streams on Tegra. */
+         Result rc = nvGpuChannelAppendEntry(&ctx->channel, execs[i].addr,
+                                             execs[i].size_B / 4,
+                                             GPFIFO_ENTRY_NOT_MAIN |
+                                             GPFIFO_ENTRY_NO_PREFETCH, 0);
+         if (R_FAILED(rc)) {
+            return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
+                             "nvGpuChannelAppendEntry() failed: 0x%x",
+                             (unsigned)rc);
+         }
+
+         ctx->has_pending = true;
+      }
    }
 
    return VK_SUCCESS;
@@ -326,13 +391,17 @@ nvkmd_nvgpu_exec_ctx_sync(struct nvkmd_ctx *_ctx,
 
    Result rc = nvFenceWait(&ctx->last_fence, NVGPU_SUBMIT_TIMEOUT_US);
    if (R_FAILED(rc)) {
+      nvkmd_nvgpu_report_channel_err(ctx, log_obj, "waiting on this submit");
       return vk_errorf(log_obj, VK_ERROR_DEVICE_LOST,
-                       "nvFenceWait(id=%u val=%u) failed: 0x%x notif=%u",
+                       "nvFenceWait(id=%u val=%u) failed: 0x%x",
                        ctx->last_fence.id, ctx->last_fence.value,
-                       (unsigned)rc, nvkmd_nvgpu_channel_err(ctx));
+                       (unsigned)rc);
    }
 
-   return VK_SUCCESS;
+   /* A reset channel releases its waiters, so a successful wait proves
+    * nothing. */
+   return nvkmd_nvgpu_report_channel_err(ctx, log_obj,
+                                         "in the work just waited on");
 }
 
 const struct nvkmd_ctx_ops nvkmd_nvgpu_exec_ctx_ops = {

@@ -120,6 +120,9 @@ struct nvkmd_nvgpu_exec_ctx {
    bool has_pending;
    bool has_fence;
    NvFence last_fence;
+
+   /* The latched channel fault has already been logged. */
+   bool err_reported;
 };
 
 NVKMD_DECL_SUBCLASS(ctx, nvgpu_exec);
