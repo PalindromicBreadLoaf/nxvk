@@ -10,6 +10,8 @@
 
 #include "vulkan/wsi/wsi_common.h"
 
+#include "git_sha1.h"
+
 #include "util/build_id.h"
 #include "util/detect_os.h"
 #include "util/mesa-blake3.h"
@@ -96,10 +98,14 @@ nvk_init_debug_flags(struct nvk_instance *instance)
       { "gart", NVK_DEBUG_FORCE_GART },
       { "coherent", NVK_DEBUG_FORCE_COHERENT },
       { "no_compression", NVK_DEBUG_NO_COMPRESSION },
+      { "errors", NVK_DEBUG_ERRORS },
       { NULL, 0 },
    };
 
    instance->debug_flags = parse_debug_string(os_get_option("NVK_DEBUG"), flags);
+
+   if (instance->debug_flags & NVK_DEBUG_ERRORS)
+      instance->vk.enable_debug_logging = true;
 }
 
 static void
@@ -190,10 +196,17 @@ nvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
 
    copy_build_id_to_sha1(instance->driver_build_sha, note);
 #else
-   /* Horizon has no dl_iterate_phdr to locate the ELF build-id note.
-    * Instead, derive a stable driver SHA from the package version. */
-   _mesa_blake3_compute(PACKAGE_VERSION, strlen(PACKAGE_VERSION),
-                        instance->driver_build_sha);
+   /* Horizon has no dl_iterate_phdr to locate the ELF build-id note, so the
+    * driver SHA has to be assembled from what is known at compile time.
+    */
+   static const char build_stamp[] = __DATE__ " " __TIME__;
+   blake3_hasher build_ctx;
+
+   _mesa_blake3_init(&build_ctx);
+   _mesa_blake3_update(&build_ctx, PACKAGE_VERSION, strlen(PACKAGE_VERSION));
+   _mesa_blake3_update(&build_ctx, MESA_GIT_SHA1, strlen(MESA_GIT_SHA1));
+   _mesa_blake3_update(&build_ctx, build_stamp, sizeof(build_stamp));
+   _mesa_blake3_final(&build_ctx, instance->driver_build_sha);
 #endif
 
    *pInstance = nvk_instance_to_handle(instance);

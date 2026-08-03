@@ -45,6 +45,12 @@ enum nvk_debug {
 
    /* Disable image compression */
    NVK_DEBUG_NO_COMPRESSION = 1ull << 9,
+
+   /* Log vk_error*() messages.
+    *
+    * A release build drops them unless the instance opts into debug logging
+    */
+   NVK_DEBUG_ERRORS = 1ull << 10,
 };
 
 enum nvk_experimental {
