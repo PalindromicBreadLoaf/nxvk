@@ -45,7 +45,7 @@ DEFS="-D__SWITCH__ -D_GNU_SOURCE -D_DEFAULT_SOURCE -DVK_USE_PLATFORM_VI_NN"
 GL_INC=""
 GL_DEFS=""
 case "$APP" in
-gl_*)
+gl_*|gles*)
   GL_DEFS="-DHAVE_PTHREAD"
   GL_INC="-I$SRC/src/gallium/include -I$SRC/src/gallium/auxiliary
           -I$SRC/src/gallium/drivers/zink
@@ -92,7 +92,7 @@ GL_ARCHIVES="
   src/gallium/winsys/sw/null/libws_null.a src/gallium/winsys/sw/wrapper/libwsw.a"
 GL_WHOLE=""
 case "$APP" in
-gl_*)
+gl_*|gles*)
   [ -f "$BUILD/src/gallium/drivers/zink/libzink.a" ] || {
      echo "ERROR: $BUILD/src/gallium/drivers/zink/libzink.a not found — build the" >&2
      echo "       Zink stack first (CROSS_BUILD=$SRC/switch/build/cross-zink)." >&2

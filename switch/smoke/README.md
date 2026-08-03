@@ -1,9 +1,15 @@
 # NXVK Validation Programs
 
+The `nvk_*` apps validate the Vulkan driver, the `gl_*`/`gles*` apps
+validate OpenGL through Zink on top of it. Every app is a standalone 
+`.nro` and logs each stage to a log of the same name on the root of
+the SD card.
+
+## Vulkan
+
 These nine `nvk_*.c` apps are used as testing to verify that nothing breaks upon
 any update of the included Mesa version.
-Every app is a standalone `.nro` that runs completely headless (besides 5.9 which does present)
-and logs each stage to a log of the same name on the root of the SD card.
+Every app runs completely headless (besides 5.9 which does present).
 
 | App                | Stage | Test                                                 |
 |--------------------|-------|------------------------------------------------------|
@@ -16,6 +22,32 @@ and logs each stage to a log of the same name on the root of the SD card.
 | `nvk_textures`     | 7     | mipmaps + sRGB decode + BC1 decompression            |
 | `nvk_cubemap`      | 8     | `CUBE_COMPATIBLE` image + `samplerCube`              |
 | `nvk_vi_swapchain` | 9     | WSI present path                                     |
+
+## OpenGL (via Zink)
+
+`gl_linktest` and `gl_gallium` are scaffolding rather than proper feature tests.
+The first only proves the link worked, and the second drives Gallium directly with no
+GL frontend. `gl_smoke` and `gl_tri` render headless through `gl_harness.h`.
+Everything from `gl_tex` on comes up through EGL on a window surface
+(`gl_egl_harness.h`), verifies fixed probe pixels with `glReadPixels` before the
+swap, then presents for ~3 s — so each one is both self-checking and visible.
+Mesa/Zink diagnostics go to `sdmc:/<app>_mesa.log` alongside the app's own log.
+
+| App           | Stage | Test                                                          |
+|---------------|-------|---------------------------------------------------------------|
+| `gl_linktest` | —     | static link only                                              |
+| `gl_gallium`  | —     | raw Gallium `clear_buffer` + readback                         |
+| `gl_caps`     | 0     | emergent GL/GLES version, extension list, gate limits         |
+| `gl_smoke`    | 1     | `glClear` + `glReadPixels`, headless                          |
+| `gl_tri`      | 2     | `glDrawArrays` triangle, GLSL through NAK, headless           |
+| `gl_tex`      | 3     | `glTexImage2D` upload, sampler state, UV interpolation        |
+| `gl_fbo`      | 4     | render to an FBO with depth, then sample the result           |
+| `gl_ubo_vbo`  | 5     | VBO/IBO `glDrawElements` + two std140 uniform blocks          |
+| `gl_egl_tri`  | 6     | EGL window surface + `eglSwapBuffers` present                 |
+| `gl_multi`    | 7     | 64 draws, two programs, state churn, blending, scissor        |
+| `gles3`       | 8     | GLES3 instancing, MRT, transform feedback                     |
+| `gl_feat`     | 9     | desktop GL core instancing, geometry shader, tessellation     |
+| `gl_diag`     | —     | diagnostic to isolate which readback axis is broken           |
 
 ## Build
 
@@ -33,4 +65,19 @@ podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build bash switch/smoke/sh
 
 # build one .nro (or loop over all nine)
 podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build bash switch/build/build-nro.sh nvk_smoke
+```
+
+The GL apps need the Zink build dir instead. The same toolchain image is used, just a different
+configure and a `CROSS_BUILD` pointing at it:
+
+```bash
+# Only needed once
+podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build bash -lc '
+  export PATH=/work/switch/build/native-tools/bin:$PATH
+  bash switch/build/configure-zink.sh
+  ninja -k0 -C switch/build/cross-zink src/nouveau/vulkan/libvulkan_nouveau.so || true'
+
+podman run --rm -v "$PWD:/work:z" -w /work \
+  -e CROSS_BUILD=/work/switch/build/cross-zink \
+  nvk-switch-build bash switch/build/build-nro.sh gl_tri
 ```
