@@ -166,8 +166,17 @@ int main(void)
 
       glDrawArrays(GL_TRIANGLES, 0, 3);
 
+      if (frame < 3 || frame % 30 == 0)
+         gl_mark("frame %d/%d", frame, FRAMES);
+
       if (!eglSwapBuffers(dpy, surf)) {
-         LOG("FAIL: eglSwapBuffers frame %d returned 0x%04x", frame, eglGetError());
+         EGLint eerr = eglGetError();
+
+         LOG("FAIL: eglSwapBuffers frame %d/%d returned 0x%04x%s", frame, FRAMES,
+             eerr,
+             eerr == EGL_BAD_SURFACE
+                ? " (EGL_BAD_SURFACE: swapchain out of date)" : "");
+         gl_mark("eglSwapBuffers frame %d FAILED 0x%04x", frame, eerr);
          rc = 1;
          break;
       }
