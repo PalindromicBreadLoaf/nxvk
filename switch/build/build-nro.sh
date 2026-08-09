@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright © 2026 PalindromicBreadLoaf (palindromicbreadloaf@tuta.com)
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 #
 # Link one test app against the built static NVK driver and package
 # it as a runnable Switch .nro.
@@ -19,7 +19,9 @@ VERSION="${VERSION:-0.1.0}"
 SRC="${SRC:-$(pwd)}"
 BUILD="${CROSS_BUILD:-$SRC/switch/build/cross}"
 SMOKE="$SRC/switch/smoke"
-OUT="$SMOKE/out"
+APP_SOURCE="${APP_SOURCE:-$SMOKE/$APP.c}"
+OUTPUT_NAME="${OUTPUT_NAME:-$APP}"
+OUT="${OUTPUT_DIR:-$SMOKE/out}"
 OBJ="$OUT/obj"
 mkdir -p "$OBJ"
 
@@ -32,7 +34,7 @@ STRIP=$DKP/devkitA64/bin/aarch64-none-elf-strip
    echo "ERROR: $BUILD/src/nouveau/vulkan/libnvk.a not found" >&2
    exit 1
 }
-[ -f "$SMOKE/$APP.c" ] || { echo "ERROR: $SMOKE/$APP.c not found" >&2; exit 1; }
+[ -f "$APP_SOURCE" ] || { echo "ERROR: $APP_SOURCE not found" >&2; exit 1; }
 
 ARCH="-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE"
 # Per-function/data sections so the final link can drop any dead code.
@@ -40,6 +42,7 @@ SECTIONS="-ffunction-sections -fdata-sections"
 # Mesa's vendored Vulkan headers live in include/.
 INC="-I$SRC/include -I$DKP/libnx/include"
 DEFS="-D__SWITCH__ -D_GNU_SOURCE -D_DEFAULT_SOURCE -DVK_USE_PLATFORM_VI_NN"
+EXTRA_DEFS="${EXTRA_DEFS:-}"
 
 # Gallium/Zink client headers for gl_* apps.
 GL_INC=""
@@ -63,7 +66,7 @@ gl_*|gles*)
 esac
 
 echo "=== compiling $APP.c ==="
-$GCC -c "$SMOKE/$APP.c"     -o "$OBJ/$APP.o"        $ARCH $SECTIONS $DEFS $GL_DEFS $INC $GL_INC -O2 -Wall -Wno-unused-function
+$GCC -c "$APP_SOURCE"       -o "$OBJ/$APP.o"        $ARCH $SECTIONS $DEFS $GL_DEFS $EXTRA_DEFS $INC $GL_INC -O2 -Wall -Wno-unused-function
 $GCC -c "$SMOKE/nvk_compat.c" -o "$OBJ/nvk_compat.o" $ARCH $SECTIONS $DEFS $INC -O2 -Wall
 
 # Support archives libnvk.a pulls in, in dependency order.
@@ -119,9 +122,9 @@ $GXX -specs="$DKP/libnx/switch.specs" $ARCH \
 echo "=== packaging NRO ==="
 "$STRIP" "$OBJ/$APP.elf" -o "$OBJ/$APP.stripped.elf"
 "$DKP/tools/bin/nacptool" --create "$TITLE" "nxvk" "$VERSION" "$OBJ/$APP.nacp"
-"$DKP/tools/bin/elf2nro" "$OBJ/$APP.stripped.elf" "$OUT/$APP.nro" \
+"$DKP/tools/bin/elf2nro" "$OBJ/$APP.stripped.elf" "$OUT/$OUTPUT_NAME.nro" \
   --icon="$DKP/libnx/default_icon.jpg" --nacp="$OBJ/$APP.nacp"
 
 echo "=== DONE ==="
-echo "Output is located at switch/smoke/out/$APP.nro"
-ls -la "$OUT/$APP.nro"
+echo "Output is located at $OUT/$OUTPUT_NAME.nro"
+ls -la "$OUT/$OUTPUT_NAME.nro"

@@ -1,6 +1,6 @@
 /*
  * Copyright © 2026 PalindromicBreadLoaf (palindromicbreadloaf@tuta.com)
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-2.0-or-later
  *
  * Shared unit-cube geometry for the 3D validation apps.
  * Eight coloured corners plus a 36-entry index list (12 triangles).

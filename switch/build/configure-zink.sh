@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright © 2026 PalindromicBreadLoaf (palindromicbreadloaf@tuta.com)
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 #
 # Cross-configure Mesa for Horizon for building NVK and Zink on top of it.
 # This is just configure-mesa.sh with the GL-related options flipped on.

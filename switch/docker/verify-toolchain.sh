@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright © 2026 PalindromicBreadLoaf (palindromicbreadloaf@tuta.com)
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 #
 # This checks to verify that the build environment is working as expected.
 # Run inside the image with the repo at /work:
