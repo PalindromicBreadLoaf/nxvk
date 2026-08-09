@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright © 2026 PalindromicBreadLoaf (palindromicbreadloaf@tuta.com)
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 #
 # Build mesa_clc + vtn_bindgen NATIVELY so the cross build can consume them via -Dmesa-clc=system.
 #

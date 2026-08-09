@@ -1,5 +1,5 @@
 # Copyright © 2026 PalindromicBreadLoaf (palindromicbreadloaf@tuta.com)
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 #
 # Toolchain image that cross-builds Mesa/NVK (Vulkan) for the Nintendo Switch (GM20B).
 #

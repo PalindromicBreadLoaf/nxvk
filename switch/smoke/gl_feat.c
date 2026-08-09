@@ -1,6 +1,6 @@
 /*
  * Copyright © 2026 PalindromicBreadLoaf (palindromicbreadloaf@tuta.com)
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-2.0-or-later
  *
  * Prove the shader stages behind Zink's GL version gates actually
  * render.

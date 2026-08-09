@@ -1,6 +1,6 @@
 /*
  * Copyright © 2026 PalindromicBreadLoaf (palindromicbreadloaf@tuta.com)
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 /* Horizon has no mmap() and no advisory file locking, so neither of Mesa's

@@ -11,7 +11,12 @@ Currently, this is based on **Mesa 26.1.4**.
 
 ## Licensing
 
-Upstream Mesa code retains its existing licences. All new files added by this fork are MIT-licensed.
+Upstream Mesa code retains its existing licences. All new files added by this fork are **GPL-2.0-or-later**.
+
+Because Horizon links `libnvk.a` statically, an application linking the driver forms a combined
+work covered by the GPL. You may ship binaries freely, however, the application's source must be
+available to whoever receives them. Permissively licensed ports (MIT, BSD, etc.) can link it and
+keep their own licence on their own source. See [`docs/LICENSING.md`](docs/LICENSING.md).
 
 ## Building
 
@@ -153,6 +158,12 @@ symbol.
 
 Currently, you get OpenGL 4.5 core, a compatibility context, and OpenGL ES 2.0 / 3.2.
 
+Note that performance will differ from switch-mesa's nouveau driver. Whether performance is greater or not
+is entirely dependent on the scene, and can only be tested via trying it yourself. NXVK over switch-mesa also
+adds ~15MBs to the binary for including both Vulkan and GL.
+
+It is recommended not to link in GL support if your project doesn't use GL.
+
 ### What you link against
 
 Everything from the Vulkan list above (Zink still needs the whole driver), plus, from
@@ -171,7 +182,7 @@ Look for changes there if this list is outdated ever.
 
 ### Linking
 
-Everything from the Vulkan linking rules still applies, and in addition:
+Everything from the Vulkan linking rules still apply, and in addition:
 
 - The GL archives go inside `--whole-archive` alongside `libnvk.a`.
 - Do **not** link `libglsl_util.a`. It multiply-defines `_mesa_error_no_memory` against `libmesa.a`.

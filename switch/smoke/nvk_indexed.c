@@ -1,6 +1,6 @@
 /*
  * Copyright © 2026 PalindromicBreadLoaf (palindromicbreadloaf@tuta.com)
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-2.0-or-later
  *
  * vkCmdDrawIndexed with both UINT16 and UINT32 index buffers.
  */

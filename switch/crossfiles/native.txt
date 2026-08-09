@@ -1,5 +1,5 @@
 # Copyright © 2026 PalindromicBreadLoaf (palindromicbreadloaf@tuta.com)
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 #
 # Meson NATIVE file. Build-time host tools MUST use the x86 pkg-config/llvm-config
 

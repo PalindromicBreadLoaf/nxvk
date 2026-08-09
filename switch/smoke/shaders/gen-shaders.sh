@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright © 2026 PalindromicBreadLoaf (palindromicbreadloaf@tuta.com)
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 #
 # Compile the GLSL sources in this directory to SPIR-V and emit each as a C header
 # Run inside the toolchain image (carries glslangValidator):
