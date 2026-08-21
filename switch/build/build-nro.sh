@@ -6,7 +6,7 @@
 # it as a runnable Switch .nro.
 #
 # Run inside the toolchain image with the repo bind-mounted at /work:
-#   podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build \
+#   podman run --rm -v "$PWD:/work:z" -w /work nxvk \
 #       bash switch/build/build-nro.sh nvk_smoke
 #
 # Output: switch/smoke/out/<app>.nro

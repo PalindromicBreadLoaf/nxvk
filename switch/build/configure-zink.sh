@@ -6,7 +6,7 @@
 # This is just configure-mesa.sh with the GL-related options flipped on.
 #
 # Run inside the toolchain image with the repo bind-mounted at /work:
-#   podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build \
+#   podman run --rm -v "$PWD:/work:z" -w /work nxvk \
 #       bash switch/build/configure-zink.sh
 set -euo pipefail
 

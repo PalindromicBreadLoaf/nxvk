@@ -5,7 +5,7 @@
 # Build a prebuilt Rust std SYSROOT for the aarch64-switch-horizon target so that meson finds std.
 #
 # Run inside the toolchain image with the repo bind-mounted at /work:
-#   podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build \
+#   podman run --rm -v "$PWD:/work:z" -w /work nxvk \
 #       bash switch/rust/build-std-sysroot.sh
 set -e
 
