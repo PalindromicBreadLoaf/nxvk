@@ -102,6 +102,22 @@ if has_spirv_link_workaround
   _libmesaclc_c_args += ['-DHAS_SPIRV_LINK_LLVM_WORKAROUND=1']
 endif
 
+has_spirv_set_use_highest_version = cpp.compiles(
+  '''
+  #include <spirv-tools/linker.hpp>
+  int main(void) {
+    spvtools::LinkerOptions opts;
+    opts.SetUseHighestVersion(true);
+    return 0;
+  }
+  ''',
+  dependencies : dep_spirv_tools,
+  name : 'spvtools::LinkerOptions::SetUseHighestVersion',
+)
+if has_spirv_set_use_highest_version
+  _libmesaclc_c_args += ['-DHAS_SPIRV_SET_USE_HIGHEST_VERSION=1']
+endif
+
 _libmesaclc = static_library(
   'libmesaclc',
   files_libmesaclc,

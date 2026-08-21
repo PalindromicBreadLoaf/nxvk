@@ -2089,10 +2089,15 @@ endif
 with_spirv_tools = get_option('spirv-tools') \
     .enable_if(with_clc, error_message : 'CLC requires SPIRV-Tools')
 
+_spirv_tools_min_version = '>= 2024.1'
+if dep_llvm.found() and not dep_llvm.version().version_compare('>= 17.0')
+  _spirv_tools_min_version = '>= 2023.1'
+endif
+
 dep_spirv_tools = dependency(
   'SPIRV-Tools',
   required : with_spirv_tools,
-  version : '>= 2024.1',
+  version : _spirv_tools_min_version,
 )
 if dep_spirv_tools.found()
   pre_args += '-DHAVE_SPIRV_TOOLS'
