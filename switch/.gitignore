@@ -3,3 +3,4 @@ build/native/
 build/native-tools/
 build/cross/
 build/cross-zink/
+build/pkg/lib
