@@ -4,10 +4,10 @@
 # Toolchain image that cross-builds Mesa/NVK (Vulkan) for the Nintendo Switch (GM20B).
 #
 # Build (ested on Fedora Linux with Podman):
-#   podman build -t nvk-switch-build switch/docker
+#   podman build -t nxvk switch/docker
 #
 # Everything runs inside the image with the repo bind-mounted at /work:
-#   podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build bash switch/docker/verify-toolchain.sh
+#   podman run --rm -v "$PWD:/work:z" -w /work nxvk bash switch/docker/verify-toolchain.sh
 FROM docker.io/devkitpro/devkita64
 
 ENV DEBIAN_FRONTEND=noninteractive

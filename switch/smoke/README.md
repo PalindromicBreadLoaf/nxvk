@@ -53,7 +53,7 @@ Mesa/Zink diagnostics go to `sdmc:/<app>_mesa.log` alongside the app's own log.
 
 ```bash
 # Only needed once
-podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build bash -lc '
+podman run --rm -v "$PWD:/work:z" -w /work nxvk bash -lc '
   export PATH=/work/switch/build/native-tools/bin:$PATH
   bash switch/build/build-native-tools.sh
   bash switch/build/configure-mesa.sh
@@ -61,10 +61,10 @@ podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build bash -lc '
 # (the final .so link fails intentionally. Don't worry about the error)
 
 # regenerate shaders
-podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build bash switch/smoke/shaders/gen-shaders.sh
+podman run --rm -v "$PWD:/work:z" -w /work nxvk bash switch/smoke/shaders/gen-shaders.sh
 
 # build one .nro (or loop over all nine)
-podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build bash switch/build/build-nro.sh nvk_smoke
+podman run --rm -v "$PWD:/work:z" -w /work nxvk bash switch/build/build-nro.sh nvk_smoke
 ```
 
 The GL apps need the Zink build dir instead. The same toolchain image is used, just a different
@@ -72,12 +72,12 @@ configure and a `CROSS_BUILD` pointing at it:
 
 ```bash
 # Only needed once
-podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build bash -lc '
+podman run --rm -v "$PWD:/work:z" -w /work nxvk bash -lc '
   export PATH=/work/switch/build/native-tools/bin:$PATH
   bash switch/build/configure-zink.sh
   ninja -k0 -C switch/build/cross-zink src/nouveau/vulkan/libvulkan_nouveau.so || true'
 
 podman run --rm -v "$PWD:/work:z" -w /work \
   -e CROSS_BUILD=/work/switch/build/cross-zink \
-  nvk-switch-build bash switch/build/build-nro.sh gl_tri
+  nxvk bash switch/build/build-nro.sh gl_tri
 ```

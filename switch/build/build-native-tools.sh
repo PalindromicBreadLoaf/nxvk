@@ -5,7 +5,7 @@
 # Build mesa_clc + vtn_bindgen NATIVELY so the cross build can consume them via -Dmesa-clc=system.
 #
 # Run inside the toolchain image with the repo bind-mounted at /work:
-#   podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build \
+#   podman run --rm -v "$PWD:/work:z" -w /work nxvk \
 #       bash switch/build/build-native-tools.sh
 set -euo pipefail
 
