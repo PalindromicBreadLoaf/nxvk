@@ -28,9 +28,10 @@ CROSS  := switch/build/cross
 ZINK   := switch/build/cross-zink
 PKGDIR := switch/build/pkg
 
-NATIVE_STAMP := switch/build/native-tools/bin/mesa_clc
-CROSS_STAMP  := $(CROSS)/build.ninja
-ZINK_STAMP   := $(ZINK)/build.ninja
+NATIVE_STAMP  := switch/build/native-tools/bin/mesa_clc
+SYSROOT_STAMP := switch/rust/sysroot/.stamp
+CROSS_STAMP   := $(CROSS)/build.ninja
+ZINK_STAMP    := $(ZINK)/build.ninja
 
 ifeq ($(strip $(CONTAINER)),)
 DRUN :=
@@ -91,7 +92,12 @@ $(NATIVE_STAMP): | ensure-image
 	@echo ">> building native tools"
 	$(DRUN) bash switch/build/build-native-tools.sh
 
-$(CROSS_STAMP): | $(NATIVE_STAMP)
+$(SYSROOT_STAMP): | ensure-image
+	@echo ">> building Rust std sysroot for aarch64-switch-horizon"
+	$(DRUN) bash switch/rust/build-std-sysroot.sh
+	@touch $(SYSROOT_STAMP)
+
+$(CROSS_STAMP): | $(NATIVE_STAMP) $(SYSROOT_STAMP)
 	@echo ">> configuring Vulkan build"
 	$(DRUN) bash switch/build/configure-mesa.sh
 
@@ -100,7 +106,7 @@ driver: $(CROSS_STAMP)
 	$(DRUN) bash -lc '$(NINJA_ENV) ninja -C $(CROSS) $(DRIVER_TARGETS)'
 	@test -f $(CROSS)/src/nouveau/vulkan/libnvk.a || { echo "ERROR: libnvk.a not produced"; exit 1; }
 
-$(ZINK_STAMP): | $(NATIVE_STAMP)
+$(ZINK_STAMP): | $(NATIVE_STAMP) $(SYSROOT_STAMP)
 	@echo ">> configuring OpenGL build"
 	$(DRUN) bash switch/build/configure-zink.sh
 
@@ -191,7 +197,7 @@ clean:
 	rm -rf $(CROSS) $(ZINK) $(PKGDIR) switch/smoke/out
 
 distclean: clean
-	rm -rf switch/build/native switch/build/native-tools
+	rm -rf switch/build/native switch/build/native-tools switch/rust/sysroot
 
 help:
 	@echo "Targets:"
