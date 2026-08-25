@@ -22,8 +22,9 @@ RUN python3 -m pip install --break-system-packages --no-cache-dir 'meson>=1.4' m
 # Rust
 ENV RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo
 ENV PATH="/opt/rust/cargo/bin:${PATH}"
+ENV RUST_NIGHTLY=nightly-2026-07-02
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-        sh -s -- -y --default-toolchain nightly --profile minimal --component rust-src \
+        sh -s -- -y --default-toolchain ${RUST_NIGHTLY} --profile minimal --component rust-src \
     && rustc --version && cargo --version
 
 # bindgen: C->Rust FFI for NAK. cbindgen: Rust->C headers for NIL.
