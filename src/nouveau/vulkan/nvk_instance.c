@@ -100,6 +100,7 @@ nvk_init_debug_flags(struct nvk_instance *instance)
       { "gpu_uncached", NVK_DEBUG_GPU_UNCACHED },
       { "cpu_wait", NVK_DEBUG_CPU_WAIT },
       { "no_mem_cache", NVK_DEBUG_NO_MEM_CACHE },
+      { "full_arena_flush", NVK_DEBUG_FULL_ARENA_FLUSH },
       { NULL, 0 },
    };
 

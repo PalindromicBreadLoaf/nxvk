@@ -121,7 +121,9 @@ nvk_descriptor_table_write_locked(struct nvk_descriptor_table *table,
 
    assert(desc_size == table->desc_size);
    memcpy(map, desc_data, table->desc_size);
-   nvk_mem_arena_set_map_dirty(&table->arena);
+   nvk_contiguous_mem_arena_set_map_dirty_offset(&table->arena,
+                                                 index * table->desc_size,
+                                                 table->desc_size);
 }
 
 static void
@@ -131,7 +133,9 @@ nvk_descriptor_table_clear_locked(struct nvk_descriptor_table *table,
    void *map = nvk_descriptor_table_map_locked(table, index);
 
    memset(map, 0, table->desc_size);
-   nvk_mem_arena_set_map_dirty(&table->arena);
+   nvk_contiguous_mem_arena_set_map_dirty_offset(&table->arena,
+                                                 index * table->desc_size,
+                                                 table->desc_size);
 }
 
 static VkResult
