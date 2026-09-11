@@ -119,7 +119,7 @@ nvkmd_nvgpu_syncobj_wait(struct vk_device *device,
    /* Submits are flushed synchronously. */
    if (state == NVKMD_NVGPU_SYNC_RESET)
       return VK_TIMEOUT;
-   
+
    for (;;) {
       const uint64_t now_ns = os_time_get_nano();
       uint64_t rel_us = now_ns < abs_timeout_ns
