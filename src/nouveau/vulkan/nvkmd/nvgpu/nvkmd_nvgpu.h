@@ -25,6 +25,9 @@
 /* Top slice of the arena. */
 #define NVKMD_NVGPU_REPLAY_HEAP_SIZE_B ((uint64_t)1 << 30)
 
+/* GPU submit wait bound */
+#define NVGPU_SUBMIT_TIMEOUT_US 10000000
+
 struct nvkmd_nvgpu_pdev {
    struct nvkmd_pdev base;
 
@@ -39,7 +42,9 @@ NVKMD_DECL_SUBCLASS(pdev, nvgpu);
 extern const struct vk_sync_type nvkmd_nvgpu_syncobj_type;
 
 /* Route a channel completion fence into a signalled syncobj. */
-void nvkmd_nvgpu_syncobj_set_fence(struct vk_sync *sync, const NvFence *fence);
+void nvkmd_nvgpu_syncobj_set_fence(struct vk_sync *sync,
+                                   NvGpuChannel *channel,
+                                   const NvFence *fence);
 
 /* Whether a vk_sync can be resolved to the syncpoint threshold that releases
  * it.
@@ -121,17 +126,22 @@ struct nvkmd_nvgpu_exec_ctx {
    /* Zcull context bound to the channel. */
    struct nvkmd_mem *zcull_mem;
 
-   /* Builtin buffer holding the syncpt-increment fence cmdlist. */
+   /* Builtin buffer holding the syncpt-increment fence cmdlist and the L2
+    * cache-acquire cmdlist. */
    struct nvkmd_mem *fence_mem;
    iova_t fence_cmds_addr;
    uint32_t fence_cmds_dw;
+   iova_t acquire_cmds_addr;
+   uint32_t acquire_cmds_dw;
+   /* One no-op dword */
+   iova_t acquire_sync_addr;
 
    /* Ring of syncpt-wait cmdlists. */
    struct nvkmd_mem *wait_mem;
    uint64_t wait_head_B;
 
-   /* Whether pushbufs have been appended since the last kickoff. */
    bool has_pending;
+   bool has_acquire;
    bool has_fence;
    NvFence last_fence;
 

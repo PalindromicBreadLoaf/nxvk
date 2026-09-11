@@ -8,10 +8,12 @@
 #include "util/macros.h"
 #include "util/os_time.h"
 #include "util/simple_mtx.h"
+#include "vk_log.h"
 
 #include <stdint.h>
 
 #include <switch/nvidia/fence.h>
+#include <switch/nvidia/gpu_channel.h>
 #include <switch/result.h>
 
 /* A binary vk_sync backed by an nvgpu channel completion NvFence.
@@ -32,6 +34,7 @@ struct nvkmd_nvgpu_syncobj {
    simple_mtx_t mutex;
    enum nvkmd_nvgpu_sync_state state;
    NvFence fence;
+   NvGpuChannel *channel;
 };
 
 static struct nvkmd_nvgpu_syncobj *
@@ -42,13 +45,15 @@ to_nvgpu_syncobj(struct vk_sync *sync)
 }
 
 void
-nvkmd_nvgpu_syncobj_set_fence(struct vk_sync *sync, const NvFence *fence)
+nvkmd_nvgpu_syncobj_set_fence(struct vk_sync *sync, NvGpuChannel *channel,
+                              const NvFence *fence)
 {
    struct nvkmd_nvgpu_syncobj *syncobj = to_nvgpu_syncobj(sync);
 
    simple_mtx_lock(&syncobj->mutex);
    if (fence != NULL) {
       syncobj->fence = *fence;
+      syncobj->channel = channel;
       syncobj->state = NVKMD_NVGPU_SYNC_SUBMITTED;
    } else {
       syncobj->state = NVKMD_NVGPU_SYNC_SIGNALED;
@@ -131,6 +136,7 @@ nvkmd_nvgpu_syncobj_wait(struct vk_device *device,
    simple_mtx_lock(&syncobj->mutex);
    const enum nvkmd_nvgpu_sync_state state = syncobj->state;
    const NvFence fence = syncobj->fence;
+   NvGpuChannel *const channel = syncobj->channel;
    simple_mtx_unlock(&syncobj->mutex);
 
    if (state == NVKMD_NVGPU_SYNC_SIGNALED)
@@ -148,8 +154,9 @@ nvkmd_nvgpu_syncobj_wait(struct vk_device *device,
       const uint64_t now_ns = os_time_get_nano();
       uint64_t rel_us = now_ns < abs_timeout_ns
                         ? (abs_timeout_ns - now_ns) / 1000 : 0;
-      if (rel_us > (uint64_t)INT32_MAX)
-         rel_us = INT32_MAX;
+
+      if (rel_us > NVGPU_SUBMIT_TIMEOUT_US)
+         rel_us = NVGPU_SUBMIT_TIMEOUT_US;
 
       NvFence f = fence;
       Result rc = nvFenceWait(&f, (s32)rel_us);
@@ -159,6 +166,17 @@ nvkmd_nvgpu_syncobj_wait(struct vk_device *device,
             syncobj->state = NVKMD_NVGPU_SYNC_SIGNALED;
          simple_mtx_unlock(&syncobj->mutex);
          return VK_SUCCESS;
+      }
+
+      if (channel != NULL) {
+         NvNotification notif = {0};
+         if (R_SUCCEEDED(nvGpuChannelGetErrorNotification(channel, &notif)) &&
+             notif.info32 != 0) {
+            return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                             "channel fault while waiting on syncpt "
+                             "(id=%u val=%u): notif=%u",
+                             fence.id, fence.value, notif.info32);
+         }
       }
 
       if (os_time_get_nano() >= abs_timeout_ns)

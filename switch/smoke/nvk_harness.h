@@ -44,11 +44,15 @@ static void nvk_logf(const char *fmt, ...)
 }
 #define LOG(...) nvk_logf(__VA_ARGS__)
 
+static bool g_nvk_socket_up;
+
 static void nvk_log_open(const char *path)
 {
    g_nvk_log = fopen(path, "w");
-   if (__nxlink_host.s_addr != 0 && R_SUCCEEDED(socketInitializeDefault()))
+   if (__nxlink_host.s_addr != 0 && R_SUCCEEDED(socketInitializeDefault())) {
+      g_nvk_socket_up = true;
       nxlinkStdio();
+   }
 }
 
 /* driver diagnostics */
@@ -256,6 +260,7 @@ static void nvk_teardown(struct nvk_ctx *c)
    }
    LOG("teardown: instance/device destroyed");
    if (g_nvk_mesa_log) { fclose(g_nvk_mesa_log); g_nvk_mesa_log = NULL; }
+   if (g_nvk_socket_up) { socketExit(); g_nvk_socket_up = false; }
 }
 
 #endif /* NVK_HARNESS_H */
