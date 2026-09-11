@@ -63,6 +63,12 @@ enum nvk_debug {
 
    /* Flush whole mem arenas on submit instead of only their dirty ranges */
    NVK_DEBUG_FULL_ARENA_FLUSH = 1ull << 14,
+
+   /* Log the WSI present path and its per-frame counters */
+   NVK_DEBUG_WSI = 1ull << 15,
+
+   /* Block the CPU on the render fence and dequeue through libnx. */
+   NVK_DEBUG_CPU_PRESENT = 1ull << 16,
 };
 
 enum nvk_experimental {

@@ -103,6 +103,8 @@ nvk_init_debug_flags(struct nvk_instance *instance)
       { "cpu_wait", NVK_DEBUG_CPU_WAIT },
       { "no_mem_cache", NVK_DEBUG_NO_MEM_CACHE },
       { "full_arena_flush", NVK_DEBUG_FULL_ARENA_FLUSH },
+      { "wsi", NVK_DEBUG_WSI },
+      { "cpu_present", NVK_DEBUG_CPU_PRESENT },
       { NULL, 0 },
    };
 

@@ -3,9 +3,11 @@
  * SPDX-License-Identifier: MIT
  */
 #include "nvk_wsi.h"
+#include "nvk_device.h"
 #include "nvk_image.h"
 #include "nvk_instance.h"
 #include "nvkmd/nvkmd.h"
+#include "vk_fence.h"
 #include "wsi_common.h"
 
 static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
@@ -50,6 +52,18 @@ nvk_wsi_get_vi_scanout_params(VkDevice _device, VkImage _image,
 
    return true;
 }
+
+static bool
+nvk_wsi_get_vi_fence_syncpt(VkDevice _device, VkFence _fence,
+                            struct wsi_vi_syncpt *syncpt)
+{
+   VK_FROM_HANDLE(nvk_device, dev, _device);
+   VK_FROM_HANDLE(vk_fence, fence, _fence);
+
+   return nvkmd_dev_get_sync_syncpt(dev->nvkmd,
+                                    vk_fence_get_active_sync(fence),
+                                    &syncpt->id, &syncpt->value);
+}
 #endif
 
 VkResult
@@ -75,6 +89,10 @@ nvk_init_wsi(struct nvk_physical_device *pdev)
 
 #ifdef VK_USE_PLATFORM_VI_NN
    pdev->wsi_device.vi.get_scanout_params = nvk_wsi_get_vi_scanout_params;
+   pdev->wsi_device.vi.get_fence_syncpt = nvk_wsi_get_vi_fence_syncpt;
+   pdev->wsi_device.vi.debug = (pdev->debug_flags & NVK_DEBUG_WSI) != 0;
+   pdev->wsi_device.vi.force_cpu_present =
+      (pdev->debug_flags & NVK_DEBUG_CPU_PRESENT) != 0;
 #endif
 
    pdev->vk.wsi_device = &pdev->wsi_device;

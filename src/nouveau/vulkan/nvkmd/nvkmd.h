@@ -27,6 +27,7 @@ struct nvkmd_va;
 
 struct _drmDevice;
 struct vk_object_base;
+struct vk_sync;
 struct vk_sync_wait;
 struct vk_sync_signal;
 
@@ -197,6 +198,9 @@ struct nvkmd_dev_ops {
                           struct vk_object_base *log_obj,
                           enum nvkmd_engines engines,
                           struct nvkmd_ctx **ctx_out);
+
+   bool (*get_sync_syncpt)(struct nvkmd_dev *dev, struct vk_sync *sync,
+                           uint32_t *id_out, uint32_t *value_out);
 };
 
 struct nvkmd_dev {
@@ -574,6 +578,16 @@ nvkmd_mem_export_dma_buf(struct nvkmd_mem *mem,
    assert(mem->flags & NVKMD_MEM_SHARED);
 
    return mem->ops->export_dma_buf(mem, log_obj, fd_out);
+}
+
+static inline bool
+nvkmd_dev_get_sync_syncpt(struct nvkmd_dev *dev, struct vk_sync *sync,
+                          uint32_t *id_out, uint32_t *value_out)
+{
+   if (dev->ops->get_sync_syncpt == NULL)
+      return false;
+
+   return dev->ops->get_sync_syncpt(dev, sync, id_out, value_out);
 }
 
 static inline bool
