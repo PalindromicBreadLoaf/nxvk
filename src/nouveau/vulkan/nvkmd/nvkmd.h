@@ -57,6 +57,9 @@ enum nvkmd_mem_flags {
 
    /** This memory object has coherent CPU maps */
    NVKMD_MEM_COHERENT   = 1 << 5,
+
+   /** GPU accesses to this memory must bypass the GPU cache hierarchy */
+   NVKMD_MEM_GPU_UNCACHED = 1 << 6,
 };
 
 #define NVKMD_MEM_PLACEMENT_FLAGS \

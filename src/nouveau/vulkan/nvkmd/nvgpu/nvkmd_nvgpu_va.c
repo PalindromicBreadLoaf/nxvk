@@ -12,6 +12,7 @@
 #include "vk_log.h"
 
 #include <inttypes.h>
+#include <stdio.h>
 
 #include <switch/result.h>
 
@@ -150,11 +151,15 @@ nvkmd_nvgpu_va_bind_mem(struct nvkmd_va *_va,
 
    assert(_mem->dev == _va->dev);
 
+   const uint32_t map_flags = NvMapBufferFlags_FixedOffset |
+      ((_mem->flags & NVKMD_MEM_GPU_UNCACHED) ? 0
+                                              : NvMapBufferFlags_IsCacheable);
+
    /* The libnx nvAddressSpaceMapFixed wrapper always maps the whole buffer. */
    const iova_t target = va->base.addr + va_offset_B;
    iova_t mapped = 0;
    Result rc = nvioctlNvhostAsGpu_MapBufferEx(
-      dev->addr_space.fd, NvMapBufferFlags_FixedOffset,
+      dev->addr_space.fd, map_flags,
       (uint32_t)va->base.pte_kind, mem->nvmap.handle,
       (uint32_t)NVKMD_NVGPU_SMALL_PAGE_SIZE_B,
       mem_offset_B /* buffer_offset */, range_B /* mapping_size */,
@@ -165,6 +170,16 @@ nvkmd_nvgpu_va_bind_mem(struct nvkmd_va *_va,
    }
 
    assert(mapped == target);
+
+   if (unlikely(_va->dev->pdev->debug_flags & NVK_DEBUG_VM)) {
+      fprintf(stderr, "  map nvmap<0x%" PRIx32 "> at 0x%" PRIx64
+                      " kind=0x%02x page=0x%" PRIx64 " map_flags=0x%03" PRIx32
+                      " mem_flags=0x%02x%s\n",
+              mem->nvmap.handle, (uint64_t)target,
+              (unsigned)va->base.pte_kind, NVKMD_NVGPU_SMALL_PAGE_SIZE_B,
+              map_flags, (unsigned)_mem->flags,
+              (map_flags & NvMapBufferFlags_IsCacheable) ? " gpu-cached" : "");
+   }
 
    return VK_SUCCESS;
 }

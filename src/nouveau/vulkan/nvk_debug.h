@@ -48,6 +48,9 @@ enum nvk_debug {
     * A release build drops them unless the instance opts into debug logging
     */
    NVK_DEBUG_ERRORS = 1ull << 9,
+
+   /* Map every allocation GPU-uncached */
+   NVK_DEBUG_GPU_UNCACHED = 1ull << 10,
 };
 
 #endif /* NVK_DEBUG_H */
