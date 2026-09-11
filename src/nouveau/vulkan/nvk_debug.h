@@ -57,6 +57,9 @@ enum nvk_debug {
 
    /* Service GPU waits with a CPU block instead of an engine wait */
    NVK_DEBUG_CPU_WAIT = 1ull << 12,
+
+   /* Tear down every memory allocation instead of recycling its backing store */
+   NVK_DEBUG_NO_MEM_CACHE = 1ull << 13,
 };
 
 enum nvk_experimental {

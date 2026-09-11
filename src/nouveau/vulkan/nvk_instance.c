@@ -101,6 +101,7 @@ nvk_init_debug_flags(struct nvk_instance *instance)
       { "errors", NVK_DEBUG_ERRORS },
       { "gpu_uncached", NVK_DEBUG_GPU_UNCACHED },
       { "cpu_wait", NVK_DEBUG_CPU_WAIT },
+      { "no_mem_cache", NVK_DEBUG_NO_MEM_CACHE },
       { NULL, 0 },
    };
 

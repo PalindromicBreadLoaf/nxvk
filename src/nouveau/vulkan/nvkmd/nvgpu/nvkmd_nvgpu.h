@@ -28,6 +28,10 @@
 /* GPU submit wait bound */
 #define NVGPU_SUBMIT_TIMEOUT_US 10000000
 
+/* Bounds on the cache of freed backing stores. */
+#define NVKMD_NVGPU_MEM_CACHE_MAX_B ((uint64_t)64 << 20)
+#define NVKMD_NVGPU_MEM_CACHE_MAX_ENTRIES 128
+
 struct nvkmd_nvgpu_pdev {
    struct nvkmd_pdev base;
 
@@ -73,6 +77,14 @@ struct nvkmd_nvgpu_dev {
    simple_mtx_t heap_mutex;
    struct util_vma_heap heap;
    struct util_vma_heap replay_heap;
+
+   /* LRU cache of freed backing stores */
+   simple_mtx_t mem_cache_mutex;
+   struct list_head mem_cache;
+   uint64_t mem_cache_size_B;
+   uint32_t mem_cache_count;
+   uint64_t mem_cache_hits;
+   uint64_t mem_cache_misses;
 };
 
 NVKMD_DECL_SUBCLASS(dev, nvgpu);
@@ -85,6 +97,8 @@ struct nvkmd_nvgpu_mem {
    struct nvkmd_mem base;
 
    NvMap nvmap;
+
+   bool published;
 };
 
 NVKMD_DECL_SUBCLASS(mem, nvgpu);
@@ -105,6 +119,9 @@ VkResult nvkmd_nvgpu_alloc_tiled_mem(struct nvkmd_dev *dev,
 VkResult nvkmd_nvgpu_import_dma_buf(struct nvkmd_dev *dev,
                                     struct vk_object_base *log_obj,
                                     int fd, struct nvkmd_mem **mem_out);
+
+/* Release every backing store the cache is holding. */
+void nvkmd_nvgpu_mem_cache_trim(struct nvkmd_nvgpu_dev *dev);
 
 struct nvkmd_nvgpu_va {
    struct nvkmd_va base;
