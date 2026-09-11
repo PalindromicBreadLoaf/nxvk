@@ -10,6 +10,7 @@
 #include "vk_util.h"
 
 #include "util/log.h"
+#include "util/os_time.h"
 #include "util/u_math.h"
 
 #include "wsi_common_entrypoints.h"
@@ -26,6 +27,7 @@
 #include <switch/result.h>
 
 #include <assert.h>
+#include <inttypes.h>
 #include <malloc.h>
 #include <string.h>
 
@@ -47,6 +49,8 @@ wsi_switch_surface_get_support(VkIcdSurfaceBase *surface,
    *pSupported = true;
    return VK_SUCCESS;
 }
+
+#define WSI_SWITCH_IMAGE_COUNT 3
 
 static const VkPresentModeKHR present_modes[] = {
    VK_PRESENT_MODE_FIFO_KHR,
@@ -76,8 +80,8 @@ wsi_switch_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
       wsi_device->maxImageDimension2D,
    };
 
-   caps->minImageCount = 3;
-   caps->maxImageCount = 3;
+   caps->minImageCount = WSI_SWITCH_IMAGE_COUNT;
+   caps->maxImageCount = WSI_SWITCH_IMAGE_COUNT;
 
    caps->supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
    caps->currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
@@ -285,6 +289,19 @@ struct wsi_switch_swapchain {
 
    bool zero_copy;
 
+   /* Old present path for NVK_DEBUG=cpu_present. */
+   bool cpu_present;
+   bool debug;
+
+   struct {
+      uint64_t frames;
+      uint64_t fast_dequeues;
+      uint64_t release_waits;
+      uint64_t syncpt_handoffs;
+      uint64_t fence_blocks;
+      uint64_t swizzle_ns;
+   } stats;
+
    uint32_t bpp;
    NvColorFormat color_format;
    uint32_t pixel_format;
@@ -425,6 +442,99 @@ wsi_switch_window_error(const struct wsi_switch_swapchain *chain)
    return VK_ERROR_SURFACE_LOST_KHR;
 }
 
+/* bqDequeueBuffer() reports an empty queue with this rather than failing. */
+#define WSI_SWITCH_BQ_WOULD_BLOCK \
+   MAKERESULT(Module_LibnxBinder, LibnxBinderError_WouldBlock)
+
+static VkResult
+wsi_switch_dequeue_libnx(struct wsi_switch_swapchain *chain, s32 *slot_out)
+{
+   Result rc = nwindowDequeueBuffer(chain->window, slot_out, NULL);
+   if (R_FAILED(rc))
+      return wsi_switch_window_error(chain);
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+wsi_switch_dequeue_nonblocking(struct wsi_switch_swapchain *chain,
+                               uint64_t timeout_ns, s32 *slot_out)
+{
+   NWindow *nw = chain->window;
+   NvMultiFence release = {0};
+   s32 slot = -1;
+   Result rc;
+
+   const bool infinite = timeout_ns == UINT64_MAX;
+   const uint64_t deadline = infinite ? 0 : os_time_get_nano() + timeout_ns;
+
+   mutexLock(&nw->mutex);
+
+   if (nw->slots_configured == 0) {
+      mutexUnlock(&nw->mutex);
+      return VK_ERROR_OUT_OF_DATE_KHR;
+   }
+
+   /* Somebody else already holds the window's one slot. */
+   if (nw->cur_slot >= 0) {
+      mutexUnlock(&nw->mutex);
+      return timeout_ns == 0 ? VK_NOT_READY : VK_TIMEOUT;
+   }
+
+   bool waited = false;
+
+   for (;;) {
+      rc = bqDequeueBuffer(&nw->bq, true, nw->width, nw->height, nw->format,
+                           nw->usage, &slot, &release);
+      if (R_VALUE(rc) != WSI_SWITCH_BQ_WOULD_BLOCK)
+         break;
+
+      uint64_t wait_ns = UINT64_MAX;
+      if (!infinite) {
+         const uint64_t now = os_time_get_nano();
+         if (now >= deadline) {
+            mutexUnlock(&nw->mutex);
+            return timeout_ns == 0 ? VK_NOT_READY : VK_TIMEOUT;
+         }
+         wait_ns = deadline - now;
+      }
+
+      chain->stats.release_waits++;
+      waited = true;
+      if (R_FAILED(eventWait(&nw->event, wait_ns))) {
+         mutexUnlock(&nw->mutex);
+         return timeout_ns == 0 ? VK_NOT_READY : VK_TIMEOUT;
+      }
+   }
+
+   if (R_SUCCEEDED(rc) && !(nw->slots_requested & (1ull << slot))) {
+      Result req = bqRequestBuffer(&nw->bq, slot, NULL);
+      if (R_FAILED(req)) {
+         bqCancelBuffer(&nw->bq, slot, &release);
+         rc = req;
+      } else {
+         nw->slots_requested |= 1ull << slot;
+      }
+   }
+
+   if (R_SUCCEEDED(rc))
+      nw->cur_slot = slot;
+
+   mutexUnlock(&nw->mutex);
+
+   if (R_FAILED(rc))
+      return wsi_switch_window_error(chain);
+
+   if (release.num_fences > 0)
+      nvMultiFenceWait(&release, -1);
+
+   if (!waited)
+      chain->stats.fast_dequeues++;
+   *slot_out = slot;
+
+   return VK_SUCCESS;
+}
+
 static VkResult
 wsi_switch_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
                                         const VkAcquireNextImageInfoKHR *info,
@@ -436,20 +546,23 @@ wsi_switch_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
    if (chain->window == NULL)
       return VK_ERROR_SURFACE_LOST_KHR;
 
-   /* wsi_common skips queue_present entirely when the submit it makes just
-    * before it fails, so the slot from the previous frame can still be checked
-    * out here.
+   /* An NWindow checks out one slot at a time, so a second acquire has nothing
+    * to hand back. Report that instead of cancelling the held slot.
     */
-   if (chain->dequeued_slot >= 0) {
-      nwindowCancelBuffer(chain->window, chain->dequeued_slot, NULL);
-      chain->dequeued_slot = -1;
-   }
+   if (chain->dequeued_slot >= 0)
+      return info->timeout == 0 ? VK_NOT_READY : VK_TIMEOUT;
 
-   /* out_fence=NULL waits on the compositor's release fence inside libnx,
-    * so the slot is ready to be rewritten when this returns. */
    s32 slot = -1;
-   Result rc = nwindowDequeueBuffer(chain->window, &slot, NULL);
-   if (R_FAILED(rc) || slot < 0 || (uint32_t)slot >= chain->base.image_count)
+   VkResult result;
+   if (chain->cpu_present || !eventActive(&chain->window->event))
+      result = wsi_switch_dequeue_libnx(chain, &slot);
+   else
+      result = wsi_switch_dequeue_nonblocking(chain, info->timeout, &slot);
+
+   if (result != VK_SUCCESS)
+      return result;
+
+   if (slot < 0 || (uint32_t)slot >= chain->base.image_count)
       return wsi_switch_window_error(chain);
 
    chain->dequeued_slot = slot;
@@ -472,29 +585,50 @@ wsi_switch_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
       return VK_ERROR_SURFACE_LOST_KHR;
 
    struct wsi_image *image = &chain->images[image_index].base;
+   const VkFence fence = chain->base.fences[image_index];
 
-   /* wsi_common submitted the render/blit fence right before calling.
-    * Wait for it so the scanout buffer holds finished pixels. */
-   if (chain->base.fences[image_index] != VK_NULL_HANDLE)
-      chain->base.wsi->WaitForFences(chain->base.device, 1,
-                                     &chain->base.fences[image_index],
-                                     true, UINT64_MAX);
+   struct wsi_vi_syncpt syncpt;
+   bool handoff = false;
+   if (chain->zero_copy && !chain->cpu_present && fence != VK_NULL_HANDLE &&
+       chain->base.wsi->vi.get_fence_syncpt != NULL) {
+      handoff = chain->base.wsi->vi.get_fence_syncpt(chain->base.device, fence,
+                                                     &syncpt);
+   }
+
+   if (!handoff && fence != VK_NULL_HANDLE) {
+      chain->stats.fence_blocks++;
+      chain->base.wsi->WaitForFences(chain->base.device, 1, &fence, true,
+                                     UINT64_MAX);
+   }
 
    if (!chain->zero_copy) {
+      const uint64_t start_ns = chain->debug ? os_time_get_nano() : 0;
+
       swizzle_to_scanout(chain, image_index, image->cpu_map,
                          image->row_pitches[0]);
 
       uint8_t *fb = chain->scanout_cpu + (size_t)image_index * chain->fb_size;
       armDCacheFlush(fb, chain->fb_size);
+
+      if (chain->debug)
+         chain->stats.swizzle_ns += os_time_get_nano() - start_ns;
    }
 
-   Result rc = nwindowQueueBuffer(chain->window, image_index, NULL);
+   NvMultiFence render = {0};
+   if (handoff) {
+      const NvFence nvf = { .id = syncpt.id, .value = syncpt.value };
+      nvMultiFenceCreate(&render, &nvf);
+      chain->stats.syncpt_handoffs++;
+   }
+
+   Result rc = nwindowQueueBuffer(chain->window, image_index,
+                                  handoff ? &render : NULL);
    if (R_FAILED(rc)) {
-      /* Leave the slot marked so the next acquire cancels it. */
       return wsi_switch_window_error(chain);
    }
 
    chain->dequeued_slot = -1;
+   chain->stats.frames++;
 
    return VK_SUCCESS;
 }
@@ -542,6 +676,16 @@ wsi_switch_swapchain_destroy(struct wsi_swapchain *wsi_chain,
 {
    struct wsi_switch_swapchain *chain =
       (struct wsi_switch_swapchain *)wsi_chain;
+
+   if (chain->debug) {
+      mesa_logi("nvk wsi: %" PRIu64 " frames, %" PRIu64 " syncpt handoffs, "
+                "%" PRIu64 " fence blocks, %" PRIu64 " dequeues without a "
+                "release wait, %" PRIu64 " release waits, %" PRIu64 " us in "
+                "swizzle+flush",
+                chain->stats.frames, chain->stats.syncpt_handoffs,
+                chain->stats.fence_blocks, chain->stats.fast_dequeues,
+                chain->stats.release_waits, chain->stats.swizzle_ns / 1000);
+   }
 
    wsi_switch_destroy_images(chain);
 
@@ -822,7 +966,7 @@ wsi_switch_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
                            &pixel_format))
       return VK_ERROR_INITIALIZATION_FAILED;
 
-   int num_images = pCreateInfo->minImageCount;
+   const uint32_t num_images = WSI_SWITCH_IMAGE_COUNT;
 
    struct wsi_switch_swapchain *chain;
    size_t size = sizeof(*chain) + num_images * sizeof(chain->images[0]);
@@ -854,6 +998,8 @@ wsi_switch_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    chain->bpp = bpp;
    chain->color_format = color_format;
    chain->pixel_format = pixel_format;
+   chain->cpu_present = wsi_device->vi.force_cpu_present;
+   chain->debug = wsi_device->vi.debug;
 
    wsi_switch_adopt_window(chain, pCreateInfo->oldSwapchain);
 
@@ -867,6 +1013,15 @@ wsi_switch_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    uint32_t swap_interval =
       chain->base.present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? 0 : 1;
    nwindowSetSwapInterval(chain->window, swap_interval);
+
+   if (chain->debug) {
+      mesa_logi("nvk wsi: %ux%u, %u images, present mode %d, swap interval %u, "
+                "zero-copy %s, %s present",
+                chain->extent.width, chain->extent.height, num_images,
+                (int)chain->base.present_mode, swap_interval,
+                chain->zero_copy ? "on" : "off",
+                chain->cpu_present ? "cpu" : "compositor synced");
+   }
 
    *swapchain_out = &chain->base;
 

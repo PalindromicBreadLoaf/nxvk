@@ -127,6 +127,21 @@ nvkmd_nvgpu_dev_get_gpu_timestamp(struct nvkmd_dev *_dev)
    return ts;
 }
 
+static bool
+nvkmd_nvgpu_dev_get_sync_syncpt(struct nvkmd_dev *_dev, struct vk_sync *sync,
+                                uint32_t *id_out, uint32_t *value_out)
+{
+   NvFence fence;
+
+   if (nvkmd_nvgpu_syncobj_get_fence(sync, &fence) != NVKMD_NVGPU_FENCE_PENDING)
+      return false;
+
+   *id_out = fence.id;
+   *value_out = fence.value;
+
+   return true;
+}
+
 const struct nvkmd_dev_ops nvkmd_nvgpu_dev_ops = {
    .destroy = nvkmd_nvgpu_dev_destroy,
    .get_gpu_timestamp = nvkmd_nvgpu_dev_get_gpu_timestamp,
@@ -136,4 +151,5 @@ const struct nvkmd_dev_ops nvkmd_nvgpu_dev_ops = {
    .import_dma_buf = nvkmd_nvgpu_import_dma_buf,
    .alloc_va = nvkmd_nvgpu_alloc_va,
    .create_ctx = nvkmd_nvgpu_create_ctx,
+   .get_sync_syncpt = nvkmd_nvgpu_dev_get_sync_syncpt,
 };

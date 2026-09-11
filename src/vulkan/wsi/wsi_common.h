@@ -66,6 +66,12 @@ struct wsi_vi_scanout_params {
    uint8_t block_height_log2;
    uint8_t pte_kind;
 };
+
+/* Horizon syncpoint threshold */
+struct wsi_vi_syncpt {
+   uint32_t id;
+   uint32_t value;
+};
 #else
 #define VK_ICD_WSI_PLATFORM_MAX (VK_ICD_WSI_PLATFORM_METAL + 1)
 #endif
@@ -179,6 +185,13 @@ struct wsi_device {
       bool (*get_scanout_params)(VkDevice device, VkImage image,
                                  VkDeviceMemory memory,
                                  struct wsi_vi_scanout_params *params);
+
+      bool (*get_fence_syncpt)(VkDevice device, VkFence fence,
+                               struct wsi_vi_syncpt *syncpt);
+
+      bool debug;
+
+      bool force_cpu_present;
    } vi;
 #endif
 
