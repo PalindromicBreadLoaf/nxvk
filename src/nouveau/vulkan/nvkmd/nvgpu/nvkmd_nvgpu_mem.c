@@ -7,6 +7,7 @@
 
 #include "util/bitscan.h"
 #include "util/cache_ops.h"
+#include "util/list.h"
 #include "util/macros.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
@@ -16,6 +17,152 @@
 
 #include <switch/arm/cache.h>
 #include <switch/result.h>
+
+struct mem_cache_entry {
+   struct list_head link;
+   NvMap nvmap;
+   uint32_t align_B;
+};
+
+static void
+backing_free(NvMap *nvmap)
+{
+   void *const cpu_addr = nvmap->cpu_addr;
+   nvMapClose(nvmap);
+   align_free(cpu_addr);
+}
+
+static bool
+backing_alloc(uint64_t size_B, uint32_t align_B, uint8_t pte_kind,
+              bool cpu_cacheable, NvMap *nvmap_out, Result *rc_out)
+{
+   *rc_out = 0;
+
+   void *cpu_addr = align_malloc(size_B, align_B);
+   if (cpu_addr == NULL)
+      return false;
+
+   if (cpu_cacheable)
+      util_flush_inval_range(cpu_addr, size_B);
+
+   Result rc = nvMapCreate(nvmap_out, cpu_addr, size_B, align_B,
+                           (NvKind)pte_kind, cpu_cacheable);
+   if (R_FAILED(rc)) {
+      align_free(cpu_addr);
+      *rc_out = rc;
+      return false;
+   }
+
+   return true;
+}
+
+static void
+mem_cache_destroy_list(struct list_head *list)
+{
+   list_for_each_entry_safe(struct mem_cache_entry, entry, list, link) {
+      backing_free(&entry->nvmap);
+      FREE(entry);
+   }
+}
+
+static void
+mem_cache_trim_locked(struct nvkmd_nvgpu_dev *dev,
+                      uint64_t max_size_B, uint32_t max_count,
+                      struct list_head *evicted)
+{
+   while (dev->mem_cache_size_B > max_size_B ||
+          dev->mem_cache_count > max_count) {
+      struct mem_cache_entry *entry =
+         list_last_entry(&dev->mem_cache, struct mem_cache_entry, link);
+
+      dev->mem_cache_size_B -= entry->nvmap.size;
+      dev->mem_cache_count--;
+      list_del(&entry->link);
+      list_addtail(&entry->link, evicted);
+   }
+}
+
+void
+nvkmd_nvgpu_mem_cache_trim(struct nvkmd_nvgpu_dev *dev)
+{
+   struct list_head evicted;
+   list_inithead(&evicted);
+
+   simple_mtx_lock(&dev->mem_cache_mutex);
+   mem_cache_trim_locked(dev, 0, 0, &evicted);
+   simple_mtx_unlock(&dev->mem_cache_mutex);
+
+   mem_cache_destroy_list(&evicted);
+}
+
+static bool
+mem_cache_take(struct nvkmd_nvgpu_dev *dev,
+               uint64_t size_B, uint32_t align_B, uint8_t pte_kind,
+               bool cpu_cacheable, NvMap *nvmap_out)
+{
+   bool hit = false;
+
+   simple_mtx_lock(&dev->mem_cache_mutex);
+   list_for_each_entry(struct mem_cache_entry, entry, &dev->mem_cache, link) {
+      if (entry->nvmap.size != size_B ||
+          entry->nvmap.kind != (NvKind)pte_kind ||
+          entry->nvmap.is_cpu_cacheable != cpu_cacheable ||
+          entry->align_B < align_B)
+         continue;
+
+      dev->mem_cache_size_B -= entry->nvmap.size;
+      dev->mem_cache_count--;
+      list_del(&entry->link);
+      *nvmap_out = entry->nvmap;
+      FREE(entry);
+      hit = true;
+      break;
+   }
+   dev->mem_cache_hits += hit;
+   dev->mem_cache_misses += !hit;
+   simple_mtx_unlock(&dev->mem_cache_mutex);
+
+   return hit;
+}
+
+/* Returns false if the store was not taken and remains the caller's to free. */
+static bool
+mem_cache_put(struct nvkmd_nvgpu_dev *dev, struct nvkmd_nvgpu_mem *mem)
+{
+   if (mem->published || (mem->base.flags & NVKMD_MEM_SHARED))
+      return false;
+
+   if (unlikely(dev->base.pdev->debug_flags & NVK_DEBUG_NO_MEM_CACHE))
+      return false;
+
+   if (mem->nvmap.size > NVKMD_NVGPU_MEM_CACHE_MAX_B)
+      return false;
+
+   struct mem_cache_entry *entry = MALLOC_STRUCT(mem_cache_entry);
+   if (entry == NULL)
+      return false;
+
+   if (mem->nvmap.is_cpu_cacheable)
+      util_flush_inval_range(mem->nvmap.cpu_addr, mem->nvmap.size);
+
+   entry->nvmap = mem->nvmap;
+   entry->align_B = mem->base.bind_align_B;
+
+   struct list_head evicted;
+   list_inithead(&evicted);
+
+   simple_mtx_lock(&dev->mem_cache_mutex);
+   list_add(&entry->link, &dev->mem_cache);
+   dev->mem_cache_size_B += entry->nvmap.size;
+   dev->mem_cache_count++;
+   mem_cache_trim_locked(dev, NVKMD_NVGPU_MEM_CACHE_MAX_B,
+                         NVKMD_NVGPU_MEM_CACHE_MAX_ENTRIES, &evicted);
+   simple_mtx_unlock(&dev->mem_cache_mutex);
+
+   mem_cache_destroy_list(&evicted);
+
+   return true;
+}
 
 VkResult
 nvkmd_nvgpu_alloc_mem(struct nvkmd_dev *dev,
@@ -39,10 +186,6 @@ create_mem_or_close_nvmap(struct nvkmd_nvgpu_dev *dev,
                           struct nvkmd_mem **mem_out)
 {
    const uint64_t size_B = nvmap->size;
-   /* nvMapClose() clears cpu_addr, so keep the backing pointer for the
-    * teardown path.
-    */
-   void *const cpu_addr = nvmap->cpu_addr;
    VkResult result;
 
    struct nvkmd_nvgpu_mem *mem = CALLOC_STRUCT(nvkmd_nvgpu_mem);
@@ -77,8 +220,7 @@ fail_va:
 fail_mem:
    FREE(mem);
 fail_nvmap:
-   nvMapClose(nvmap);
-   align_free(cpu_addr);
+   backing_free(nvmap);
 
    return result;
 }
@@ -121,23 +263,22 @@ nvkmd_nvgpu_alloc_tiled_mem(struct nvkmd_dev *_dev,
    if (!is_cpu_cacheable || (_dev->pdev->debug_flags & NVK_DEBUG_GPU_UNCACHED))
       flags |= NVKMD_MEM_GPU_UNCACHED;
 
-   void *cpu_addr = align_malloc(size_B, mem_align_B);
-   if (cpu_addr == NULL)
-      return vk_errorf(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY, "%m");
-
-   /* Write back what the previous owner of this heap memory left dirty, so no
-    * later eviction lands on top of GPU writes.
-    */
-   if (is_cpu_cacheable)
-      util_flush_inval_range(cpu_addr, size_B);
-
    NvMap nvmap;
-   Result rc = nvMapCreate(&nvmap, cpu_addr, size_B, mem_align_B,
-                           (NvKind)pte_kind, is_cpu_cacheable);
-   if (R_FAILED(rc)) {
-      align_free(cpu_addr);
-      return vk_errorf(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY,
-                       "nvMapCreate() failed: 0x%x", (unsigned)rc);
+   if (!mem_cache_take(dev, size_B, mem_align_B, pte_kind, is_cpu_cacheable,
+                       &nvmap)) {
+      Result rc;
+      if (!backing_alloc(size_B, mem_align_B, pte_kind, is_cpu_cacheable,
+                         &nvmap, &rc)) {
+         nvkmd_nvgpu_mem_cache_trim(dev);
+         if (!backing_alloc(size_B, mem_align_B, pte_kind, is_cpu_cacheable,
+                            &nvmap, &rc)) {
+            if (R_FAILED(rc)) {
+               return vk_errorf(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                                "nvMapCreate() failed: 0x%x", (unsigned)rc);
+            }
+            return vk_errorf(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY, "%m");
+         }
+      }
    }
 
    return create_mem_or_close_nvmap(dev, log_obj, flags, &nvmap,
@@ -157,13 +298,13 @@ nvkmd_nvgpu_import_dma_buf(struct nvkmd_dev *_dev,
 static void
 nvkmd_nvgpu_mem_free(struct nvkmd_mem *_mem)
 {
+   struct nvkmd_nvgpu_dev *dev = nvkmd_nvgpu_dev(_mem->dev);
    struct nvkmd_nvgpu_mem *mem = nvkmd_nvgpu_mem(_mem);
 
    nvkmd_va_free(mem->base.va);
 
-   void *cpu_addr = mem->nvmap.cpu_addr;
-   nvMapClose(&mem->nvmap);
-   align_free(cpu_addr);
+   if (!mem_cache_put(dev, mem))
+      backing_free(&mem->nvmap);
 
    FREE(mem);
 }
@@ -245,9 +386,11 @@ static bool
 nvkmd_nvgpu_mem_get_scanout_ids(struct nvkmd_mem *_mem,
                                 uint32_t *id_out, uint32_t *handle_out)
 {
-   const NvMap *nvmap = &nvkmd_nvgpu_mem(_mem)->nvmap;
-   *id_out = nvmap->id;
-   *handle_out = nvmap->handle;
+   struct nvkmd_nvgpu_mem *mem = nvkmd_nvgpu_mem(_mem);
+
+   mem->published = true;
+   *id_out = mem->nvmap.id;
+   *handle_out = mem->nvmap.handle;
    return true;
 }
 

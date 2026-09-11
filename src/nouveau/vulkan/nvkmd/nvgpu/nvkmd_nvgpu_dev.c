@@ -8,6 +8,9 @@
 #include "util/u_memory.h"
 #include "vk_log.h"
 
+#include <inttypes.h>
+#include <stdio.h>
+
 #include <switch/nvidia/gpu.h>
 #include <switch/result.h>
 
@@ -27,8 +30,10 @@ nvkmd_nvgpu_create_dev(struct nvkmd_pdev *_pdev,
    dev->base.pdev = &pdev->base;
 
    list_inithead(&dev->base.mems);
+   list_inithead(&dev->mem_cache);
    simple_mtx_init(&dev->base.mems_mutex, mtx_plain);
    simple_mtx_init(&dev->heap_mutex, mtx_plain);
+   simple_mtx_init(&dev->mem_cache_mutex, mtx_plain);
 
    /* The address space carries the big-page half of the split.
     * every small-page mapping lands in the low half out of the arena reserved below.
@@ -77,6 +82,7 @@ nvkmd_nvgpu_create_dev(struct nvkmd_pdev *_pdev,
 fail_as:
    nvAddressSpaceClose(&dev->addr_space);
 fail_locks:
+   simple_mtx_destroy(&dev->mem_cache_mutex);
    simple_mtx_destroy(&dev->heap_mutex);
    simple_mtx_destroy(&dev->base.mems_mutex);
    FREE(dev);
@@ -88,6 +94,15 @@ nvkmd_nvgpu_dev_destroy(struct nvkmd_dev *_dev)
 {
    struct nvkmd_nvgpu_dev *dev = nvkmd_nvgpu_dev(_dev);
 
+   if (unlikely(_dev->pdev->debug_flags & NVK_DEBUG_VM)) {
+      fprintf(stderr, "mem cache: %" PRIu64 " hits, %" PRIu64 " misses, "
+                      "%" PRIu32 " entries / 0x%" PRIx64 " bytes held\n",
+              dev->mem_cache_hits, dev->mem_cache_misses,
+              dev->mem_cache_count, dev->mem_cache_size_B);
+   }
+
+   nvkmd_nvgpu_mem_cache_trim(dev);
+
    util_vma_heap_finish(&dev->replay_heap);
    util_vma_heap_finish(&dev->heap);
 
@@ -98,6 +113,7 @@ nvkmd_nvgpu_dev_destroy(struct nvkmd_dev *_dev)
                                 (uint32_t)NVKMD_NVGPU_SMALL_PAGE_SIZE_B);
    nvAddressSpaceClose(&dev->addr_space);
 
+   simple_mtx_destroy(&dev->mem_cache_mutex);
    simple_mtx_destroy(&dev->heap_mutex);
    simple_mtx_destroy(&dev->base.mems_mutex);
    FREE(dev);
