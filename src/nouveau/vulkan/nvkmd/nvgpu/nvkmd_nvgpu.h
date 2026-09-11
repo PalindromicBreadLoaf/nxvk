@@ -109,7 +109,7 @@ struct nvkmd_nvgpu_exec_ctx {
    /* Zcull context bound to the channel. */
    struct nvkmd_mem *zcull_mem;
 
-   /* Builtin buffer holding the syncpt-increment and the L2-flush fence cmdlist. */
+   /* Builtin buffer holding the syncpt-increment fence cmdlist. */
    struct nvkmd_mem *fence_mem;
    iova_t fence_cmds_addr;
    uint32_t fence_cmds_dw;
