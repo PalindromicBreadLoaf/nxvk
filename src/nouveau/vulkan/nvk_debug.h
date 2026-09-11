@@ -60,6 +60,9 @@ enum nvk_debug {
 
    /* Tear down every memory allocation instead of recycling its backing store */
    NVK_DEBUG_NO_MEM_CACHE = 1ull << 13,
+
+   /* Flush whole mem arenas on submit instead of only their dirty ranges */
+   NVK_DEBUG_FULL_ARENA_FLUSH = 1ull << 14,
 };
 
 enum nvk_experimental {

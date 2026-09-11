@@ -37,10 +37,41 @@ nvk_contiguous_mem_arena_mem_offset_B(uint32_t mem_idx)
    return mem_idx == 0 ? 0 : ((NVK_MEM_ARENA_MIN_SIZE >> 1) << mem_idx);
 }
 
+/* dirty_start_B of an nvk_arena_mem with nothing dirty in it */
+#define NVK_ARENA_MEM_CLEAN UINT32_MAX
+
 struct nvk_arena_mem {
    struct nvkmd_mem *mem;
    uint64_t addr;
+   uint32_t dirty_start_B;
+   uint32_t dirty_end_B;
 };
+
+/** Grow an nvk_arena_mem's dirty range to cover [offset_B, offset_B + range_B) */
+static inline void
+nvk_arena_mem_add_dirty_range(struct nvk_arena_mem *mem,
+                              uint64_t offset_B, uint64_t range_B)
+{
+   assert(range_B > 0 && offset_B + range_B < NVK_ARENA_MEM_CLEAN);
+   const uint32_t start_B = offset_B;
+   const uint32_t end_B = offset_B + range_B;
+
+   uint32_t old = p_atomic_read(&mem->dirty_start_B);
+   while (start_B < old) {
+      uint32_t prev = p_atomic_cmpxchg(&mem->dirty_start_B, old, start_B);
+      if (prev == old)
+         break;
+      old = prev;
+   }
+
+   old = p_atomic_read(&mem->dirty_end_B);
+   while (end_B > old) {
+      uint32_t prev = p_atomic_cmpxchg(&mem->dirty_end_B, old, end_B);
+      if (prev == old)
+         break;
+      old = prev;
+   }
+}
 
 /** A growable pool of GPU memory
  *
@@ -74,6 +105,10 @@ struct nvk_mem_arena {
 
    /* Non-zero if any maps of this arena are dirty */
    uint32_t map_dirty;
+
+   /* NVK_DEBUG_VM accounting */
+   uint64_t flush_count;
+   uint64_t flushed_B;
 
    struct nvk_arena_mem mem[NVK_MEM_ARENA_MAX_MEM_COUNT];
 };
@@ -191,17 +226,33 @@ nvk_contiguous_mem_arena_map_offset(const struct nvk_mem_arena *arena,
 void *nvk_mem_arena_map(const struct nvk_mem_arena *arena,
                         uint64_t addr, size_t map_range_B);
 
-/** Mark the arena map dirty
+/** Mark a range of the arena map dirty
  *
  * This should be called after writing data into the arena via a pointer
  * returned by nvk_mem_arena_map().  It must be called after the write, not
  * before, to ensure that the next call to nvk_mem_arena_flush_map() will
  * flush out the new writes.
  */
+void nvk_mem_arena_set_map_dirty(struct nvk_mem_arena *arena,
+                                 uint64_t addr, uint64_t size_B);
+
+/** An optimized version of `nvk_mem_arena_set_map_dirty()` for contiguous
+ * arenas which takes an offset instead of an address.
+ */
 static inline void
-nvk_mem_arena_set_map_dirty(struct nvk_mem_arena *arena)
+nvk_contiguous_mem_arena_set_map_dirty_offset(struct nvk_mem_arena *arena,
+                                              uint64_t arena_offset_B,
+                                              uint64_t size_B)
 {
-   return p_atomic_set(&arena->map_dirty, 1);
+   const uint32_t mem_idx =
+      nvk_contiguous_mem_arena_find_mem_by_offset(arena, arena_offset_B);
+   const uint64_t mem_offset_B =
+      arena_offset_B - nvk_contiguous_mem_arena_mem_offset_B(mem_idx);
+
+   assert(mem_offset_B + size_B <= nvk_mem_arena_mem_size_B(mem_idx));
+   nvk_arena_mem_add_dirty_range(&arena->mem[mem_idx], mem_offset_B, size_B);
+
+   p_atomic_set(&arena->map_dirty, 1);
 }
 
 void nvk_mem_arena_flush_map(struct nvk_device *dev,

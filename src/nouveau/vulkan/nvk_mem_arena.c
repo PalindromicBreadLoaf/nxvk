@@ -5,6 +5,7 @@
 #include "nvk_mem_arena.h"
 
 #include "nvk_device.h"
+#include "nvk_physical_device.h"
 
 #include "util/u_atomic.h"
 
@@ -48,6 +49,15 @@ nvk_mem_arena_init(struct nvk_device *dev, struct nvk_mem_arena *arena,
 void
 nvk_mem_arena_finish(struct nvk_device *dev, struct nvk_mem_arena *arena)
 {
+   if (unlikely(nvk_device_physical(dev)->debug_flags & NVK_DEBUG_VM) &&
+       arena->flush_count > 0) {
+      fprintf(stderr, "arena at 0x%" PRIx64 ": %" PRIu64 " map flushes, "
+                      "0x%" PRIx64 " B flushed of 0x%" PRIx64 " B mapped\n",
+              arena->mem_count > 0 ? arena->mem[0].addr : 0,
+              arena->flush_count, arena->flushed_B,
+              nvk_mem_arena_size_B(arena));
+   }
+
    /* Freeing the VA will unbind all the memory */
    if (nvk_mem_arena_is_contiguous(arena))
       nvkmd_va_free(arena->contig_va);
@@ -102,6 +112,8 @@ nvk_mem_arena_grow_locked(struct nvk_device *dev, struct nvk_mem_arena *arena,
    arena->mem[mem_count] = (struct nvk_arena_mem) {
       .mem = mem,
       .addr = addr,
+      .dirty_start_B = NVK_ARENA_MEM_CLEAN,
+      .dirty_end_B = 0,
    };
    if (p_atomic_xchg(&arena->mem_count, mem_count + 1) != mem_count) {
       return vk_errorf(dev, VK_ERROR_UNKNOWN,
@@ -162,15 +174,43 @@ static void
 nvk_mem_arena_flush_map_locked(struct nvk_device *dev,
                                struct nvk_mem_arena *arena)
 {
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+
    if (p_atomic_xchg(&arena->map_dirty, 0) == 0)
       return;
 
+   const uint32_t atom_size_B = pdev->info.nc_atom_size_B;
    const uint32_t mem_count = nvk_mem_arena_mem_count(arena);
+   const bool flush_all = pdev->debug_flags & NVK_DEBUG_FULL_ARENA_FLUSH;
+   uint64_t flushed_B = 0;
 
    for (uint32_t mem_idx = 0; mem_idx < mem_count; mem_idx++) {
-      const struct nvk_arena_mem *mem = &arena->mem[mem_idx];
+      struct nvk_arena_mem *mem = &arena->mem[mem_idx];
       const uint64_t mem_size_B = nvk_mem_arena_mem_size_B(mem_idx);
-      nvkmd_mem_sync_map_to_gpu(mem->mem, 0, mem_size_B);
+      const uint32_t end_B = p_atomic_xchg(&mem->dirty_end_B, 0);
+      const uint32_t start_B =
+         p_atomic_xchg(&mem->dirty_start_B, NVK_ARENA_MEM_CLEAN);
+
+      uint64_t offset_B, range_B;
+      if (flush_all) {
+         offset_B = 0;
+         range_B = mem_size_B;
+      } else {
+         if (start_B >= end_B)
+            continue;
+
+         offset_B = ROUND_DOWN_TO(start_B, atom_size_B);
+         range_B = ALIGN_POT(end_B, atom_size_B) - offset_B;
+      }
+
+      assert(offset_B + range_B <= mem_size_B);
+      nvkmd_mem_sync_map_to_gpu(mem->mem, offset_B, range_B);
+      flushed_B += range_B;
+   }
+
+   if (unlikely(pdev->debug_flags & NVK_DEBUG_VM)) {
+      arena->flush_count++;
+      arena->flushed_B += flushed_B;
    }
 }
 
@@ -181,6 +221,29 @@ nvk_mem_arena_flush_map(struct nvk_device *dev,
    simple_mtx_lock(&arena->mutex);
    nvk_mem_arena_flush_map_locked(dev, arena);
    simple_mtx_unlock(&arena->mutex);
+}
+
+void
+nvk_mem_arena_set_map_dirty(struct nvk_mem_arena *arena,
+                            uint64_t addr, uint64_t size_B)
+{
+   while (size_B) {
+      uint32_t mem_idx = nvk_mem_arena_find_mem_by_addr(arena, addr);
+      struct nvk_arena_mem *mem = &arena->mem[mem_idx];
+      const uint64_t mem_size_B = nvk_mem_arena_mem_size_B(mem_idx);
+
+      assert(addr >= mem->addr);
+      const uint64_t mem_offset_B = addr - mem->addr;
+      assert(mem_offset_B < mem_size_B);
+
+      const uint64_t range_B = MIN2(size_B, mem_size_B - mem_offset_B);
+      nvk_arena_mem_add_dirty_range(mem, mem_offset_B, range_B);
+
+      addr += range_B;
+      size_B -= range_B;
+   }
+
+   p_atomic_set(&arena->map_dirty, 1);
 }
 
 void
@@ -202,11 +265,13 @@ nvk_mem_arena_copy_to_gpu(struct nvk_mem_arena *arena,
       const size_t copy_size_B = MIN2(size_B, mem_size_B - mem_offset_B);
 
       memcpy(mem->mem->map + mem_offset_B, src, copy_size_B);
+      nvk_arena_mem_add_dirty_range(&arena->mem[mem_idx],
+                                    mem_offset_B, copy_size_B);
 
       dst_addr += copy_size_B;
       src += copy_size_B;
       size_B -= copy_size_B;
    }
 
-   nvk_mem_arena_set_map_dirty(arena);
+   p_atomic_set(&arena->map_dirty, 1);
 }
