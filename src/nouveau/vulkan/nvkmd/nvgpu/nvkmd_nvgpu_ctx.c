@@ -6,8 +6,10 @@
 #include "nvkmd_nvgpu.h"
 
 #include "util/macros.h"
+#include "util/os_time.h"
 #include "util/u_memory.h"
 #include "vk_log.h"
+#include "vk_sync.h"
 
 #include <string.h>
 
@@ -299,9 +301,18 @@ nvkmd_nvgpu_exec_ctx_wait(struct nvkmd_ctx *_ctx,
                           uint32_t wait_count,
                           const struct vk_sync_wait *waits)
 {
-   /* Work submitted through this context runs on a single in-order channel,
-    * so same-context ordering is implicit.
-    */
+   /* CPU-block on each dependency before dependent work is submitted. */
+   struct vk_device *dev = log_obj->device;
+   const uint64_t abs_timeout =
+      os_time_get_absolute_timeout(NVGPU_SUBMIT_TIMEOUT_US * 1000ull);
+
+   for (uint32_t i = 0; i < wait_count; i++) {
+      VkResult result = vk_sync_wait(dev, waits[i].sync, waits[i].wait_value,
+                                     VK_SYNC_WAIT_COMPLETE, abs_timeout);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+
    return VK_SUCCESS;
 }
 
@@ -354,6 +365,30 @@ nvkmd_nvgpu_exec_ctx_exec(struct nvkmd_ctx *_ctx,
 }
 
 static VkResult
+nvkmd_nvgpu_signal_one(struct vk_device *dev,
+                       const struct vk_sync_signal *signal,
+                       const NvFence *fence)
+{
+   struct vk_sync_timeline *timeline = vk_sync_as_timeline(signal->sync);
+
+   if (timeline == NULL) {
+      nvkmd_nvgpu_syncobj_set_fence(signal->sync, fence);
+      return VK_SUCCESS;
+   }
+
+   struct vk_sync_timeline_point *point;
+   VkResult result = vk_sync_timeline_alloc_point(dev, timeline,
+                                                  signal->signal_value,
+                                                  &point);
+   if (result != VK_SUCCESS)
+      return result;
+
+   nvkmd_nvgpu_syncobj_set_fence(&point->sync, fence);
+
+   return vk_sync_timeline_point_install(dev, point);
+}
+
+static VkResult
 nvkmd_nvgpu_exec_ctx_signal(struct nvkmd_ctx *_ctx,
                             struct vk_object_base *log_obj,
                             uint32_t signal_count,
@@ -361,7 +396,6 @@ nvkmd_nvgpu_exec_ctx_signal(struct nvkmd_ctx *_ctx,
 {
    struct nvkmd_nvgpu_exec_ctx *ctx = nvkmd_nvgpu_exec_ctx(_ctx);
 
-   /* signal() implies flush() */
    VkResult result = nvkmd_nvgpu_exec_ctx_flush(&ctx->base, log_obj);
    if (result != VK_SUCCESS)
       return result;
@@ -370,8 +404,11 @@ nvkmd_nvgpu_exec_ctx_signal(struct nvkmd_ctx *_ctx,
     * wait resolves against it.
     */
    const NvFence *fence = ctx->has_fence ? &ctx->last_fence : NULL;
-   for (uint32_t i = 0; i < signal_count; i++)
-      nvkmd_nvgpu_syncobj_set_fence(signals[i].sync, fence);
+   for (uint32_t i = 0; i < signal_count; i++) {
+      result = nvkmd_nvgpu_signal_one(log_obj->device, &signals[i], fence);
+      if (result != VK_SUCCESS)
+         return result;
+   }
 
    return VK_SUCCESS;
 }
