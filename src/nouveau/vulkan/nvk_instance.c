@@ -100,6 +100,7 @@ nvk_init_debug_flags(struct nvk_instance *instance)
       { "no_compression", NVK_DEBUG_NO_COMPRESSION },
       { "errors", NVK_DEBUG_ERRORS },
       { "gpu_uncached", NVK_DEBUG_GPU_UNCACHED },
+      { "cpu_wait", NVK_DEBUG_CPU_WAIT },
       { NULL, 0 },
    };
 

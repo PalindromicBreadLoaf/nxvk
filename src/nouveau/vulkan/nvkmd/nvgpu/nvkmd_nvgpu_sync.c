@@ -56,6 +56,30 @@ nvkmd_nvgpu_syncobj_set_fence(struct vk_sync *sync, const NvFence *fence)
    simple_mtx_unlock(&syncobj->mutex);
 }
 
+enum nvkmd_nvgpu_fence_state
+nvkmd_nvgpu_syncobj_get_fence(struct vk_sync *sync, NvFence *fence_out)
+{
+   if (sync->type != &nvkmd_nvgpu_syncobj_type)
+      return NVKMD_NVGPU_FENCE_UNKNOWN;
+
+   struct nvkmd_nvgpu_syncobj *syncobj = to_nvgpu_syncobj(sync);
+
+   simple_mtx_lock(&syncobj->mutex);
+   const enum nvkmd_nvgpu_sync_state state = syncobj->state;
+   const NvFence fence = syncobj->fence;
+   simple_mtx_unlock(&syncobj->mutex);
+
+   switch (state) {
+   case NVKMD_NVGPU_SYNC_SIGNALED:
+      return NVKMD_NVGPU_FENCE_SIGNALED;
+   case NVKMD_NVGPU_SYNC_SUBMITTED:
+      *fence_out = fence;
+      return NVKMD_NVGPU_FENCE_PENDING;
+   default:
+      return NVKMD_NVGPU_FENCE_UNKNOWN;
+   }
+}
+
 static VkResult
 nvkmd_nvgpu_syncobj_init(struct vk_device *device,
                          struct vk_sync *sync,

@@ -41,6 +41,18 @@ extern const struct vk_sync_type nvkmd_nvgpu_syncobj_type;
 /* Route a channel completion fence into a signalled syncobj. */
 void nvkmd_nvgpu_syncobj_set_fence(struct vk_sync *sync, const NvFence *fence);
 
+/* Whether a vk_sync can be resolved to the syncpoint threshold that releases
+ * it.
+ */
+enum nvkmd_nvgpu_fence_state {
+   NVKMD_NVGPU_FENCE_UNKNOWN,
+   NVKMD_NVGPU_FENCE_SIGNALED,
+   NVKMD_NVGPU_FENCE_PENDING,
+};
+
+enum nvkmd_nvgpu_fence_state
+nvkmd_nvgpu_syncobj_get_fence(struct vk_sync *sync, NvFence *fence_out);
+
 VkResult nvkmd_nvgpu_try_create_pdev(struct vk_object_base *log_obj,
                                      enum nvk_debug debug_flags,
                                      struct nvkmd_pdev **pdev_out);
@@ -114,9 +126,11 @@ struct nvkmd_nvgpu_exec_ctx {
    iova_t fence_cmds_addr;
    uint32_t fence_cmds_dw;
 
-   /* Whether pushbufs have been appended since the last kickoff, and the
-    * completion fence returned by said kickoff.
-    */
+   /* Ring of syncpt-wait cmdlists. */
+   struct nvkmd_mem *wait_mem;
+   uint64_t wait_head_B;
+
+   /* Whether pushbufs have been appended since the last kickoff. */
    bool has_pending;
    bool has_fence;
    NvFence last_fence;
