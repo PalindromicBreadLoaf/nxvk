@@ -51,6 +51,9 @@ enum nvk_debug {
 
    /* Map every allocation GPU-uncached */
    NVK_DEBUG_GPU_UNCACHED = 1ull << 10,
+
+   /* Service GPU waits with a CPU block instead of an engine wait */
+   NVK_DEBUG_CPU_WAIT = 1ull << 11,
 };
 
 #endif /* NVK_DEBUG_H */
