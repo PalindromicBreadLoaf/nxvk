@@ -168,7 +168,8 @@ nvk_CreateQueryPool(VkDevice device,
    if (mem_size > 0) {
       result = nvkmd_dev_alloc_mapped_mem(dev->nvkmd, &dev->vk.base,
                                           mem_size, 0 /* align_B */,
-                                          NVKMD_MEM_GART,
+                                          NVKMD_MEM_GART |
+                                          NVKMD_MEM_GPU_UNCACHED,
                                           NVKMD_MEM_MAP_RDWR,
                                           &pool->mem);
       if (result != VK_SUCCESS) {
