@@ -4,7 +4,7 @@
 #
 # Compile the GLSL sources in this directory to SPIR-V and emit each as a C header
 # Run inside the toolchain image (carries glslangValidator):
-#   podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build \
+#   podman run --rm -v "$PWD:/work:z" -w /work nxvk \
 #       bash switch/smoke/shaders/gen-shaders.sh
 set -euo pipefail
 

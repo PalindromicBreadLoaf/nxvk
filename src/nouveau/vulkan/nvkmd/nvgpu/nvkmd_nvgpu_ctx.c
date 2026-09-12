@@ -6,32 +6,77 @@
 #include "nvkmd_nvgpu.h"
 
 #include "util/macros.h"
+#include "util/os_time.h"
+#include "util/u_math.h"
 #include "util/u_memory.h"
 #include "vk_log.h"
+#include "vk_sync.h"
+#include "vk_sync_timeline.h"
 
 #include <string.h>
 
 #include <switch/nvidia/gpu.h>
 #include <switch/result.h>
 
-/* Maxwell channel GPFIFO host class (0xB06F) syncpoint methods.
- * SYNCPOINTB takes OPERATION at bit 0 and SYNCPT_INDEX at bits 19:8.
- */
-#define NVGPU_HOST_SYNCPOINTA           0x0070
-#define NVGPU_HOST_SYNCPOINTB_OP_INCR   (1u << 0)
-#define NVGPU_HOST_SYNCPOINTB_IDX_SHIFT 8
+/* Maxwell channel GPFIFO host class (0xB06F) syncpoint methods. */
+#define NVGPU_HOST_SYNCPOINTA             0x0070
+#define NVGPU_HOST_SYNCPOINTB_OP_WAIT     (0u << 0)
+#define NVGPU_HOST_SYNCPOINTB_OP_INCR     (1u << 0)
+#define NVGPU_HOST_SYNCPOINTB_WAIT_SWITCH (1u << 4)
+#define NVGPU_HOST_SYNCPOINTB_IDX_SHIFT   8
 
-/* GPU submit wait bound (us) */
-#define NVGPU_SUBMIT_TIMEOUT_US 10000000
+#define NVGPU_SYNCPT_CMD_DW 3
+#define NVGPU_FENCE_CMD_DW  (2 + NVGPU_SYNCPT_CMD_DW)
+
+/* Host class cache maintenance. */
+#define NVGPU_HOST_MEM_OP_B                    0x002c
+#define NVGPU_HOST_MEM_OP_L2_SYSMEM_INVALIDATE (0x0eu << 27)
+#define NVGPU_HOST_MEM_OP_L2_FLUSH_DIRTY       (0x10u << 27)
+
+#define NVGPU_ACQUIRE_CMD_DW 4
+
+#define NVGPU_GPFIFO_RESERVED_ENTRIES 3
+
+/* Size of the per-context syncpt wait ring. */
+#define NVGPU_WAIT_RING_SIZE_B ((uint64_t)32 << 10)
+
+static VkResult nvkmd_nvgpu_exec_ctx_flush(struct nvkmd_ctx *_ctx,
+                                           struct vk_object_base *log_obj);
+static VkResult nvkmd_nvgpu_exec_ctx_sync(struct nvkmd_ctx *_ctx,
+                                          struct vk_object_base *log_obj);
 
 static uint32_t
 gen_fence_cmdlist(uint32_t *cmds, uint32_t syncpt_id)
 {
-   cmds[0] = 0x20000000u | (2u << 16) | (NVGPU_HOST_SYNCPOINTA >> 2);
-   cmds[1] = 0;
-   cmds[2] = NVGPU_HOST_SYNCPOINTB_OP_INCR |
+   cmds[0] = 0x20000000u | (1u << 16) | (NVGPU_HOST_MEM_OP_B >> 2);
+   cmds[1] = NVGPU_HOST_MEM_OP_L2_FLUSH_DIRTY;
+   cmds[2] = 0x20000000u | (2u << 16) | (NVGPU_HOST_SYNCPOINTA >> 2);
+   cmds[3] = 0;
+   cmds[4] = NVGPU_HOST_SYNCPOINTB_OP_INCR |
              (syncpt_id << NVGPU_HOST_SYNCPOINTB_IDX_SHIFT);
-   return 3;
+   return NVGPU_FENCE_CMD_DW;
+}
+
+static uint32_t
+gen_wait_cmdlist(uint32_t *cmds, const NvFence *fence)
+{
+   cmds[0] = 0x20000000u | (2u << 16) | (NVGPU_HOST_SYNCPOINTA >> 2);
+   cmds[1] = fence->value;
+   cmds[2] = NVGPU_HOST_SYNCPOINTB_OP_WAIT |
+             NVGPU_HOST_SYNCPOINTB_WAIT_SWITCH |
+             (fence->id << NVGPU_HOST_SYNCPOINTB_IDX_SHIFT);
+   return NVGPU_SYNCPT_CMD_DW;
+}
+
+/* Write the GM20B L2 back to sysmem and drop it. */
+static uint32_t
+gen_acquire_cmdlist(uint32_t *cmds)
+{
+   cmds[0] = 0x20000000u | (1u << 16) | (NVGPU_HOST_MEM_OP_B >> 2);
+   cmds[1] = NVGPU_HOST_MEM_OP_L2_FLUSH_DIRTY;
+   cmds[2] = 0x20000000u | (1u << 16) | (NVGPU_HOST_MEM_OP_B >> 2);
+   cmds[3] = NVGPU_HOST_MEM_OP_L2_SYSMEM_INVALIDATE;
+   return NVGPU_ACQUIRE_CMD_DW;
 }
 
 static const char *
@@ -100,11 +145,13 @@ nvkmd_nvgpu_warmup_channel(struct nvkmd_nvgpu_exec_ctx *ctx,
 
    struct nvkmd_mem *mem;
    result = nvkmd_dev_alloc_mapped_mem(ctx->base.dev, log_obj, max_dw * 4, 0,
-                                       NVKMD_MEM_LOCAL, NVKMD_MEM_MAP_WR, &mem);
+                                       NVKMD_MEM_LOCAL |
+                                       NVKMD_MEM_GPU_UNCACHED,
+                                       NVKMD_MEM_MAP_WR, &mem);
    if (result != VK_SUCCESS)
       return result;
 
-   uint32_t fence[3];
+   uint32_t fence[NVGPU_FENCE_CMD_DW];
    const uint32_t fence_dw = gen_fence_cmdlist(fence, syncpt);
 
    uint32_t *cmds = mem->map;
@@ -204,26 +251,45 @@ nvkmd_nvgpu_create_exec_ctx(struct nvkmd_dev *_dev,
 
    result = nvkmd_dev_alloc_mapped_mem(&dev->base, log_obj,
                                        NVKMD_NVGPU_SMALL_PAGE_SIZE_B, 0,
-                                       NVKMD_MEM_LOCAL, NVKMD_MEM_MAP_WR,
-                                       &ctx->fence_mem);
+                                       NVKMD_MEM_LOCAL |
+                                       NVKMD_MEM_GPU_UNCACHED,
+                                       NVKMD_MEM_MAP_WR, &ctx->fence_mem);
    if (result != VK_SUCCESS)
       goto fail_zcull;
 
-   ctx->fence_cmds_dw = gen_fence_cmdlist(ctx->fence_mem->map,
+   uint32_t *builtin = ctx->fence_mem->map;
+
+   ctx->fence_cmds_dw = gen_fence_cmdlist(builtin,
                                           nvGpuChannelGetSyncpointId(&ctx->channel));
    ctx->fence_cmds_addr = ctx->fence_mem->va->addr;
+
+   ctx->acquire_cmds_dw = gen_acquire_cmdlist(&builtin[ctx->fence_cmds_dw]);
+   ctx->acquire_cmds_addr = ctx->fence_cmds_addr + ctx->fence_cmds_dw * 4;
+
+   builtin[ctx->fence_cmds_dw + ctx->acquire_cmds_dw] = 0;
+   ctx->acquire_sync_addr = ctx->acquire_cmds_addr + ctx->acquire_cmds_dw * 4;
 
    /* Written once here, refetched from memory on every kickoff. */
    nvkmd_mem_sync_map_to_gpu(ctx->fence_mem, 0, ctx->fence_mem->size_B);
 
-   result = nvkmd_nvgpu_warmup_channel(ctx, log_obj);
+   result = nvkmd_dev_alloc_mapped_mem(&dev->base, log_obj,
+                                       NVGPU_WAIT_RING_SIZE_B, 0,
+                                       NVKMD_MEM_LOCAL |
+                                       NVKMD_MEM_GPU_UNCACHED,
+                                       NVKMD_MEM_MAP_WR, &ctx->wait_mem);
    if (result != VK_SUCCESS)
       goto fail_fence;
+
+   result = nvkmd_nvgpu_warmup_channel(ctx, log_obj);
+   if (result != VK_SUCCESS)
+      goto fail_wait;
 
    *ctx_out = &ctx->base;
 
    return VK_SUCCESS;
 
+fail_wait:
+   nvkmd_mem_unref(ctx->wait_mem);
 fail_fence:
    nvkmd_mem_unref(ctx->fence_mem);
 fail_zcull:
@@ -234,6 +300,32 @@ fail_channel:
 fail_ctx:
    FREE(ctx);
    return result;
+}
+
+/* Acquire the caches ahead of the first real entry of each kickoff. */
+static VkResult
+emit_cache_acquire(struct nvkmd_nvgpu_exec_ctx *ctx,
+                   struct vk_object_base *log_obj)
+{
+   if (ctx->has_acquire)
+      return VK_SUCCESS;
+
+   Result rc = nvGpuChannelAppendEntry(&ctx->channel, ctx->acquire_cmds_addr,
+                                       ctx->acquire_cmds_dw,
+                                       GPFIFO_ENTRY_NOT_MAIN, 0);
+   if (R_SUCCEEDED(rc)) {
+      rc = nvGpuChannelAppendEntry(&ctx->channel, ctx->acquire_sync_addr, 1,
+                                   GPFIFO_ENTRY_NOT_MAIN |
+                                   GPFIFO_ENTRY_NO_PREFETCH, 0);
+   }
+   if (R_FAILED(rc)) {
+      return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
+                       "cache acquire append failed: 0x%x", (unsigned)rc);
+   }
+
+   ctx->has_acquire = true;
+
+   return VK_SUCCESS;
 }
 
 static VkResult
@@ -272,6 +364,7 @@ nvkmd_nvgpu_exec_ctx_flush(struct nvkmd_ctx *_ctx,
    nvGpuChannelGetFence(&ctx->channel, &ctx->last_fence);
    ctx->has_fence = true;
    ctx->has_pending = false;
+   ctx->has_acquire = false;
 
    return VK_SUCCESS;
 }
@@ -285,12 +378,98 @@ nvkmd_nvgpu_exec_ctx_destroy(struct nvkmd_ctx *_ctx)
    if (ctx->has_fence)
       nvFenceWait(&ctx->last_fence, NVGPU_SUBMIT_TIMEOUT_US);
 
+   nvGpuChannelClose(&ctx->channel);
+
+   nvkmd_mem_unref(ctx->wait_mem);
    nvkmd_mem_unref(ctx->fence_mem);
    if (ctx->zcull_mem != NULL)
       nvkmd_mem_unref(ctx->zcull_mem);
-   nvGpuChannelClose(&ctx->channel);
 
    FREE(ctx);
+}
+
+/* Resolve one dependency to the syncpoint threshold that releases it. */
+static enum nvkmd_nvgpu_fence_state
+resolve_wait_fence(struct vk_device *dev,
+                   const struct vk_sync_wait *wait,
+                   NvFence *fence_out)
+{
+   struct vk_sync_timeline *timeline = vk_sync_as_timeline(wait->sync);
+   if (timeline == NULL)
+      return nvkmd_nvgpu_syncobj_get_fence(wait->sync, fence_out);
+
+   struct vk_sync_timeline_point *point;
+   if (vk_sync_timeline_get_point(dev, timeline, wait->wait_value,
+                                  &point) != VK_SUCCESS)
+      return NVKMD_NVGPU_FENCE_UNKNOWN;
+
+   if (point == NULL)
+      return NVKMD_NVGPU_FENCE_SIGNALED;
+
+   const enum nvkmd_nvgpu_fence_state state =
+      nvkmd_nvgpu_syncobj_get_fence(&point->sync, fence_out);
+
+   vk_sync_timeline_point_unref(dev, point);
+
+   return state;
+}
+
+/* Reserve a cache atom aligned run of the wait ring for dw dwords. */
+static VkResult
+wait_ring_reserve(struct nvkmd_nvgpu_exec_ctx *ctx,
+                  struct vk_object_base *log_obj,
+                  uint32_t dw, uint32_t **cmds_out)
+{
+   const uint32_t atom_B = ctx->base.dev->pdev->dev_info.nc_atom_size_B;
+   const uint64_t span_B = align64(dw * 4, atom_B);
+
+   if (unlikely(ctx->channel.num_entries + 1 +
+                NVGPU_GPFIFO_RESERVED_ENTRIES > GPFIFO_QUEUE_SIZE)) {
+      VkResult result = nvkmd_nvgpu_exec_ctx_flush(&ctx->base, log_obj);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+
+   if (ctx->wait_head_B + span_B > ctx->wait_mem->size_B) {
+      VkResult result = nvkmd_nvgpu_exec_ctx_sync(&ctx->base, log_obj);
+      if (result != VK_SUCCESS)
+         return result;
+
+      ctx->wait_head_B = 0;
+   }
+
+   *cmds_out = (uint32_t *)((char *)ctx->wait_mem->map + ctx->wait_head_B);
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+wait_ring_submit(struct nvkmd_nvgpu_exec_ctx *ctx,
+                 struct vk_object_base *log_obj, uint32_t dw)
+{
+   const uint32_t atom_B = ctx->base.dev->pdev->dev_info.nc_atom_size_B;
+   const uint64_t span_B = align64(dw * 4, atom_B);
+
+   nvkmd_mem_sync_map_to_gpu(ctx->wait_mem, ctx->wait_head_B, span_B);
+
+   VkResult result = emit_cache_acquire(ctx, log_obj);
+   if (result != VK_SUCCESS)
+      return result;
+
+   Result rc = nvGpuChannelAppendEntry(&ctx->channel,
+                                       ctx->wait_mem->va->addr +
+                                       ctx->wait_head_B, dw,
+                                       GPFIFO_ENTRY_NOT_MAIN |
+                                       GPFIFO_ENTRY_NO_PREFETCH, 0);
+   if (R_FAILED(rc)) {
+      return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
+                       "syncpt wait append failed: 0x%x", (unsigned)rc);
+   }
+
+   ctx->wait_head_B += span_B;
+   ctx->has_pending = true;
+
+   return VK_SUCCESS;
 }
 
 static VkResult
@@ -299,9 +478,53 @@ nvkmd_nvgpu_exec_ctx_wait(struct nvkmd_ctx *_ctx,
                           uint32_t wait_count,
                           const struct vk_sync_wait *waits)
 {
-   /* Work submitted through this context runs on a single in-order channel,
-    * so same-context ordering is implicit.
-    */
+   struct nvkmd_nvgpu_exec_ctx *ctx = nvkmd_nvgpu_exec_ctx(_ctx);
+   struct vk_device *dev = log_obj->device;
+   VkResult result;
+
+   if (wait_count == 0)
+      return VK_SUCCESS;
+
+   uint32_t *cmds = NULL;
+   uint32_t cmds_dw = 0;
+
+   const uint64_t max_B = (uint64_t)wait_count * NVGPU_SYNCPT_CMD_DW * 4;
+   if (!(_ctx->dev->pdev->debug_flags & NVK_DEBUG_CPU_WAIT) &&
+       max_B <= ctx->wait_mem->size_B) {
+      result = wait_ring_reserve(ctx, log_obj, wait_count * NVGPU_SYNCPT_CMD_DW,
+                                 &cmds);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+
+   const uint32_t self_syncpt = nvGpuChannelGetSyncpointId(&ctx->channel);
+
+   for (uint32_t i = 0; i < wait_count; i++) {
+      NvFence fence;
+      const enum nvkmd_nvgpu_fence_state state = cmds == NULL
+         ? NVKMD_NVGPU_FENCE_UNKNOWN
+         : resolve_wait_fence(dev, &waits[i], &fence);
+
+      if (state == NVKMD_NVGPU_FENCE_SIGNALED)
+         continue;
+
+      if (state == NVKMD_NVGPU_FENCE_PENDING) {
+         if (fence.id != self_syncpt)
+            cmds_dw += gen_wait_cmdlist(&cmds[cmds_dw], &fence);
+         continue;
+      }
+
+      const uint64_t abs_timeout =
+         os_time_get_absolute_timeout(NVGPU_SUBMIT_TIMEOUT_US * 1000ull);
+      result = vk_sync_wait(dev, waits[i].sync, waits[i].wait_value,
+                            VK_SYNC_WAIT_COMPLETE, abs_timeout);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+
+   if (cmds_dw > 0)
+      return wait_ring_submit(ctx, log_obj, cmds_dw);
+
    return VK_SUCCESS;
 }
 
@@ -318,17 +541,22 @@ nvkmd_nvgpu_exec_ctx_exec(struct nvkmd_ctx *_ctx,
       while (execs[i + run - 1].incomplete && i + run < exec_count)
          run++;
 
-      /* Keep room for the trailing fence cmdlist entry. */
-      if (unlikely(ctx->channel.num_entries + run >= GPFIFO_QUEUE_SIZE)) {
+      if (unlikely(ctx->channel.num_entries + run +
+                   NVGPU_GPFIFO_RESERVED_ENTRIES > GPFIFO_QUEUE_SIZE)) {
          VkResult result = nvkmd_nvgpu_exec_ctx_flush(&ctx->base, log_obj);
          if (result != VK_SUCCESS)
             return result;
 
-         if (unlikely(run >= GPFIFO_QUEUE_SIZE)) {
+         if (unlikely(run + NVGPU_GPFIFO_RESERVED_ENTRIES >
+                      GPFIFO_QUEUE_SIZE)) {
             return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
                              "%u chained pushes exceed the gpfifo queue", run);
          }
       }
+
+      VkResult result = emit_cache_acquire(ctx, log_obj);
+      if (result != VK_SUCCESS)
+         return result;
 
       for (uint32_t j = 0; j < run; j++, i++) {
          /* Hardware limits shared by all current GPUs. */
@@ -354,6 +582,31 @@ nvkmd_nvgpu_exec_ctx_exec(struct nvkmd_ctx *_ctx,
 }
 
 static VkResult
+nvkmd_nvgpu_signal_one(struct vk_device *dev,
+                       const struct vk_sync_signal *signal,
+                       NvGpuChannel *channel,
+                       const NvFence *fence)
+{
+   struct vk_sync_timeline *timeline = vk_sync_as_timeline(signal->sync);
+
+   if (timeline == NULL) {
+      nvkmd_nvgpu_syncobj_set_fence(signal->sync, channel, fence);
+      return VK_SUCCESS;
+   }
+
+   struct vk_sync_timeline_point *point;
+   VkResult result = vk_sync_timeline_alloc_point(dev, timeline,
+                                                  signal->signal_value,
+                                                  &point);
+   if (result != VK_SUCCESS)
+      return result;
+
+   nvkmd_nvgpu_syncobj_set_fence(&point->sync, channel, fence);
+
+   return vk_sync_timeline_point_install(dev, point);
+}
+
+static VkResult
 nvkmd_nvgpu_exec_ctx_signal(struct nvkmd_ctx *_ctx,
                             struct vk_object_base *log_obj,
                             uint32_t signal_count,
@@ -361,7 +614,6 @@ nvkmd_nvgpu_exec_ctx_signal(struct nvkmd_ctx *_ctx,
 {
    struct nvkmd_nvgpu_exec_ctx *ctx = nvkmd_nvgpu_exec_ctx(_ctx);
 
-   /* signal() implies flush() */
    VkResult result = nvkmd_nvgpu_exec_ctx_flush(&ctx->base, log_obj);
    if (result != VK_SUCCESS)
       return result;
@@ -370,8 +622,12 @@ nvkmd_nvgpu_exec_ctx_signal(struct nvkmd_ctx *_ctx,
     * wait resolves against it.
     */
    const NvFence *fence = ctx->has_fence ? &ctx->last_fence : NULL;
-   for (uint32_t i = 0; i < signal_count; i++)
-      nvkmd_nvgpu_syncobj_set_fence(signals[i].sync, fence);
+   for (uint32_t i = 0; i < signal_count; i++) {
+      result = nvkmd_nvgpu_signal_one(log_obj->device, &signals[i],
+                                      &ctx->channel, fence);
+      if (result != VK_SUCCESS)
+         return result;
+   }
 
    return VK_SUCCESS;
 }

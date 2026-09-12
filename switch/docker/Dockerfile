@@ -4,10 +4,10 @@
 # Toolchain image that cross-builds Mesa/NVK (Vulkan) for the Nintendo Switch (GM20B).
 #
 # Build (ested on Fedora Linux with Podman):
-#   podman build -t nvk-switch-build switch/docker
+#   podman build -t nxvk switch/docker
 #
 # Everything runs inside the image with the repo bind-mounted at /work:
-#   podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build bash switch/docker/verify-toolchain.sh
+#   podman run --rm -v "$PWD:/work:z" -w /work nxvk bash switch/docker/verify-toolchain.sh
 FROM docker.io/devkitpro/devkita64
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -22,8 +22,9 @@ RUN python3 -m pip install --break-system-packages --no-cache-dir 'meson>=1.4' m
 # Rust
 ENV RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo
 ENV PATH="/opt/rust/cargo/bin:${PATH}"
+ENV RUST_NIGHTLY=nightly-2026-07-02
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-        sh -s -- -y --default-toolchain nightly --profile minimal --component rust-src \
+        sh -s -- -y --default-toolchain ${RUST_NIGHTLY} --profile minimal --component rust-src \
     && rustc --version && cargo --version
 
 # bindgen: C->Rust FFI for NAK. cbindgen: Rust->C headers for NIL.

@@ -4,7 +4,7 @@
 #
 # This checks to verify that the build environment is working as expected.
 # Run inside the image with the repo at /work:
-#   podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build \
+#   podman run --rm -v "$PWD:/work:z" -w /work nxvk \
 #       bash switch/docker/verify-toolchain.sh
 
 set -e

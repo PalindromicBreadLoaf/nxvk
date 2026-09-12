@@ -5,7 +5,7 @@
 # Build a prebuilt Rust std SYSROOT for the aarch64-switch-horizon target so that meson finds std.
 #
 # Run inside the toolchain image with the repo bind-mounted at /work:
-#   podman run --rm -v "$PWD:/work:z" -w /work nvk-switch-build \
+#   podman run --rm -v "$PWD:/work:z" -w /work nxvk \
 #       bash switch/rust/build-std-sysroot.sh
 set -e
 
@@ -19,7 +19,7 @@ RUSTC_SYSROOT="$(rustc --print sysroot)"
 rm -rf /tmp/stdsr && mkdir -p /tmp/stdsr/src && cd /tmp/stdsr
 printf '#![no_main]\n' > src/lib.rs
 printf '[package]\nname="stdsr"\nversion="0.0.0"\nedition="2021"\n[lib]\ncrate-type=["rlib"]\n[profile.release]\npanic="abort"\n' > Cargo.toml
-cargo +nightly build --release -Zbuild-std=core,alloc,std,panic_abort --target "$TGT"
+cargo "+${RUST_NIGHTLY:-nightly}" build --release -Zbuild-std=core,alloc,std,panic_abort --target "$TGT"
 
 # Assemble the sysroot
 DEPS=/tmp/stdsr/target/$TGT/release/deps

@@ -114,10 +114,12 @@ nvkmd_nvgpu_alloc_tiled_mem(struct nvkmd_dev *_dev,
       flags |= NVKMD_MEM_COHERENT;
 
    /* The GM20B is not IO-coherent. A coherent map is made uncached by
-    * nvMapCreate(), so it sees GPU writes once they are flushed out of the GPU
-    * L2 at submit time.
+    * nvMapCreate().
     */
    const bool is_cpu_cacheable = !(flags & NVKMD_MEM_COHERENT);
+
+   if (!is_cpu_cacheable || (_dev->pdev->debug_flags & NVK_DEBUG_GPU_UNCACHED))
+      flags |= NVKMD_MEM_GPU_UNCACHED;
 
    void *cpu_addr = align_malloc(size_B, mem_align_B);
    if (cpu_addr == NULL)
