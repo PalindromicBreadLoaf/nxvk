@@ -143,11 +143,15 @@ struct nvkmd_nvgpu_exec_ctx {
    /* Zcull context bound to the channel. */
    struct nvkmd_mem *zcull_mem;
 
-   /* Builtin buffer holding the syncpt-increment fence cmdlist and the L2
-    * cache-acquire cmdlist. */
+   /* Builtin buffer holding the 3D class bind, the two syncpt increment fence
+    * cmdlists and the cache acquire cmdlist. */
    struct nvkmd_mem *fence_mem;
+   iova_t bind_cmds_addr;
+   uint32_t bind_cmds_dw;
    iova_t fence_cmds_addr;
    uint32_t fence_cmds_dw;
+   iova_t fence_cpu_cmds_addr;
+   uint32_t fence_cpu_cmds_dw;
    iova_t acquire_cmds_addr;
    uint32_t acquire_cmds_dw;
    /* One no-op dword */
@@ -160,6 +164,7 @@ struct nvkmd_nvgpu_exec_ctx {
    bool has_pending;
    bool has_acquire;
    bool has_fence;
+   bool fence_cpu_visible;
    NvFence last_fence;
 
    /* The latched channel fault has already been logged. */
