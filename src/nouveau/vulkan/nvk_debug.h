@@ -75,6 +75,9 @@ enum nvk_debug {
 
    /* Run copies through vk_meta instead of the copy engine */
    NVK_DEBUG_META_COPY = 1ull << 18,
+
+   /* Fill the channel warmup ramp with fence cmdlists rather than no-ops */
+   NVK_DEBUG_DENSE_WARMUP = 1ull << 19,
 };
 
 enum nvk_experimental {

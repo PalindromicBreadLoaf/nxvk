@@ -196,7 +196,7 @@ nvkmd_nvgpu_report_channel_err(struct nvkmd_nvgpu_exec_ctx *ctx,
                     err.info[4], err.info[5], err.info[6], err.info[7]);
 }
 
-/* Ramp inert fence-only kickoffs to ≥ any expected init IB size,
+/* Ramp inert kickoffs to >= any expected init IB size,
  * verifying each step so a stall is pinned to the size that caused it.
  */
 static VkResult
@@ -219,10 +219,21 @@ nvkmd_nvgpu_warmup_channel(struct nvkmd_nvgpu_exec_ctx *ctx,
 
    uint32_t fence[NVGPU_SYNCPT_CMD_DW];
    const uint32_t fence_dw = gen_host_fence_cmdlist(fence, syncpt);
+   const bool dense =
+      ctx->base.dev->pdev->debug_flags & NVK_DEBUG_DENSE_WARMUP;
 
    uint32_t *cmds = mem->map;
-   for (uint32_t i = 0; i + fence_dw <= max_dw; i += fence_dw)
-      memcpy(&cmds[i], fence, fence_dw * 4);
+   if (dense) {
+      for (uint32_t i = 0; i + fence_dw <= max_dw; i += fence_dw)
+         memcpy(&cmds[i], fence, fence_dw * 4);
+   } else {
+      memset(cmds, 0, max_dw * 4);
+      for (uint32_t r = 0; r < ARRAY_SIZE(ramp_dw); r++) {
+         assert(ramp_dw[r] >= fence_dw &&
+                (r == 0 || ramp_dw[r] - fence_dw >= ramp_dw[r - 1]));
+         memcpy(&cmds[ramp_dw[r] - fence_dw], fence, fence_dw * 4);
+      }
+   }
 
    /* The map is CPU-cached and the host fetches the pushbuf from memory. */
    nvkmd_mem_sync_map_to_gpu(mem, 0, mem->size_B);
@@ -239,8 +250,9 @@ nvkmd_nvgpu_warmup_channel(struct nvkmd_nvgpu_exec_ctx *ctx,
    }
 
    for (uint32_t r = 0; r < ARRAY_SIZE(ramp_dw); r++) {
-      const uint32_t fences = ramp_dw[r] / fence_dw;
-      const uint32_t dw = fences * fence_dw;
+      const uint32_t dw =
+         dense ? (ramp_dw[r] / fence_dw) * fence_dw : ramp_dw[r];
+      const uint32_t fences = dense ? dw / fence_dw : r + 1;
 
       Result rc = nvGpuChannelAppendEntry(&ctx->channel, mem->va->addr, dw,
                                           GPFIFO_ENTRY_NOT_MAIN |
