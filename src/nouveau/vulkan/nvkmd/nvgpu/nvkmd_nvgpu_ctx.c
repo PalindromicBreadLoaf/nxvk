@@ -28,6 +28,7 @@
 #define NVGPU_HOST_SET_OBJECT             0x0000
 #define NVGPU_HOST_SYNCPOINTA             0x0070
 #define NVGPU_HOST_SYNCPOINTB_OP_WAIT     (0u << 0)
+#define NVGPU_HOST_SYNCPOINTB_OP_INCR     (1u << 0)
 #define NVGPU_HOST_SYNCPOINTB_WAIT_SWITCH (1u << 4)
 #define NVGPU_HOST_SYNCPOINTB_IDX_SHIFT   8
 
@@ -99,6 +100,17 @@ gen_fence_cmdlist(uint32_t *cmds, uint32_t syncpt_id, bool cpu_visible)
 
    assert(dw == NVGPU_FENCE_CMD_DW(cpu_visible));
    return dw;
+}
+
+/* Signal from the host for cmdlists that do no engine work. */
+static uint32_t
+gen_host_fence_cmdlist(uint32_t *cmds, uint32_t syncpt_id)
+{
+   cmds[0] = NVGPU_CMD_INCR(NVGPU_HOST_SYNCPOINTA, 2);
+   cmds[1] = 0;
+   cmds[2] = NVGPU_HOST_SYNCPOINTB_OP_INCR |
+             (syncpt_id << NVGPU_HOST_SYNCPOINTB_IDX_SHIFT);
+   return NVGPU_SYNCPT_CMD_DW;
 }
 
 static uint32_t
@@ -205,8 +217,8 @@ nvkmd_nvgpu_warmup_channel(struct nvkmd_nvgpu_exec_ctx *ctx,
    if (result != VK_SUCCESS)
       return result;
 
-   uint32_t fence[NVGPU_FENCE_CPU_CMD_DW];
-   const uint32_t fence_dw = gen_fence_cmdlist(fence, syncpt, false);
+   uint32_t fence[NVGPU_SYNCPT_CMD_DW];
+   const uint32_t fence_dw = gen_host_fence_cmdlist(fence, syncpt);
 
    uint32_t *cmds = mem->map;
    for (uint32_t i = 0; i + fence_dw <= max_dw; i += fence_dw)
@@ -215,8 +227,7 @@ nvkmd_nvgpu_warmup_channel(struct nvkmd_nvgpu_exec_ctx *ctx,
    /* The map is CPU-cached and the host fetches the pushbuf from memory. */
    nvkmd_mem_sync_map_to_gpu(mem, 0, mem->size_B);
 
-   /* The fence is an engine method, so bind the class before the first one. */
-Result bind_rc = nvGpuChannelAppendEntry(&ctx->channel, ctx->bind_cmds_addr,
+   Result bind_rc = nvGpuChannelAppendEntry(&ctx->channel, ctx->bind_cmds_addr,
                                             ctx->bind_cmds_dw,
                                             GPFIFO_ENTRY_NOT_MAIN |
                                             GPFIFO_ENTRY_NO_PREFETCH, 0);
@@ -240,7 +251,7 @@ Result bind_rc = nvGpuChannelAppendEntry(&ctx->channel, ctx->bind_cmds_addr,
          goto out;
       }
 
-      for (uint32_t k = 0; k < fences * NVGPU_FENCE_INCRS(false); k++)
+      for (uint32_t k = 0; k < fences; k++)
          nvGpuChannelIncrFence(&ctx->channel);
 
       rc = nvGpuChannelKickoff(&ctx->channel);
