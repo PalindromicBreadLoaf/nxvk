@@ -78,6 +78,9 @@ enum nvk_debug {
 
    /* Fill the channel warmup ramp with fence cmdlists rather than no-ops */
    NVK_DEBUG_DENSE_WARMUP = 1ull << 19,
+
+   /* Issue one copy engine launch per line instead of one per copy */
+   NVK_DEBUG_SPLIT_CE_COPY = 1ull << 20,
 };
 
 enum nvk_experimental {

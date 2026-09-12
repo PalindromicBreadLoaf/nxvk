@@ -376,6 +376,10 @@ nvk_cmd_copy_buffer_ce(struct nvk_cmd_buffer *cmd,
 {
    VK_FROM_HANDLE(nvk_buffer, src, pCopyBufferInfo->srcBuffer);
    VK_FROM_HANDLE(nvk_buffer, dst, pCopyBufferInfo->dstBuffer);
+   const struct nvk_device *dev = nvk_cmd_buffer_device(cmd);
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+   const bool one_line_per_launch =
+      pdev->debug_flags & NVK_DEBUG_SPLIT_CE_COPY;
 
    for (unsigned r = 0; r < pCopyBufferInfo->regionCount; r++) {
       const VkBufferCopy2 *region = &pCopyBufferInfo->pRegions[r];
@@ -387,17 +391,25 @@ nvk_cmd_copy_buffer_ce(struct nvk_cmd_buffer *cmd,
       while (size) {
          struct nv_push *p = nvk_cmd_buffer_push(cmd, 10);
 
+         const uint32_t max_line_B = 1 << 17;
+         uint32_t line_B, lines;
+         if (size > max_line_B && !one_line_per_launch) {
+            line_B = max_line_B;
+            lines = MIN2(max_line_B, size / line_B);
+         } else {
+            line_B = MIN2(size, max_line_B);
+            lines = 1;
+         }
+
          P_MTHD(p, NV90B5, OFFSET_IN_UPPER);
          P_NV90B5_OFFSET_IN_UPPER(p, src_addr >> 32);
          P_NV90B5_OFFSET_IN_LOWER(p, src_addr & 0xffffffff);
          P_NV90B5_OFFSET_OUT_UPPER(p, dst_addr >> 32);
          P_NV90B5_OFFSET_OUT_LOWER(p, dst_addr & 0xffffffff);
-
-         unsigned bytes = MIN2(size, 1 << 17);
-
-         P_MTHD(p, NV90B5, LINE_LENGTH_IN);
-         P_NV90B5_LINE_LENGTH_IN(p, bytes);
-         P_NV90B5_LINE_COUNT(p, 1);
+         P_NV90B5_PITCH_IN(p, line_B);
+         P_NV90B5_PITCH_OUT(p, line_B);
+         P_NV90B5_LINE_LENGTH_IN(p, line_B);
+         P_NV90B5_LINE_COUNT(p, lines);
 
          P_IMMD(p, NV90B5, LAUNCH_DMA, {
                 .data_transfer_type = DATA_TRANSFER_TYPE_PIPELINED,
@@ -407,6 +419,7 @@ nvk_cmd_copy_buffer_ce(struct nvk_cmd_buffer *cmd,
                 .dst_memory_layout = DST_MEMORY_LAYOUT_PITCH,
          });
 
+         const uint64_t bytes = (uint64_t)line_B * lines;
          src_addr += bytes;
          dst_addr += bytes;
          size -= bytes;

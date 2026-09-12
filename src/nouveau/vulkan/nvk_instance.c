@@ -108,6 +108,7 @@ nvk_init_debug_flags(struct nvk_instance *instance)
       { "full_cmd_flush", NVK_DEBUG_FULL_CMD_FLUSH },
       { "meta_copy", NVK_DEBUG_META_COPY },
       { "dense_warmup", NVK_DEBUG_DENSE_WARMUP },
+      { "split_ce_copy", NVK_DEBUG_SPLIT_CE_COPY },
       { NULL, 0 },
    };
 
