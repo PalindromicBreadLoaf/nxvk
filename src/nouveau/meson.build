@@ -14,7 +14,9 @@ if with_tools.contains('drm-shim')
 endif
 
 if with_nouveau_vk
-  subdir('cubin')
+  if host_machine.system() != 'horizon'
+    subdir('cubin')
+  endif
   subdir('mme')
   subdir('vulkan')
 endif

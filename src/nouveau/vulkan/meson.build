@@ -16,8 +16,6 @@ nvk_files = files(
   'nvk_cmd_meta.c',
   'nvk_cmd_pool.c',
   'nvk_cmd_pool.h',
-  'nvk_cubin.c',
-  'nvk_cubin.h',
   'nvk_debug.h',
   'nvk_descriptor_set.h',
   'nvk_descriptor_set.c',
@@ -93,6 +91,8 @@ if host_machine.system() == 'horizon'
   )
 else
   nvk_files += files(
+    'nvk_cubin.c',
+    'nvk_cubin.h',
     'nvkmd/nouveau/nvkmd_nouveau.h',
     'nvkmd/nouveau/nvkmd_nouveau_ctx.c',
     'nvkmd/nouveau/nvkmd_nouveau_dev.c',
@@ -151,12 +151,10 @@ nvk_drirc = custom_target(
 
 nvk_deps = [
   dep_libdrm,
-  dep_elf,
   idep_nak,
   idep_nil,
   idep_nir,
   idep_mesautil,
-  idep_nouveau_cubin,
   idep_nouveau_mme,
   idep_nouveau_ws,
   idep_nvidia_headers,
@@ -165,6 +163,10 @@ nvk_deps = [
   idep_vulkan_wsi,
   idep_vulkan_wsi_headers,
 ]
+
+if host_machine.system() != 'horizon'
+  nvk_deps += [dep_elf, idep_nouveau_cubin]
+endif
 
 nvk_flags = []
 
