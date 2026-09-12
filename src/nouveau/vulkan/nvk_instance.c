@@ -105,6 +105,8 @@ nvk_init_debug_flags(struct nvk_instance *instance)
       { "full_arena_flush", NVK_DEBUG_FULL_ARENA_FLUSH },
       { "wsi", NVK_DEBUG_WSI },
       { "cpu_present", NVK_DEBUG_CPU_PRESENT },
+      { "full_cmd_flush", NVK_DEBUG_FULL_CMD_FLUSH },
+      { "meta_copy", NVK_DEBUG_META_COPY },
       { NULL, 0 },
    };
 

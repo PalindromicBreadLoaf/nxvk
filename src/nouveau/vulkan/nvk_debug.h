@@ -69,6 +69,12 @@ enum nvk_debug {
 
    /* Block the CPU on the render fence and dequeue through libnx. */
    NVK_DEBUG_CPU_PRESENT = 1ull << 16,
+
+   /* Flush whole command buffer mems on end. */
+   NVK_DEBUG_FULL_CMD_FLUSH = 1ull << 17,
+
+   /* Run copies through vk_meta instead of the copy engine */
+   NVK_DEBUG_META_COPY = 1ull << 18,
 };
 
 enum nvk_experimental {

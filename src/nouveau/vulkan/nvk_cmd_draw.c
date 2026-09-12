@@ -5971,6 +5971,7 @@ nvk_cmd_begin_cond_render_copy_engine(struct nvk_cmd_buffer *cmd,
        */
       assert(cmd->cond_render_mem->mem->size_B > 32);
       memset(cmd->cond_render_mem->mem->map, 0x00, 32);
+      nvk_cmd_mem_add_used(cmd->cond_render_mem, 32);
    }
    const uint64_t tmp_addr = cmd->cond_render_mem->mem->va->addr;
 

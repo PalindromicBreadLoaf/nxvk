@@ -305,6 +305,19 @@ nvk_meta_resolve_rendering(struct nvk_cmd_buffer *cmd,
    nvk_meta_end_gfx(cmd, &save);
 }
 
+/* Whether a copy should go to the copy engine rather than to vk_meta. */
+static bool
+nvk_copy_prefers_copy_engine(struct nvk_cmd_buffer *cmd)
+{
+   const struct nvk_device *dev = nvk_cmd_buffer_device(cmd);
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+
+   if (pdev->debug_flags & NVK_DEBUG_META_COPY)
+      return false;
+
+   return pdev->info.type == NV_DEVICE_TYPE_SOC;
+}
+
 static bool
 nvk_meta_image_copy_gfx_supported(struct nvk_image *img)
 {
@@ -425,6 +438,7 @@ nvk_CmdCopyImageToBuffer2(VkCommandBuffer commandBuffer,
 
    VkQueueFlags queue_flags = nvk_cmd_buffer_queue_flags(cmd);
    if ((queue_flags & VK_QUEUE_COMPUTE_BIT) &&
+       !nvk_copy_prefers_copy_engine(cmd) &&
        nvk_meta_image_copy_compute_supported(src)) {
       nvk_cmd_copy_image_to_buffer_meta(cmd, pCopyImageToBufferInfo);
    } else {
@@ -459,6 +473,7 @@ nvk_CmdCopyBufferToImage2(VkCommandBuffer commandBuffer,
 
    VkQueueFlags queue_flags = nvk_cmd_buffer_queue_flags(cmd);
    if ((queue_flags & VK_QUEUE_COMPUTE_BIT) &&
+       !nvk_copy_prefers_copy_engine(cmd) &&
        nvk_meta_image_copy_compute_supported(dst)) {
       nvk_cmd_copy_buffer_to_image_meta(cmd, pCopyBufferToImageInfo,
                               VK_PIPELINE_BIND_POINT_COMPUTE);
@@ -498,7 +513,9 @@ nvk_CmdCopyImage2(VkCommandBuffer commandBuffer,
    VK_FROM_HANDLE(nvk_image, dst, pCopyImageInfo->dstImage);
 
    VkQueueFlags queue_flags = nvk_cmd_buffer_queue_flags(cmd);
-   if ((queue_flags & VK_QUEUE_GRAPHICS_BIT) &&
+   if (nvk_copy_prefers_copy_engine(cmd)) {
+      nvk_cmd_copy_image_ce(cmd, pCopyImageInfo);
+   } else if ((queue_flags & VK_QUEUE_GRAPHICS_BIT) &&
        nvk_meta_image_copy_gfx_supported(src) &&
        nvk_meta_image_copy_gfx_supported(dst)) {
       nvk_cmd_copy_image_meta(cmd, pCopyImageInfo,
@@ -532,7 +549,8 @@ nvk_CmdCopyBuffer2(VkCommandBuffer commandBuffer,
    VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
 
    VkQueueFlags queue_flags = nvk_cmd_buffer_queue_flags(cmd);
-   if (queue_flags & VK_QUEUE_COMPUTE_BIT) {
+   if ((queue_flags & VK_QUEUE_COMPUTE_BIT) &&
+       !nvk_copy_prefers_copy_engine(cmd)) {
       nvk_cmd_copy_buffer_meta(cmd, pCopyBufferInfo);
    } else {
       nvk_cmd_copy_buffer_ce(cmd, pCopyBufferInfo);

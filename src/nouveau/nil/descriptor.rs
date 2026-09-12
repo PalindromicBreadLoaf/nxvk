@@ -19,10 +19,21 @@ use nvidia_headers::classes::clcb97::tex as clcb97;
 use nvidia_headers::classes::clcb97::HOPPER_A;
 use paste::paste;
 use std::ops::Range;
+use std::sync::OnceLock;
 
 use crate::extent::{units, Extent4D};
 use crate::format::Format;
 use crate::image::{Image, ImageDim, SampleLayout, View, ViewAccess, ViewType};
+
+/// Whether block-linear texture headers may ask the texture unit to promote a
+/// sector fetch to two.
+fn sector_promotion_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| match std::env::var("NVK_SECTOR_PROMOTION") {
+        Ok(v) => v == "1" || v == "true",
+        Err(_) => false,
+    })
+}
 
 macro_rules! set_enum {
     ($th:expr, $cls:ident, $field:ident, $enum:ident) => {
@@ -521,7 +532,14 @@ fn nvb097_fill_image_view_desc(
 
     th.set_field(clb097::TEXHEAD_BL_S_R_G_B_CONVERSION, view.format.is_srgb());
 
-    set_enum!(th, clb097, TEXHEAD_BL_SECTOR_PROMOTION, NO_PROMOTION);
+    if tiling.is_tiled()
+        && dev.type_ == NV_DEVICE_TYPE_SOC
+        && sector_promotion_enabled()
+    {
+        set_enum!(th, clb097, TEXHEAD_BL_SECTOR_PROMOTION, PROMOTE_TO_2_V);
+    } else {
+        set_enum!(th, clb097, TEXHEAD_BL_SECTOR_PROMOTION, NO_PROMOTION);
+    }
     set_enum!(th, clb097, TEXHEAD_BL_BORDER_SIZE, BORDER_SAMPLER_COLOR);
 
     // In the sampler, the two options for FLOAT_COORD_NORMALIZATION are:

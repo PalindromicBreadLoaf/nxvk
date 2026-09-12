@@ -199,6 +199,8 @@ nvk_cmd_buffer_flush_push(struct nvk_cmd_buffer *cmd, bool incomplete)
       };
       util_dynarray_append(&cmd->pushes, push);
 
+      nvk_cmd_mem_add_used(cmd->push_mem, mem_offset + push.range);
+
       cmd->prev_subc = NVC0_FIFO_SUBC_FROM_PKHDR(cmd->push.last_hdr_dw);
    }
 
@@ -263,6 +265,7 @@ nvk_cmd_buffer_upload_alloc(struct nvk_cmd_buffer *cmd,
       *ptr = (char *)cmd->upload_mem->mem->map + offset;
 
       cmd->upload_offset = offset + size;
+      nvk_cmd_mem_add_used(cmd->upload_mem, cmd->upload_offset);
 
       return VK_SUCCESS;
    }
@@ -274,6 +277,7 @@ nvk_cmd_buffer_upload_alloc(struct nvk_cmd_buffer *cmd,
 
    *addr = mem->mem->va->addr;
    *ptr = mem->mem->map;
+   nvk_cmd_mem_add_used(mem, size);
 
    /* Pick whichever of the current upload BO and the new BO will have more
     * room left to be the BO for the next upload.  If our upload size is
@@ -382,8 +386,23 @@ nvk_BeginCommandBuffer(VkCommandBuffer commandBuffer,
 static void
 flush_mem_list(struct nvk_cmd_buffer *cmd, struct list_head *mem_list)
 {
-   list_for_each_entry_safe(struct nvk_cmd_mem, mem, mem_list, link)
-      nvkmd_mem_sync_map_to_gpu(mem->mem, 0, mem->mem->size_B);
+   const struct nvk_device *dev = nvk_cmd_buffer_device(cmd);
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+   const uint32_t atom_size_B = pdev->info.nc_atom_size_B;
+   const bool flush_all = pdev->debug_flags & NVK_DEBUG_FULL_CMD_FLUSH;
+
+   list_for_each_entry_safe(struct nvk_cmd_mem, mem, mem_list, link) {
+      uint64_t range_B = mem->mem->size_B;
+
+      if (!flush_all) {
+         if (mem->used_B == 0)
+            continue;
+         range_B = MIN2(ALIGN_POT(mem->used_B, atom_size_B), range_B);
+      }
+
+      nvkmd_mem_sync_map_to_gpu(mem->mem, 0, range_B);
+      mem->used_B = 0;
+   }
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
