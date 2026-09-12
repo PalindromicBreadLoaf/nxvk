@@ -18,49 +18,93 @@
 #include <switch/nvidia/gpu.h>
 #include <switch/result.h>
 
-/* Maxwell channel GPFIFO host class (0xB06F) syncpoint methods. */
+/* NV906F pushbuffer opcodes. */
+#define NVGPU_CMD_INCR(method, count) \
+   (0x20000000u | ((uint32_t)(count) << 16) | ((method) >> 2))
+#define NVGPU_CMD_IMMD(method, data) \
+   (0x80000000u | ((uint32_t)(data) << 16) | ((method) >> 2))
+
+/* Maxwell channel GPFIFO host class methods. */
+#define NVGPU_HOST_SET_OBJECT             0x0000
 #define NVGPU_HOST_SYNCPOINTA             0x0070
 #define NVGPU_HOST_SYNCPOINTB_OP_WAIT     (0u << 0)
-#define NVGPU_HOST_SYNCPOINTB_OP_INCR     (1u << 0)
 #define NVGPU_HOST_SYNCPOINTB_WAIT_SWITCH (1u << 4)
 #define NVGPU_HOST_SYNCPOINTB_IDX_SHIFT   8
-
-#define NVGPU_SYNCPT_CMD_DW 3
-#define NVGPU_FENCE_CMD_DW  (2 + NVGPU_SYNCPT_CMD_DW)
 
 /* Host class cache maintenance. */
 #define NVGPU_HOST_MEM_OP_B                    0x002c
 #define NVGPU_HOST_MEM_OP_L2_SYSMEM_INVALIDATE (0x0eu << 27)
 #define NVGPU_HOST_MEM_OP_L2_FLUSH_DIRTY       (0x10u << 27)
 
-#define NVGPU_ACQUIRE_CMD_DW 4
+/* Maxwell-B 3D class methods. */
+#define NVGPU_3D_INCREMENT_SYNC_POINT               0x02c8
+#define NVGPU_3D_INCREMENT_SYNC_POINT_CLEAN_L2      (1u << 16)
+#define NVGPU_3D_INCREMENT_SYNC_POINT_COND_ROP_DONE (1u << 20)
+#define NVGPU_3D_INVALIDATE_SHADER_CACHES_NO_WFI    0x0da4
+/* INSTRUCTION | GLOBAL_DATA | CONSTANT */
+#define NVGPU_3D_INVALIDATE_SHADER_CACHES_ALL       0x1011
+#define NVGPU_3D_FLUSH_PENDING_WRITES               0x1144
+#define NVGPU_3D_INVALIDATE_TEXTURE_DATA_CACHE      0x1288
+#define NVGPU_3D_INVALIDATE_SAMPLER_CACHE           0x1424
+#define NVGPU_3D_INVALIDATE_TEXTURE_HEADER_CACHE    0x1428
+
+#define NVGPU_SYNCPT_CMD_DW    3
+#define NVGPU_BIND_CMD_DW      2
+#define NVGPU_FENCE_GPU_CMD_DW 3
+#define NVGPU_FENCE_CPU_CMD_DW 5
+#define NVGPU_ACQUIRE_CMD_DW   8
+
+#define NVGPU_FENCE_CMD_DW(cpu_visible) \
+   ((cpu_visible) ? NVGPU_FENCE_CPU_CMD_DW : NVGPU_FENCE_GPU_CMD_DW)
+#define NVGPU_FENCE_INCRS(cpu_visible) ((cpu_visible) ? 2u : 1u)
 
 #define NVGPU_GPFIFO_RESERVED_ENTRIES 3
 
 /* Size of the per-context syncpt wait ring. */
 #define NVGPU_WAIT_RING_SIZE_B ((uint64_t)32 << 10)
 
-static VkResult nvkmd_nvgpu_exec_ctx_flush(struct nvkmd_ctx *_ctx,
-                                           struct vk_object_base *log_obj);
+static VkResult exec_ctx_flush(struct nvkmd_nvgpu_exec_ctx *ctx,
+                               struct vk_object_base *log_obj,
+                               bool cpu_visible);
 static VkResult nvkmd_nvgpu_exec_ctx_sync(struct nvkmd_ctx *_ctx,
                                           struct vk_object_base *log_obj);
 
 static uint32_t
-gen_fence_cmdlist(uint32_t *cmds, uint32_t syncpt_id)
+gen_bind_cmdlist(uint32_t *cmds, uint16_t cls_eng3d)
 {
-   cmds[0] = 0x20000000u | (1u << 16) | (NVGPU_HOST_MEM_OP_B >> 2);
-   cmds[1] = NVGPU_HOST_MEM_OP_L2_FLUSH_DIRTY;
-   cmds[2] = 0x20000000u | (2u << 16) | (NVGPU_HOST_SYNCPOINTA >> 2);
-   cmds[3] = 0;
-   cmds[4] = NVGPU_HOST_SYNCPOINTB_OP_INCR |
-             (syncpt_id << NVGPU_HOST_SYNCPOINTB_IDX_SHIFT);
-   return NVGPU_FENCE_CMD_DW;
+   cmds[0] = NVGPU_CMD_INCR(NVGPU_HOST_SET_OBJECT, 1);
+   cmds[1] = cls_eng3d;
+   return NVGPU_BIND_CMD_DW;
+}
+
+/* Signal the syncpoint from the engine rather than the host. */
+static uint32_t
+gen_fence_cmdlist(uint32_t *cmds, uint32_t syncpt_id, bool cpu_visible)
+{
+   uint32_t action = syncpt_id | NVGPU_3D_INCREMENT_SYNC_POINT_COND_ROP_DONE;
+   uint32_t dw = 0;
+
+   cmds[dw++] = NVGPU_CMD_IMMD(NVGPU_3D_FLUSH_PENDING_WRITES, 0);
+
+   if (cpu_visible)
+      action |= NVGPU_3D_INCREMENT_SYNC_POINT_CLEAN_L2;
+
+   cmds[dw++] = NVGPU_CMD_INCR(NVGPU_3D_INCREMENT_SYNC_POINT, 1);
+   cmds[dw++] = action;
+
+   if (cpu_visible) {
+      cmds[dw++] = NVGPU_CMD_INCR(NVGPU_3D_INCREMENT_SYNC_POINT, 1);
+      cmds[dw++] = action;
+   }
+
+   assert(dw == NVGPU_FENCE_CMD_DW(cpu_visible));
+   return dw;
 }
 
 static uint32_t
 gen_wait_cmdlist(uint32_t *cmds, const NvFence *fence)
 {
-   cmds[0] = 0x20000000u | (2u << 16) | (NVGPU_HOST_SYNCPOINTA >> 2);
+   cmds[0] = NVGPU_CMD_INCR(NVGPU_HOST_SYNCPOINTA, 2);
    cmds[1] = fence->value;
    cmds[2] = NVGPU_HOST_SYNCPOINTB_OP_WAIT |
              NVGPU_HOST_SYNCPOINTB_WAIT_SWITCH |
@@ -72,11 +116,21 @@ gen_wait_cmdlist(uint32_t *cmds, const NvFence *fence)
 static uint32_t
 gen_acquire_cmdlist(uint32_t *cmds)
 {
-   cmds[0] = 0x20000000u | (1u << 16) | (NVGPU_HOST_MEM_OP_B >> 2);
-   cmds[1] = NVGPU_HOST_MEM_OP_L2_FLUSH_DIRTY;
-   cmds[2] = 0x20000000u | (1u << 16) | (NVGPU_HOST_MEM_OP_B >> 2);
-   cmds[3] = NVGPU_HOST_MEM_OP_L2_SYSMEM_INVALIDATE;
-   return NVGPU_ACQUIRE_CMD_DW;
+   uint32_t dw = 0;
+
+   cmds[dw++] = NVGPU_CMD_INCR(NVGPU_HOST_MEM_OP_B, 1);
+   cmds[dw++] = NVGPU_HOST_MEM_OP_L2_FLUSH_DIRTY;
+   cmds[dw++] = NVGPU_CMD_INCR(NVGPU_HOST_MEM_OP_B, 1);
+   cmds[dw++] = NVGPU_HOST_MEM_OP_L2_SYSMEM_INVALIDATE;
+
+   cmds[dw++] = NVGPU_CMD_IMMD(NVGPU_3D_INVALIDATE_TEXTURE_DATA_CACHE, 0);
+   cmds[dw++] = NVGPU_CMD_IMMD(NVGPU_3D_INVALIDATE_SHADER_CACHES_NO_WFI,
+                               NVGPU_3D_INVALIDATE_SHADER_CACHES_ALL);
+   cmds[dw++] = NVGPU_CMD_IMMD(NVGPU_3D_INVALIDATE_TEXTURE_HEADER_CACHE, 0);
+   cmds[dw++] = NVGPU_CMD_IMMD(NVGPU_3D_INVALIDATE_SAMPLER_CACHE, 0);
+
+   assert(dw == NVGPU_ACQUIRE_CMD_DW);
+   return dw;
 }
 
 static const char *
@@ -151,8 +205,8 @@ nvkmd_nvgpu_warmup_channel(struct nvkmd_nvgpu_exec_ctx *ctx,
    if (result != VK_SUCCESS)
       return result;
 
-   uint32_t fence[NVGPU_FENCE_CMD_DW];
-   const uint32_t fence_dw = gen_fence_cmdlist(fence, syncpt);
+   uint32_t fence[NVGPU_FENCE_CPU_CMD_DW];
+   const uint32_t fence_dw = gen_fence_cmdlist(fence, syncpt, false);
 
    uint32_t *cmds = mem->map;
    for (uint32_t i = 0; i + fence_dw <= max_dw; i += fence_dw)
@@ -160,6 +214,18 @@ nvkmd_nvgpu_warmup_channel(struct nvkmd_nvgpu_exec_ctx *ctx,
 
    /* The map is CPU-cached and the host fetches the pushbuf from memory. */
    nvkmd_mem_sync_map_to_gpu(mem, 0, mem->size_B);
+
+   /* The fence is an engine method, so bind the class before the first one. */
+Result bind_rc = nvGpuChannelAppendEntry(&ctx->channel, ctx->bind_cmds_addr,
+                                            ctx->bind_cmds_dw,
+                                            GPFIFO_ENTRY_NOT_MAIN |
+                                            GPFIFO_ENTRY_NO_PREFETCH, 0);
+   if (R_FAILED(bind_rc)) {
+      result = vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
+                         "3D class bind append failed: 0x%x",
+                         (unsigned)bind_rc);
+      goto out;
+   }
 
    for (uint32_t r = 0; r < ARRAY_SIZE(ramp_dw); r++) {
       const uint32_t fences = ramp_dw[r] / fence_dw;
@@ -174,7 +240,7 @@ nvkmd_nvgpu_warmup_channel(struct nvkmd_nvgpu_exec_ctx *ctx,
          goto out;
       }
 
-      for (uint32_t k = 0; k < fences; k++)
+      for (uint32_t k = 0; k < fences * NVGPU_FENCE_INCRS(false); k++)
          nvGpuChannelIncrFence(&ctx->channel);
 
       rc = nvGpuChannelKickoff(&ctx->channel);
@@ -258,16 +324,31 @@ nvkmd_nvgpu_create_exec_ctx(struct nvkmd_dev *_dev,
       goto fail_zcull;
 
    uint32_t *builtin = ctx->fence_mem->map;
+   const iova_t builtin_addr = ctx->fence_mem->va->addr;
+   const uint32_t syncpt = nvGpuChannelGetSyncpointId(&ctx->channel);
+   uint32_t dw = 0;
 
-   ctx->fence_cmds_dw = gen_fence_cmdlist(builtin,
-                                          nvGpuChannelGetSyncpointId(&ctx->channel));
-   ctx->fence_cmds_addr = ctx->fence_mem->va->addr;
+   ctx->bind_cmds_addr = builtin_addr + dw * 4;
+   ctx->bind_cmds_dw =
+      gen_bind_cmdlist(&builtin[dw], dev->base.pdev->dev_info.cls_eng3d);
+   dw += ctx->bind_cmds_dw;
 
-   ctx->acquire_cmds_dw = gen_acquire_cmdlist(&builtin[ctx->fence_cmds_dw]);
-   ctx->acquire_cmds_addr = ctx->fence_cmds_addr + ctx->fence_cmds_dw * 4;
+   ctx->fence_cmds_addr = builtin_addr + dw * 4;
+   ctx->fence_cmds_dw = gen_fence_cmdlist(&builtin[dw], syncpt, false);
+   dw += ctx->fence_cmds_dw;
 
-   builtin[ctx->fence_cmds_dw + ctx->acquire_cmds_dw] = 0;
-   ctx->acquire_sync_addr = ctx->acquire_cmds_addr + ctx->acquire_cmds_dw * 4;
+   ctx->fence_cpu_cmds_addr = builtin_addr + dw * 4;
+   ctx->fence_cpu_cmds_dw = gen_fence_cmdlist(&builtin[dw], syncpt, true);
+   dw += ctx->fence_cpu_cmds_dw;
+
+   ctx->acquire_cmds_addr = builtin_addr + dw * 4;
+   ctx->acquire_cmds_dw = gen_acquire_cmdlist(&builtin[dw]);
+   dw += ctx->acquire_cmds_dw;
+
+   ctx->acquire_sync_addr = builtin_addr + dw * 4;
+   builtin[dw++] = 0;
+
+   assert(dw * 4 <= ctx->fence_mem->size_B);
 
    /* Written once here, refetched from memory on every kickoff. */
    nvkmd_mem_sync_map_to_gpu(ctx->fence_mem, 0, ctx->fence_mem->size_B);
@@ -329,24 +410,29 @@ emit_cache_acquire(struct nvkmd_nvgpu_exec_ctx *ctx,
 }
 
 static VkResult
-nvkmd_nvgpu_exec_ctx_flush(struct nvkmd_ctx *_ctx,
-                           struct vk_object_base *log_obj)
+exec_ctx_flush(struct nvkmd_nvgpu_exec_ctx *ctx,
+               struct vk_object_base *log_obj, bool cpu_visible)
 {
-   struct nvkmd_nvgpu_exec_ctx *ctx = nvkmd_nvgpu_exec_ctx(_ctx);
-
    VkResult result =
       nvkmd_nvgpu_report_channel_err(ctx, log_obj, "before this submit");
    if (result != VK_SUCCESS)
       return result;
 
-   /* Skip empty submits. */
-   if (!ctx->has_pending)
+   /* Skip empty submits unless the CPU is about to wait on a fence that the
+    * last submit signalled without the writeback. */
+   const bool restamp =
+      cpu_visible && ctx->has_fence && !ctx->fence_cpu_visible;
+   if (!ctx->has_pending && !restamp)
       return VK_SUCCESS;
 
-   nvGpuChannelIncrFence(&ctx->channel);
+   for (uint32_t i = 0; i < NVGPU_FENCE_INCRS(cpu_visible); i++)
+      nvGpuChannelIncrFence(&ctx->channel);
 
-   Result rc = nvGpuChannelAppendEntry(&ctx->channel, ctx->fence_cmds_addr,
-                                       ctx->fence_cmds_dw,
+   Result rc = nvGpuChannelAppendEntry(&ctx->channel,
+                                       cpu_visible ? ctx->fence_cpu_cmds_addr
+                                                   : ctx->fence_cmds_addr,
+                                       cpu_visible ? ctx->fence_cpu_cmds_dw
+                                                   : ctx->fence_cmds_dw,
                                        GPFIFO_ENTRY_NOT_MAIN |
                                        GPFIFO_ENTRY_NO_PREFETCH, 0);
    if (R_FAILED(rc)) {
@@ -363,10 +449,19 @@ nvkmd_nvgpu_exec_ctx_flush(struct nvkmd_ctx *_ctx,
 
    nvGpuChannelGetFence(&ctx->channel, &ctx->last_fence);
    ctx->has_fence = true;
+   ctx->fence_cpu_visible = cpu_visible;
    ctx->has_pending = false;
    ctx->has_acquire = false;
 
    return VK_SUCCESS;
+}
+
+static VkResult
+nvkmd_nvgpu_exec_ctx_flush(struct nvkmd_ctx *_ctx,
+                           struct vk_object_base *log_obj)
+{
+   return exec_ctx_flush(nvkmd_nvgpu_exec_ctx(_ctx), log_obj,
+                         true /* cpu_visible */);
 }
 
 static void
@@ -425,7 +520,7 @@ wait_ring_reserve(struct nvkmd_nvgpu_exec_ctx *ctx,
 
    if (unlikely(ctx->channel.num_entries + 1 +
                 NVGPU_GPFIFO_RESERVED_ENTRIES > GPFIFO_QUEUE_SIZE)) {
-      VkResult result = nvkmd_nvgpu_exec_ctx_flush(&ctx->base, log_obj);
+      VkResult result = exec_ctx_flush(ctx, log_obj, false /* cpu_visible */);
       if (result != VK_SUCCESS)
          return result;
    }
@@ -543,7 +638,8 @@ nvkmd_nvgpu_exec_ctx_exec(struct nvkmd_ctx *_ctx,
 
       if (unlikely(ctx->channel.num_entries + run +
                    NVGPU_GPFIFO_RESERVED_ENTRIES > GPFIFO_QUEUE_SIZE)) {
-         VkResult result = nvkmd_nvgpu_exec_ctx_flush(&ctx->base, log_obj);
+         VkResult result =
+            exec_ctx_flush(ctx, log_obj, false /* cpu_visible */);
          if (result != VK_SUCCESS)
             return result;
 
@@ -614,7 +710,7 @@ nvkmd_nvgpu_exec_ctx_signal(struct nvkmd_ctx *_ctx,
 {
    struct nvkmd_nvgpu_exec_ctx *ctx = nvkmd_nvgpu_exec_ctx(_ctx);
 
-   VkResult result = nvkmd_nvgpu_exec_ctx_flush(&ctx->base, log_obj);
+   VkResult result = exec_ctx_flush(ctx, log_obj, true /* cpu_visible */);
    if (result != VK_SUCCESS)
       return result;
 
@@ -638,7 +734,7 @@ nvkmd_nvgpu_exec_ctx_sync(struct nvkmd_ctx *_ctx,
 {
    struct nvkmd_nvgpu_exec_ctx *ctx = nvkmd_nvgpu_exec_ctx(_ctx);
 
-   VkResult result = nvkmd_nvgpu_exec_ctx_flush(&ctx->base, log_obj);
+   VkResult result = exec_ctx_flush(ctx, log_obj, true /* cpu_visible */);
    if (result != VK_SUCCESS)
       return result;
 
