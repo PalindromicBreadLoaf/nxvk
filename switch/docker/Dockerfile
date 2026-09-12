@@ -37,13 +37,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake \
         llvm-15-dev clang-15 libclang-15-dev \
         libclc-15-dev libclc-15 \
-        llvm-spirv-15 libllvmspirvlib-15-dev spirv-tools \
+        llvm-spirv-15 libllvmspirvlib-15-dev \
         libdrm-dev \
         glslang-tools \
     && rm -rf /var/lib/apt/lists/* \
     && glslangValidator --version
 ENV LLVM_CONFIG=/usr/bin/llvm-config-15
 ENV LIBCLANG_PATH=/usr/lib/llvm-15/lib
+
+RUN echo "deb http://deb.debian.org/debian trixie main" > /etc/apt/sources.list.d/trixie.list \
+    && printf 'Package: *\nPin: release n=trixie\nPin-Priority: 100\n' > /etc/apt/preferences.d/trixie-pin \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends -t trixie spirv-tools \
+    && rm -rf /var/lib/apt/lists/*
 
 # Cross-build plumbing
 RUN mkdir -p /opt/switch-cross-include/libdrm \
