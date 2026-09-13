@@ -205,8 +205,10 @@ nvk_AllocateMemory(VkDevice device,
       }
    }
 
+   /* pinned_to_vram is set only by the compression branch above. */
    const enum nvkmd_mem_flags flags =
-      nvk_memory_type_flags(type, handle_types, pinned_to_vram);
+      nvk_memory_type_flags(type, handle_types, pinned_to_vram) |
+      (pinned_to_vram ? NVKMD_MEM_COMPRESSED : 0);
 
    const uint64_t aligned_size =
       align64(pAllocateInfo->allocationSize, alignment);

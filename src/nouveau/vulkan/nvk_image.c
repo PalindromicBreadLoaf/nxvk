@@ -13,6 +13,9 @@
 
 #include "util/detect_os.h"
 #include "vk_android.h"
+#ifdef VK_USE_PLATFORM_VI_NN
+#include "wsi_common.h"
+#endif
 #include "vk_enum_to_str.h"
 #include "vk_format.h"
 #include "nil.h"
@@ -74,7 +77,7 @@ nvk_get_image_plane_format_features(const struct nvk_physical_device *pdev,
       features |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_DEPTH_COMPARISON_BIT;
    }
 
-   if (nil_format_supports_color_targets(&pdev->info, p_format) && 
+   if (nil_format_supports_color_targets(&pdev->info, p_format) &&
        tiling != VK_IMAGE_TILING_LINEAR) {
       features |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT;
       if (nil_format_supports_blending(&pdev->info, p_format))
@@ -891,6 +894,12 @@ nvk_image_init(struct nvk_device *dev,
     * we prefer a dedicated allocation for it.
     */
    image->can_compress = nvk_image_can_compress(pdev, image);
+
+#ifdef VK_USE_PLATFORM_VI_NN
+   if (vk_find_struct_const(pCreateInfo->pNext, WSI_IMAGE_CREATE_INFO_MESA))
+      image->can_compress = false;
+#endif
+
    if (!image->can_compress)
       usage |= NIL_IMAGE_USAGE_UNCOMPRESSED_BIT;
 
@@ -1915,7 +1924,7 @@ queue_image_plane_opaque_bind(struct nvk_queue *queue,
                               struct nvk_image_plane *plane,
                               const VkSparseMemoryBind *bind)
 {
-   const uint64_t plane_align_B = plane->plane_align_B; 
+   const uint64_t plane_align_B = plane->plane_align_B;
    const uint64_t plane_size_B = align64(plane->nil.size_B, plane_align_B);
 
    uint64_t plane_offset_B, mem_offset_B, bind_size_B;
