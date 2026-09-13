@@ -87,6 +87,9 @@ enum nvk_debug {
 
    /* Do not bind descriptor-set UBOs as constant buffers pre-Turing */
    NVK_DEBUG_NO_UBO_CBUF = 1ull << 22,
+
+   /* Re-upload the whole push descriptor set on every draw and dispatch */
+   NVK_DEBUG_FULL_PUSH_DESC = 1ull << 23,
 };
 
 enum nvk_experimental {

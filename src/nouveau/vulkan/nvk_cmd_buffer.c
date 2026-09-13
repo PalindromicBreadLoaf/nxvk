@@ -1273,6 +1273,7 @@ nvk_cmd_buffer_flush_push_descriptors(struct nvk_cmd_buffer *cmd,
    struct nvk_device *dev = nvk_cmd_buffer_device(cmd);
    const struct nvk_physical_device *pdev = nvk_device_physical(dev);
    const uint32_t min_cbuf_alignment = nvk_min_cbuf_alignment(&pdev->info);
+   const bool full = pdev->debug_flags & NVK_DEBUG_FULL_PUSH_DESC;
    VkResult result;
 
    u_foreach_bit(set_idx, desc->push_dirty) {
@@ -1280,9 +1281,15 @@ nvk_cmd_buffer_flush_push_descriptors(struct nvk_cmd_buffer *cmd,
          continue;
 
       struct nvk_push_descriptor_set *push_set = desc->sets[set_idx].push;
+
+      uint32_t upload_size_B = align(push_set->size_B, min_cbuf_alignment);
+      if (upload_size_B == 0 || full)
+         upload_size_B = sizeof(push_set->data);
+      assert(upload_size_B <= sizeof(push_set->data));
+
       uint64_t push_set_addr;
       result = nvk_cmd_buffer_upload_data(cmd, push_set->data,
-                                          sizeof(push_set->data),
+                                          upload_size_B,
                                           min_cbuf_alignment,
                                           &push_set_addr);
       if (unlikely(result != VK_SUCCESS)) {
@@ -1292,10 +1299,13 @@ nvk_cmd_buffer_flush_push_descriptors(struct nvk_cmd_buffer *cmd,
 
       struct nvk_buffer_address set_addr = {
          .base_addr = push_set_addr,
-         .size = sizeof(push_set->data),
+         .size = upload_size_B,
       };
       nvk_descriptor_state_set_root(cmd, desc, sets[set_idx], set_addr);
    }
+
+   if (!full)
+      desc->push_dirty = 0;
 }
 
 void

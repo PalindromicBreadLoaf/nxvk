@@ -58,6 +58,8 @@ nvk_descriptor_writer_init_push(const struct nvk_physical_device *pdev,
    w->layout = layout;
    w->set_map = push_set->data;
    w->set_size_B = sizeof(push_set->data);
+
+   push_set->size_B = layout->non_variable_descriptor_buffer_size;
 }
 
 static void
