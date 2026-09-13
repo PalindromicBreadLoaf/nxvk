@@ -306,6 +306,34 @@ static void nvk_target_copy_to_host(struct nvk_ctx *c, VkCommandBuffer cb,
                         t->readback.buf, 1, &region);
 }
 
+static void nvk_free_buffer(struct nvk_ctx *c, struct nvk_buffer *b)
+{
+   LOAD_DEV(c, DestroyBuffer);
+   LOAD_DEV(c, FreeMemory);
+   if (b->buf) DestroyBuffer(c->dev, b->buf, NULL);
+   if (b->mem) FreeMemory(c->dev, b->mem, NULL);
+   memset(b, 0, sizeof(*b));
+}
+
+static void nvk_free_target(struct nvk_ctx *c, struct nvk_target *t)
+{
+   LOAD_DEV(c, DestroyFramebuffer);
+   LOAD_DEV(c, DestroyRenderPass);
+   LOAD_DEV(c, DestroyImageView);
+   LOAD_DEV(c, DestroyImage);
+   LOAD_DEV(c, FreeMemory);
+   if (t->fb) DestroyFramebuffer(c->dev, t->fb, NULL);
+   if (t->rp) DestroyRenderPass(c->dev, t->rp, NULL);
+   if (t->color_view) DestroyImageView(c->dev, t->color_view, NULL);
+   if (t->depth_view) DestroyImageView(c->dev, t->depth_view, NULL);
+   if (t->color) DestroyImage(c->dev, t->color, NULL);
+   if (t->depth) DestroyImage(c->dev, t->depth, NULL);
+   if (t->color_mem) FreeMemory(c->dev, t->color_mem, NULL);
+   if (t->depth_mem) FreeMemory(c->dev, t->depth_mem, NULL);
+   nvk_free_buffer(c, &t->readback);
+   memset(t, 0, sizeof(*t));
+}
+
 /* Read a pixel from the readback buffer after submit. */
 static uint32_t nvk_target_pixel(struct nvk_target *t, uint32_t x, uint32_t y)
 {
