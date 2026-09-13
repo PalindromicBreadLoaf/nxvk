@@ -49,6 +49,7 @@
 #include "util/xmlconfig.h"
 
 #include "util/u_cpu_detect.h"
+#include "util/detect_os.h"
 
 #ifdef HAVE_LIBDRM
 #include <xf86drm.h>
@@ -1859,7 +1860,7 @@ update_queue_props(struct zink_screen *screen)
       mesa_loge("ZINK: failed to allocate props!");
       return;
    }
-      
+
    VKSCR(GetPhysicalDeviceQueueFamilyProperties)(screen->pdev, &num_queues, props);
 
    bool found_gfx = false;
@@ -3817,6 +3818,8 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
       default:
          zink_descriptor_mode = can_db ? ZINK_DESCRIPTOR_MODE_DB : ZINK_DESCRIPTOR_MODE_LAZY;
       }
+      if (DETECT_OS_HORIZON)
+         zink_descriptor_mode = ZINK_DESCRIPTOR_MODE_LAZY;
    }
    if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB) {
       const uint32_t sampler_size = MAX2(screen->info.db_props.combinedImageSamplerDescriptorSize, screen->info.db_props.robustUniformTexelBufferDescriptorSize);
