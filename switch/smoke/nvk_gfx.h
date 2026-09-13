@@ -151,6 +151,8 @@ struct nvk_target {
    struct nvk_buffer readback;  /* w*h*4 bytes */
 };
 
+static bool nvk_gfx_force_dedicated;
+
 static VkResult nvk_alloc_bind_image(struct nvk_ctx *c, VkImage img,
                                      VkDeviceMemory *mem)
 {
@@ -162,8 +164,13 @@ static VkResult nvk_alloc_bind_image(struct nvk_ctx *c, VkImage img,
    uint32_t mt = nvk_pick_mem_type(&c->memp, mr.memoryTypeBits,
                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
    if (mt == UINT32_MAX) mt = nvk_pick_mem_type(&c->memp, mr.memoryTypeBits, 0);
+   const VkMemoryDedicatedAllocateInfo dedicated = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+      .image = img,
+   };
    VkMemoryAllocateInfo mai = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .pNext = nvk_gfx_force_dedicated ? &dedicated : NULL,
       .allocationSize = mr.size, .memoryTypeIndex = mt,
    };
    VkResult r = AllocateMemory(c->dev, &mai, NULL, mem);
