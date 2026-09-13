@@ -7,7 +7,7 @@ OpenGL is also supported via Mesa's [Zink](https://docs.mesa3d.org/drivers/zink.
 GL on top of NVK, so the same build also gives you access to **OpenGL 4.5 core** and **OpenGL ES 3.2**,
 with **EGL** over libnx `NWindow` for windowing and presentation.
 
-Currently, this is based on **Mesa 26.1.4**.
+Currently, this is based on **Mesa 26.2.2**.
 
 ## Licensing
 
