@@ -61,6 +61,7 @@ struct lower_descriptors_ctx {
    bool clamp_desc_array_bounds;
    bool indirect_bind;
    bool has_task_shader;
+   bool no_ubo_cbuf;
    nir_address_format ubo_addr_format;
    nir_address_format ssbo_addr_format;
 
@@ -460,10 +461,10 @@ build_cbuf_map(nir_shader *nir, struct lower_descriptors_ctx *ctx)
          continue;
 
       /* Prior to Turing, indirect cbufs require splitting the pushbuf and
-       * pushing bits of the descriptor set.  Doing this every draw call is
-       * probably more overhead than it's worth.
+       * pushing bits of the descriptor set. The split costs far less per draw
+       * than the dependent global loads it replaces cost per invocation.
        */
-      if (ctx->dev_info->cls_eng3d < TURING_A &&
+      if (ctx->no_ubo_cbuf && ctx->dev_info->cls_eng3d < TURING_A &&
           cbufs[i].key.type == NVK_CBUF_TYPE_UBO_DESC)
          continue;
 
@@ -1562,6 +1563,7 @@ nvk_nir_lower_descriptors(nir_shader *nir,
       .indirect_bind =
          shader_flags & VK_SHADER_CREATE_INDIRECT_BINDABLE_BIT_EXT,
       .has_task_shader = (shader_flags & VK_SHADER_CREATE_NO_TASK_SHADER_BIT_EXT) == 0,
+      .no_ubo_cbuf = (pdev->debug_flags & NVK_DEBUG_NO_UBO_CBUF) != 0,
       .ssbo_addr_format = nvk_ssbo_addr_format(pdev, rs),
       .ubo_addr_format = nvk_ubo_addr_format(pdev, rs),
    };

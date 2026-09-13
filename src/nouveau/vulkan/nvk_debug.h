@@ -84,6 +84,9 @@ enum nvk_debug {
 
    /* Do not promote block-linear sector fetches on texture headers */
    NVK_DEBUG_NO_SECTOR_PROMOTION = 1ull << 21,
+
+   /* Do not bind descriptor-set UBOs as constant buffers pre-Turing */
+   NVK_DEBUG_NO_UBO_CBUF = 1ull << 22,
 };
 
 enum nvk_experimental {

@@ -110,6 +110,7 @@ nvk_init_debug_flags(struct nvk_instance *instance)
       { "dense_warmup", NVK_DEBUG_DENSE_WARMUP },
       { "split_ce_copy", NVK_DEBUG_SPLIT_CE_COPY },
       { "no_sector_promotion", NVK_DEBUG_NO_SECTOR_PROMOTION },
+      { "no_ubo_cbuf", NVK_DEBUG_NO_UBO_CBUF },
       { NULL, 0 },
    };
 
