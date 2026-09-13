@@ -399,6 +399,20 @@ record_cbuf_uses_instr(UNUSED nir_builder *b, nir_instr *instr, void *_ctx)
    }
 }
 
+/* Whether a set's descriptors live in the command buffer rather than in
+ * memory only the GPU reads.
+ */
+static bool
+cbuf_set_is_push(const struct lower_descriptors_ctx *ctx, uint8_t desc_set)
+{
+   const struct nvk_descriptor_set_layout *set_layout =
+      ctx->set_layouts[desc_set];
+
+   return set_layout != NULL &&
+          (set_layout->flags &
+           VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR);
+}
+
 static void
 build_cbuf_map(nir_shader *nir, struct lower_descriptors_ctx *ctx)
 {
@@ -460,12 +474,14 @@ build_cbuf_map(nir_shader *nir, struct lower_descriptors_ctx *ctx)
           cbufs[i].key.type == NVK_CBUF_TYPE_UBO_DESC)
          continue;
 
-      /* Prior to Turing, indirect cbufs require splitting the pushbuf and
-       * pushing bits of the descriptor set. The split costs far less per draw
-       * than the dependent global loads it replaces cost per invocation.
+      /* Prior to Turing, a cbuf whose descriptor the CPU cannot read at bind
+       * time requires splitting the pushbuf so the command streamer fetches
+       * the descriptor itself. That split is ruinous, but it only applies to sets
+       * the CPU has no copy of.
        */
-      if (ctx->no_ubo_cbuf && ctx->dev_info->cls_eng3d < TURING_A &&
-          cbufs[i].key.type == NVK_CBUF_TYPE_UBO_DESC)
+      if (ctx->dev_info->cls_eng3d < TURING_A &&
+          cbufs[i].key.type == NVK_CBUF_TYPE_UBO_DESC &&
+          (ctx->no_ubo_cbuf || !cbuf_set_is_push(ctx, cbufs[i].key.desc_set)))
          continue;
 
       ctx->cbuf_map->cbufs[ctx->cbuf_map->cbuf_count++] = cbufs[i].key;
