@@ -494,6 +494,8 @@ get_batch_state(struct zink_context *ctx)
          /* this is batch init, so create a few more states for later use */
          for (int i = 0; i < 3; i++) {
             struct zink_batch_state *state = create_batch_state(ctx);
+            if (!state)
+               break;
             zink_batch_state_append(&ctx->free_batch_states, &ctx->last_free_batch_state, state);
          }
       }
@@ -508,7 +510,6 @@ void
 zink_reset_batch(struct zink_context *ctx)
 {
    ctx->bs = get_batch_state(ctx);
-   assert(ctx->bs);
 }
 
 void
@@ -543,6 +544,11 @@ zink_start_batch(struct zink_context *ctx)
    struct zink_screen *screen = zink_screen(ctx->base.screen);
    zink_reset_batch(ctx);
    struct zink_batch_state *bs = ctx->bs;
+   if (unlikely(!bs)) {
+      mesa_loge("ZINK: failed to obtain a batch state");
+      screen->device_lost = true;
+      return;
+   }
 
    bs->ctx = ctx;
    bs->usage.unflushed = true;

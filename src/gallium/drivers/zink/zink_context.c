@@ -4053,6 +4053,11 @@ static void
 flush_batch(struct zink_context *ctx, bool sync)
 {
    assert(!ctx->unordered_blitting);
+   if (unlikely(!ctx->bs)) {
+      /* an earlier flush could not get a new batch state */
+      check_device_lost(ctx);
+      return;
+   }
    if (ctx->clears_enabled)
       /* start rp to do all the clears */
       zink_flush_clears(ctx);
@@ -4071,6 +4076,11 @@ flush_batch(struct zink_context *ctx, bool sync)
    } else {
       struct zink_screen *screen = zink_screen(ctx->base.screen);
       zink_start_batch(ctx);
+      if (unlikely(!ctx->bs)) {
+         check_device_lost(ctx);
+         util_queue_fence_signal(&ctx->flush_fence);
+         return;
+      }
       if (screen->info.have_EXT_transform_feedback && ctx->num_so_targets)
          ctx->dirty_so_targets = true;
       memset(ctx->pipeline_changed, 1, sizeof(ctx->pipeline_changed));
@@ -4465,6 +4475,14 @@ zink_flush(struct pipe_context *pctx,
    struct zink_batch_state *bs = NULL;
    struct zink_screen *screen = zink_screen(ctx->base.screen);
    VkSemaphore export_sem = VK_NULL_HANDLE;
+
+   if (unlikely(!ctx->bs)) {
+      /* an earlier flush could not get a new batch state */
+      check_device_lost(ctx);
+      if (pfence)
+         *pfence = NULL;
+      return;
+   }
 
    /* triggering clears will force state->has_work */
    if (!deferred && ctx->clears_enabled) {
