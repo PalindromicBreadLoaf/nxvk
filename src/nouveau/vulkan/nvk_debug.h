@@ -81,6 +81,9 @@ enum nvk_debug {
 
    /* Issue one copy engine launch per line instead of one per copy */
    NVK_DEBUG_SPLIT_CE_COPY = 1ull << 20,
+
+   /* Do not promote block-linear sector fetches on texture headers */
+   NVK_DEBUG_NO_SECTOR_PROMOTION = 1ull << 21,
 };
 
 enum nvk_experimental {

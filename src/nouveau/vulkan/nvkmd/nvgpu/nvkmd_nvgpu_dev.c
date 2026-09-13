@@ -141,22 +141,32 @@ nvkmd_nvgpu_dev_destroy(struct nvkmd_dev *_dev)
 
    nvkmd_nvgpu_mem_cache_trim(dev);
 
+   uint32_t live = 0, live_big = 0;
+
+   simple_mtx_lock(&_dev->mems_mutex);
+   list_for_each_entry_safe(struct nvkmd_mem, mem, &_dev->mems, link) {
+      if (mem->va != NULL && dev->va_big_arena_size_B > 0 &&
+          mem->va->addr >= dev->va_big_arena_addr &&
+          mem->va->addr < dev->va_big_arena_addr + dev->va_big_arena_size_B) {
+         nvioctlNvhostAsGpu_UnmapBuffer(dev->addr_space.fd, mem->va->addr);
+         live_big++;
+      }
+
+      list_del(&mem->link);
+      nvkmd_nvgpu_mem_release(nvkmd_nvgpu_mem(mem));
+      live++;
+   }
+   simple_mtx_unlock(&_dev->mems_mutex);
+
+   if (unlikely(_dev->pdev->debug_flags & NVK_DEBUG_VM) && live > 0) {
+      fprintf(stderr, "device destroy: released %" PRIu32 " allocations the "
+                      "client leaked, %" PRIu32 " of them compressible\n",
+              live, live_big);
+   }
+
    if (dev->va_big_arena_size_B > 0) {
       const uint32_t big_pages =
          (uint32_t)(dev->va_big_arena_size_B / dev->big_page_size_B);
-      uint32_t live = 0;
-
-      simple_mtx_lock(&_dev->mems_mutex);
-      list_for_each_entry(struct nvkmd_mem, mem, &_dev->mems, link) {
-         if (mem->va == NULL ||
-             mem->va->addr < dev->va_big_arena_addr ||
-             mem->va->addr >= dev->va_big_arena_addr + dev->va_big_arena_size_B)
-            continue;
-
-         nvioctlNvhostAsGpu_UnmapBuffer(dev->addr_space.fd, mem->va->addr);
-         live++;
-      }
-      simple_mtx_unlock(&_dev->mems_mutex);
 
       util_vma_heap_finish(&dev->big_heap);
       const Result rc =
@@ -165,9 +175,7 @@ nvkmd_nvgpu_dev_destroy(struct nvkmd_dev *_dev)
                                       (uint32_t)dev->big_page_size_B);
 
       if (unlikely(_dev->pdev->debug_flags & NVK_DEBUG_VM)) {
-         fprintf(stderr, "big-page arena: unmapped %" PRIu32 " leaked "
-                         "mappings, FreeSpace -> 0x%x\n",
-                 live, (unsigned)rc);
+         fprintf(stderr, "big-page arena: FreeSpace -> 0x%x\n", (unsigned)rc);
       }
    }
 

@@ -308,6 +308,13 @@ nvkmd_nvgpu_import_dma_buf(struct nvkmd_dev *_dev,
    return vk_error(log_obj, VK_ERROR_FEATURE_NOT_PRESENT);
 }
 
+void
+nvkmd_nvgpu_mem_release(struct nvkmd_nvgpu_mem *mem)
+{
+   backing_free(&mem->nvmap);
+   FREE(mem);
+}
+
 static void
 nvkmd_nvgpu_mem_free(struct nvkmd_mem *_mem)
 {

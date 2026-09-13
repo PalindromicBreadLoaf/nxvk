@@ -130,6 +130,8 @@ VkResult nvkmd_nvgpu_import_dma_buf(struct nvkmd_dev *dev,
 /* Release every backing store the cache is holding. */
 void nvkmd_nvgpu_mem_cache_trim(struct nvkmd_nvgpu_dev *dev);
 
+void nvkmd_nvgpu_mem_release(struct nvkmd_nvgpu_mem *mem);
+
 struct nvkmd_nvgpu_va {
    struct nvkmd_va base;
    bool big_page;

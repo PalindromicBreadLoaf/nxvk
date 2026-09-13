@@ -1575,6 +1575,9 @@ nvk_physical_device_create(struct nvk_instance *instance,
    pdev->info = nvkmd->dev_info;
    pdev->debug_flags = instance->debug_flags;
 
+   nil_set_sector_promotion(
+      !(pdev->debug_flags & NVK_DEBUG_NO_SECTOR_PROMOTION));
+
    pdev->nak = nak_compiler_create(&pdev->info);
    if (pdev->nak == NULL) {
       result = vk_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
