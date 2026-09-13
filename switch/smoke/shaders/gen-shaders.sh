@@ -26,5 +26,8 @@ gen tex.vert    vert tex_vert
 gen tex.frag    frag tex_frag
 gen cube.vert   vert cube_vert
 gen cube.frag   frag cube_frag
+gen pushdesc.vert vert pushdesc_vert
+gen pushdesc.frag frag pushdesc_frag
+gen pushdesc.comp comp pushdesc_comp
 
 echo "=== shaders generated ==="
