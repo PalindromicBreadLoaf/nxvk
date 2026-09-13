@@ -22,6 +22,8 @@
 /* Size of the small-page VA arena reserved at device init. */
 #define NVKMD_NVGPU_VA_ARENA_SIZE_B ((uint64_t)8 << 30)
 
+#define NVKMD_NVGPU_BIG_ARENA_SIZE_B ((uint64_t)1 << 30)
+
 /* Top slice of the arena. */
 #define NVKMD_NVGPU_REPLAY_HEAP_SIZE_B ((uint64_t)1 << 30)
 
@@ -74,9 +76,14 @@ struct nvkmd_nvgpu_dev {
    iova_t va_arena_addr;
    uint64_t va_arena_size_B;
 
+   iova_t va_big_arena_addr;
+   uint64_t va_big_arena_size_B;
+   uint64_t big_page_size_B;
+
    simple_mtx_t heap_mutex;
    struct util_vma_heap heap;
    struct util_vma_heap replay_heap;
+   struct util_vma_heap big_heap;
 
    /* LRU cache of freed backing stores */
    simple_mtx_t mem_cache_mutex;
@@ -125,6 +132,7 @@ void nvkmd_nvgpu_mem_cache_trim(struct nvkmd_nvgpu_dev *dev);
 
 struct nvkmd_nvgpu_va {
    struct nvkmd_va base;
+   bool big_page;
 };
 
 NVKMD_DECL_SUBCLASS(va, nvgpu);
@@ -134,6 +142,13 @@ VkResult nvkmd_nvgpu_alloc_va(struct nvkmd_dev *dev,
                               enum nvkmd_va_flags flags, uint8_t pte_kind,
                               uint64_t size_B, uint64_t align_B,
                               uint64_t fixed_addr, struct nvkmd_va **va_out);
+
+VkResult nvkmd_nvgpu_alloc_va_ex(struct nvkmd_dev *dev,
+                                 struct vk_object_base *log_obj,
+                                 enum nvkmd_va_flags flags, uint8_t pte_kind,
+                                 uint64_t size_B, uint64_t align_B,
+                                 uint64_t fixed_addr, bool big_page,
+                                 struct nvkmd_va **va_out);
 
 struct nvkmd_nvgpu_exec_ctx {
    struct nvkmd_ctx base;

@@ -75,10 +75,48 @@ nvkmd_nvgpu_create_dev(struct nvkmd_pdev *_pdev,
    util_vma_heap_init(&dev->heap, arena_addr, heap_size_B);
    util_vma_heap_init(&dev->replay_heap, arena_addr + heap_size_B, replay_size_B);
 
+   if (pdev->base.kmd_info.has_compression) {
+      const uint64_t big_page_size_B = chars->big_page_size;
+      const uint32_t big_pages =
+         (uint32_t)(NVKMD_NVGPU_BIG_ARENA_SIZE_B / big_page_size_B);
+      iova_t big_arena_addr = 0;
+
+      rc = nvioctlNvhostAsGpu_AllocSpace(dev->addr_space.fd, big_pages,
+                                         (uint32_t)big_page_size_B,
+                                         0 /* non-fixed, non-sparse */,
+                                         big_page_size_B /* align */,
+                                         &big_arena_addr);
+      if (R_FAILED(rc)) {
+         result = vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
+                            "big-page VA arena reservation failed: 0x%x",
+                            (unsigned)rc);
+         goto fail_heaps;
+      }
+
+      dev->va_big_arena_addr = big_arena_addr;
+      dev->va_big_arena_size_B = NVKMD_NVGPU_BIG_ARENA_SIZE_B;
+      dev->big_page_size_B = big_page_size_B;
+      util_vma_heap_init(&dev->big_heap, big_arena_addr,
+                         NVKMD_NVGPU_BIG_ARENA_SIZE_B);
+
+      if (unlikely(pdev->base.debug_flags & NVK_DEBUG_VM)) {
+         fprintf(stderr, "big-page va arena [0x%" PRIx64 ", 0x%" PRIx64 ") "
+                         "page=0x%" PRIx64 "\n",
+                 (uint64_t)big_arena_addr,
+                 (uint64_t)big_arena_addr + NVKMD_NVGPU_BIG_ARENA_SIZE_B,
+                 big_page_size_B);
+      }
+   }
+
    *dev_out = &dev->base;
 
    return VK_SUCCESS;
 
+fail_heaps:
+   util_vma_heap_finish(&dev->replay_heap);
+   util_vma_heap_finish(&dev->heap);
+   nvioctlNvhostAsGpu_FreeSpace(dev->addr_space.fd, arena_addr, arena_pages,
+                                (uint32_t)NVKMD_NVGPU_SMALL_PAGE_SIZE_B);
 fail_as:
    nvAddressSpaceClose(&dev->addr_space);
 fail_locks:
@@ -102,6 +140,36 @@ nvkmd_nvgpu_dev_destroy(struct nvkmd_dev *_dev)
    }
 
    nvkmd_nvgpu_mem_cache_trim(dev);
+
+   if (dev->va_big_arena_size_B > 0) {
+      const uint32_t big_pages =
+         (uint32_t)(dev->va_big_arena_size_B / dev->big_page_size_B);
+      uint32_t live = 0;
+
+      simple_mtx_lock(&_dev->mems_mutex);
+      list_for_each_entry(struct nvkmd_mem, mem, &_dev->mems, link) {
+         if (mem->va == NULL ||
+             mem->va->addr < dev->va_big_arena_addr ||
+             mem->va->addr >= dev->va_big_arena_addr + dev->va_big_arena_size_B)
+            continue;
+
+         nvioctlNvhostAsGpu_UnmapBuffer(dev->addr_space.fd, mem->va->addr);
+         live++;
+      }
+      simple_mtx_unlock(&_dev->mems_mutex);
+
+      util_vma_heap_finish(&dev->big_heap);
+      const Result rc =
+         nvioctlNvhostAsGpu_FreeSpace(dev->addr_space.fd,
+                                      dev->va_big_arena_addr, big_pages,
+                                      (uint32_t)dev->big_page_size_B);
+
+      if (unlikely(_dev->pdev->debug_flags & NVK_DEBUG_VM)) {
+         fprintf(stderr, "big-page arena: unmapped %" PRIu32 " leaked "
+                         "mappings, FreeSpace -> 0x%x\n",
+                 live, (unsigned)rc);
+      }
+   }
 
    util_vma_heap_finish(&dev->replay_heap);
    util_vma_heap_finish(&dev->heap);

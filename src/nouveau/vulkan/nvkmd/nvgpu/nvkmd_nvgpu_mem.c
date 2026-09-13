@@ -183,6 +183,7 @@ create_mem_or_close_nvmap(struct nvkmd_nvgpu_dev *dev,
                           NvMap *nvmap,
                           enum nvkmd_va_flags va_flags,
                           uint8_t pte_kind, uint64_t va_align_B,
+                          uint32_t bind_align_B, bool big_page,
                           struct nvkmd_mem **mem_out)
 {
    const uint64_t size_B = nvmap->size;
@@ -195,14 +196,22 @@ create_mem_or_close_nvmap(struct nvkmd_nvgpu_dev *dev,
    }
 
    nvkmd_mem_init(&dev->base, &mem->base, &nvkmd_nvgpu_mem_ops,
-                  mem_flags, size_B, dev->base.pdev->bind_align_B);
+                  mem_flags, size_B, bind_align_B);
    mem->nvmap = *nvmap;
 
-   result = nvkmd_dev_alloc_va(&dev->base, log_obj,
-                               va_flags, pte_kind,
-                               size_B, va_align_B,
-                               0 /* fixed_addr */,
-                               &mem->base.va);
+   if (big_page) {
+      result = nvkmd_nvgpu_alloc_va_ex(&dev->base, log_obj,
+                                       va_flags, pte_kind,
+                                       size_B, va_align_B,
+                                       0 /* fixed_addr */, true /* big_page */,
+                                       &mem->base.va);
+   } else {
+      result = nvkmd_dev_alloc_va(&dev->base, log_obj,
+                                  va_flags, pte_kind,
+                                  size_B, va_align_B,
+                                  0 /* fixed_addr */,
+                                  &mem->base.va);
+   }
    if (result != VK_SUCCESS)
       goto fail_mem;
 
@@ -240,7 +249,11 @@ nvkmd_nvgpu_alloc_tiled_mem(struct nvkmd_dev *_dev,
                                  NVKMD_MEM_GART |
                                  NVKMD_MEM_VRAM)) == 1);
 
-   const uint32_t mem_align_B = _dev->pdev->bind_align_B;
+   const bool big_page = (flags & NVKMD_MEM_COMPRESSED) &&
+                         dev->big_page_size_B > 0;
+
+   const uint32_t mem_align_B =
+      big_page ? (uint32_t)dev->big_page_size_B : _dev->pdev->bind_align_B;
    size_B = align64(size_B, mem_align_B);
 
    if (size_B > UINT32_MAX) {
@@ -283,7 +296,7 @@ nvkmd_nvgpu_alloc_tiled_mem(struct nvkmd_dev *_dev,
 
    return create_mem_or_close_nvmap(dev, log_obj, flags, &nvmap,
                                     0 /* va_flags */, pte_kind, va_align_B,
-                                    mem_out);
+                                    mem_align_B, big_page, mem_out);
 }
 
 VkResult

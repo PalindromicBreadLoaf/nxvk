@@ -19,10 +19,21 @@
 static VkResult MUST_CHECK
 alloc_va_addr_locked(struct nvkmd_nvgpu_dev *dev,
                      struct vk_object_base *log_obj,
-                     enum nvkmd_va_flags flags,
+                     enum nvkmd_va_flags flags, bool big_page,
                      uint64_t size_B, uint64_t align_B,
                      uint64_t fixed_addr, uint64_t *addr_out)
 {
+   if (big_page) {
+      assert(!(flags & (NVKMD_VA_ALLOC_FIXED | NVKMD_VA_REPLAY)));
+
+      *addr_out = util_vma_heap_alloc(&dev->big_heap, size_B, align_B);
+      if (*addr_out == 0)
+         return vk_errorf(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                          "Failed to allocate big-page virtual address range");
+
+      return VK_SUCCESS;
+   }
+
    if (flags & NVKMD_VA_ALLOC_FIXED) {
       assert(flags & NVKMD_VA_REPLAY);
 
@@ -55,12 +66,12 @@ alloc_va_addr_locked(struct nvkmd_nvgpu_dev *dev,
 static VkResult MUST_CHECK
 alloc_va_addr(struct nvkmd_nvgpu_dev *dev,
               struct vk_object_base *log_obj,
-              enum nvkmd_va_flags flags,
+              enum nvkmd_va_flags flags, bool big_page,
               uint64_t size_B, uint64_t align_B,
               uint64_t fixed_addr, uint64_t *addr_out)
 {
    simple_mtx_lock(&dev->heap_mutex);
-   VkResult result = alloc_va_addr_locked(dev, log_obj, flags,
+   VkResult result = alloc_va_addr_locked(dev, log_obj, flags, big_page,
                                           size_B, align_B,
                                           fixed_addr, addr_out);
    simple_mtx_unlock(&dev->heap_mutex);
@@ -69,11 +80,13 @@ alloc_va_addr(struct nvkmd_nvgpu_dev *dev,
 
 static void
 free_va_addr(struct nvkmd_nvgpu_dev *dev,
-             enum nvkmd_va_flags flags,
+             enum nvkmd_va_flags flags, bool big_page,
              uint64_t addr, uint64_t size_B)
 {
    simple_mtx_lock(&dev->heap_mutex);
-   if (flags & NVKMD_VA_REPLAY)
+   if (big_page)
+      util_vma_heap_free(&dev->big_heap, addr, size_B);
+   else if (flags & NVKMD_VA_REPLAY)
       util_vma_heap_free(&dev->replay_heap, addr, size_B);
    else
       util_vma_heap_free(&dev->heap, addr, size_B);
@@ -81,20 +94,24 @@ free_va_addr(struct nvkmd_nvgpu_dev *dev,
 }
 
 VkResult
-nvkmd_nvgpu_alloc_va(struct nvkmd_dev *_dev,
-                     struct vk_object_base *log_obj,
-                     enum nvkmd_va_flags flags, uint8_t pte_kind,
-                     uint64_t size_B, uint64_t align_B,
-                     uint64_t fixed_addr, struct nvkmd_va **va_out)
+nvkmd_nvgpu_alloc_va_ex(struct nvkmd_dev *_dev,
+                        struct vk_object_base *log_obj,
+                        enum nvkmd_va_flags flags, uint8_t pte_kind,
+                        uint64_t size_B, uint64_t align_B,
+                        uint64_t fixed_addr, bool big_page,
+                        struct nvkmd_va **va_out)
 {
    struct nvkmd_nvgpu_dev *dev = nvkmd_nvgpu_dev(_dev);
    VkResult result;
+
+   assert(!big_page || dev->big_page_size_B > 0);
 
    struct nvkmd_nvgpu_va *va = CALLOC_STRUCT(nvkmd_nvgpu_va);
    if (va == NULL)
       return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   const uint32_t min_align_B = _dev->pdev->bind_align_B;
+   const uint64_t min_align_B =
+      big_page ? dev->big_page_size_B : _dev->pdev->bind_align_B;
    size_B = align64(size_B, min_align_B);
 
    assert(util_is_power_of_two_or_zero64(align_B));
@@ -102,7 +119,7 @@ nvkmd_nvgpu_alloc_va(struct nvkmd_dev *_dev,
 
    assert((fixed_addr == 0) == !(flags & NVKMD_VA_ALLOC_FIXED));
 
-   result = alloc_va_addr(dev, log_obj, flags, size_B, align_B,
+   result = alloc_va_addr(dev, log_obj, flags, big_page, size_B, align_B,
                           fixed_addr, &va->base.addr);
    if (result != VK_SUCCESS)
       goto fail_alloc;
@@ -112,6 +129,12 @@ nvkmd_nvgpu_alloc_va(struct nvkmd_dev *_dev,
    va->base.flags = flags;
    va->base.pte_kind = pte_kind;
    va->base.size_B = size_B;
+   va->big_page = big_page;
+
+   if (big_page && unlikely(_dev->pdev->debug_flags & NVK_DEBUG_VM)) {
+      fprintf(stderr, "alloc big-page va [0x%" PRIx64 ", 0x%" PRIx64 ")\n",
+              va->base.addr, va->base.addr + size_B);
+   }
 
    *va_out = &va->base;
 
@@ -123,6 +146,18 @@ fail_alloc:
    return result;
 }
 
+VkResult
+nvkmd_nvgpu_alloc_va(struct nvkmd_dev *dev,
+                     struct vk_object_base *log_obj,
+                     enum nvkmd_va_flags flags, uint8_t pte_kind,
+                     uint64_t size_B, uint64_t align_B,
+                     uint64_t fixed_addr, struct nvkmd_va **va_out)
+{
+   return nvkmd_nvgpu_alloc_va_ex(dev, log_obj, flags, pte_kind,
+                                  size_B, align_B, fixed_addr,
+                                  false /* big_page */, va_out);
+}
+
 static void
 nvkmd_nvgpu_va_free(struct nvkmd_va *_va)
 {
@@ -132,7 +167,8 @@ nvkmd_nvgpu_va_free(struct nvkmd_va *_va)
    /* The mem path binds one whole-buffer mapping at the VA base. */
    nvioctlNvhostAsGpu_UnmapBuffer(dev->addr_space.fd, va->base.addr);
 
-   free_va_addr(dev, va->base.flags, va->base.addr, va->base.size_B);
+   free_va_addr(dev, va->base.flags, va->big_page, va->base.addr,
+                va->base.size_B);
 
    FREE(va);
 }
@@ -155,13 +191,15 @@ nvkmd_nvgpu_va_bind_mem(struct nvkmd_va *_va,
       ((_mem->flags & NVKMD_MEM_GPU_UNCACHED) ? 0
                                               : NvMapBufferFlags_IsCacheable);
 
-   /* The libnx nvAddressSpaceMapFixed wrapper always maps the whole buffer. */
+   const uint64_t page_size_B =
+      va->big_page ? dev->big_page_size_B : NVKMD_NVGPU_SMALL_PAGE_SIZE_B;
+
    const iova_t target = va->base.addr + va_offset_B;
    iova_t mapped = 0;
    Result rc = nvioctlNvhostAsGpu_MapBufferEx(
       dev->addr_space.fd, map_flags,
       (uint32_t)va->base.pte_kind, mem->nvmap.handle,
-      (uint32_t)NVKMD_NVGPU_SMALL_PAGE_SIZE_B,
+      (uint32_t)page_size_B,
       mem_offset_B /* buffer_offset */, range_B /* mapping_size */,
       target /* input_offset */, &mapped);
    if (R_FAILED(rc)) {
@@ -176,7 +214,7 @@ nvkmd_nvgpu_va_bind_mem(struct nvkmd_va *_va,
                       " kind=0x%02x page=0x%" PRIx64 " map_flags=0x%03" PRIx32
                       " mem_flags=0x%02x%s\n",
               mem->nvmap.handle, (uint64_t)target,
-              (unsigned)va->base.pte_kind, NVKMD_NVGPU_SMALL_PAGE_SIZE_B,
+              (unsigned)va->base.pte_kind, page_size_B,
               map_flags, (unsigned)_mem->flags,
               (map_flags & NvMapBufferFlags_IsCacheable) ? " gpu-cached" : "");
    }

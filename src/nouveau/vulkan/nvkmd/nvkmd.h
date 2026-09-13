@@ -61,6 +61,9 @@ enum nvkmd_mem_flags {
 
    /** GPU accesses to this memory must bypass the GPU cache hierarchy */
    NVKMD_MEM_GPU_UNCACHED = 1 << 6,
+
+   /** Memory backs a compressed image */
+   NVKMD_MEM_COMPRESSED = 1 << 7,
 };
 
 #define NVKMD_MEM_PLACEMENT_FLAGS \

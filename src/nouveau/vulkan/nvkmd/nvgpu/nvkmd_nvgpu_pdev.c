@@ -122,6 +122,9 @@ nvkmd_nvgpu_try_create_pdev(struct vk_object_base *log_obj,
 
    nvkmd_nvgpu_get_dev_info(chars, &pdev->base.dev_info);
 
+   const bool can_compress = chars->big_page_size != 0 &&
+                             !(debug_flags & NVK_DEBUG_NO_COMPRESSION);
+
    pdev->base.kmd_info = (struct nvkmd_info) {
       .has_dma_buf = false,
       .has_get_vram_used = false,
@@ -129,6 +132,7 @@ nvkmd_nvgpu_try_create_pdev(struct vk_object_base *log_obj,
       .has_map_fixed = true,
       .has_overmap = false,
       .has_sparse = false,
+      .has_compression = can_compress,
    };
 
    pdev->base.bind_align_B = (uint32_t)NVKMD_NVGPU_SMALL_PAGE_SIZE_B;
