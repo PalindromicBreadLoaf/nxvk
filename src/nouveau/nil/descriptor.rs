@@ -19,7 +19,7 @@ use nvidia_headers::classes::clcb97::tex as clcb97;
 use nvidia_headers::classes::clcb97::HOPPER_A;
 use paste::paste;
 use std::ops::Range;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::extent::{units, Extent4D};
 use crate::format::Format;
@@ -27,12 +27,15 @@ use crate::image::{Image, ImageDim, SampleLayout, View, ViewAccess, ViewType};
 
 /// Whether block-linear texture headers may ask the texture unit to promote a
 /// sector fetch to two.
+static SECTOR_PROMOTION: AtomicBool = AtomicBool::new(false);
+
+#[no_mangle]
+pub extern "C" fn nil_set_sector_promotion(enabled: bool) {
+    SECTOR_PROMOTION.store(enabled, Ordering::Relaxed);
+}
+
 fn sector_promotion_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match std::env::var("NVK_SECTOR_PROMOTION") {
-        Ok(v) => v == "1" || v == "true",
-        Err(_) => false,
-    })
+    SECTOR_PROMOTION.load(Ordering::Relaxed)
 }
 
 macro_rules! set_enum {
