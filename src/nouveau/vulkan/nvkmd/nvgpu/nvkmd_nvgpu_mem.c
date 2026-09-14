@@ -268,13 +268,16 @@ nvkmd_nvgpu_alloc_tiled_mem(struct nvkmd_dev *_dev,
    if (_dev->pdev->debug_flags & NVK_DEBUG_FORCE_COHERENT)
       flags |= NVKMD_MEM_COHERENT;
 
-   /* The GM20B is not IO-coherent. A coherent map is made uncached by
-    * nvMapCreate().
-    */
-   const bool is_cpu_cacheable = !(flags & NVKMD_MEM_COHERENT);
+   if (flags & NVKMD_MEM_COHERENT)
+      flags |= NVKMD_MEM_CPU_UNCACHED | NVKMD_MEM_GPU_UNCACHED;
 
-   if (!is_cpu_cacheable || (_dev->pdev->debug_flags & NVK_DEBUG_GPU_UNCACHED))
+   if (_dev->pdev->debug_flags & NVK_DEBUG_CPU_UNCACHED)
+      flags |= NVKMD_MEM_CPU_UNCACHED;
+
+   if (_dev->pdev->debug_flags & NVK_DEBUG_GPU_UNCACHED)
       flags |= NVKMD_MEM_GPU_UNCACHED;
+
+   const bool is_cpu_cacheable = !(flags & NVKMD_MEM_CPU_UNCACHED);
 
    NvMap nvmap;
    if (!mem_cache_take(dev, size_B, mem_align_B, pte_kind, is_cpu_cacheable,
