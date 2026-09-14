@@ -5,6 +5,7 @@
 
 #include "nvkmd_nvgpu.h"
 
+#include "nil.h"
 #include "util/u_memory.h"
 #include "vk_log.h"
 
@@ -61,6 +62,45 @@ nvkmd_nvgpu_get_dev_info(const nvioctl_gpu_characteristics *chars,
    info->chipset_name[sizeof(chars->chipname)] = '\0';
 
    snprintf(info->device_name, sizeof(info->device_name), "NVIDIA Tegra X1");
+}
+
+/* Geometry for coarse depth culling. */
+static void
+nvkmd_nvgpu_get_zcull_info(struct nv_device_info *info)
+{
+   const nvioctl_zcull_info *zcull = nvGpuGetZcullInfo();
+   const uint32_t ctxsw_size_B = nvGpuGetZcullCtxSize();
+
+   if (zcull == NULL || ctxsw_size_B == 0)
+      return;
+
+   if (zcull->width_align_pixels == 0 ||
+       zcull->height_align_pixels == 0 ||
+       zcull->subregion_width_align_pixels == 0 ||
+       zcull->subregion_height_align_pixels == 0 ||
+       zcull->pixel_squares_by_aliquots == 0 ||
+       zcull->aliquot_total == 0 ||
+       zcull->subregion_count == 0 ||
+       zcull->subregion_count > nil_MAX_SUBREGIONS)
+      return;
+
+   info->zcull_info = (struct nv_zcull_device_info) {
+      .width_align_pixels = zcull->width_align_pixels,
+      .height_align_pixels = zcull->height_align_pixels,
+      .pixel_squares_by_aliquots = zcull->pixel_squares_by_aliquots,
+      .aliquot_total = zcull->aliquot_total,
+      .zcull_region_byte_multiplier = zcull->region_byte_multiplier,
+      .zcull_region_header_size = zcull->region_header_size,
+      .zcull_subregion_header_size = zcull->subregion_header_size,
+      .subregion_count = zcull->subregion_count,
+      .subregion_width_align_pixels = zcull->subregion_width_align_pixels,
+      .subregion_height_align_pixels = zcull->subregion_height_align_pixels,
+
+      /* Unread by nil. */
+      .ctxsw_size = ctxsw_size_B,
+      .ctxsw_align = (uint32_t)NVKMD_NVGPU_SMALL_PAGE_SIZE_B,
+   };
+   info->has_zcull_info = true;
 }
 
 VkResult
@@ -121,6 +161,9 @@ nvkmd_nvgpu_try_create_pdev(struct vk_object_base *log_obj,
    pdev->base.debug_flags = debug_flags;
 
    nvkmd_nvgpu_get_dev_info(chars, &pdev->base.dev_info);
+
+   if (!(debug_flags & NVK_DEBUG_NO_ZCULL))
+      nvkmd_nvgpu_get_zcull_info(&pdev->base.dev_info);
 
    const bool can_compress = chars->big_page_size != 0 &&
                              !(debug_flags & NVK_DEBUG_NO_COMPRESSION);

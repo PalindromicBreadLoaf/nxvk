@@ -112,6 +112,7 @@ nvk_init_debug_flags(struct nvk_instance *instance)
       { "no_sector_promotion", NVK_DEBUG_NO_SECTOR_PROMOTION },
       { "no_ubo_cbuf", NVK_DEBUG_NO_UBO_CBUF },
       { "full_push_desc", NVK_DEBUG_FULL_PUSH_DESC },
+      { "no_zcull", NVK_DEBUG_NO_ZCULL },
       { NULL, 0 },
    };
 

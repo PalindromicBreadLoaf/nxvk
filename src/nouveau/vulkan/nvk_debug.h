@@ -90,6 +90,9 @@ enum nvk_debug {
 
    /* Re-upload the whole push descriptor set on every draw and dispatch */
    NVK_DEBUG_FULL_PUSH_DESC = 1ull << 23,
+
+   /* Do not report the kernel's ZCULL geometry */
+   NVK_DEBUG_NO_ZCULL = 1ull << 24,
 };
 
 enum nvk_experimental {
