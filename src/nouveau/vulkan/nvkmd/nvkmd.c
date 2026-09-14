@@ -156,6 +156,11 @@ nvkmd_dev_alloc_mapped_mem(struct nvkmd_dev *dev,
    struct nvkmd_mem *mem;
    VkResult result;
 
+   if (dev->pdev->kmd_info.has_cpu_uncached &&
+       !(dev->pdev->debug_flags & NVK_DEBUG_NO_CPU_UNCACHED) &&
+       (map_flags & NVKMD_MEM_MAP_RDWR) == NVKMD_MEM_MAP_WR)
+      flags |= NVKMD_MEM_CPU_UNCACHED;
+
    result = nvkmd_dev_alloc_mem(dev, log_obj, size_B, align_B,
                                 flags | NVKMD_MEM_CAN_MAP, &mem);
    if (result != VK_SUCCESS)
@@ -475,7 +480,7 @@ void
 nvkmd_mem_sync_to_gpu(struct nvkmd_mem *mem, bool client_map,
                       uint64_t offset_B, uint64_t range_B)
 {
-   if (mem->flags & NVKMD_MEM_COHERENT)
+   if (!nvkmd_mem_is_cpu_cacheable(mem))
       return;
 
    const uint32_t atom_size_B = mem->dev->pdev->dev_info.nc_atom_size_B;
@@ -494,7 +499,7 @@ void
 nvkmd_mem_sync_from_gpu(struct nvkmd_mem *mem, bool client_map,
                         uint64_t offset_B, uint64_t range_B)
 {
-   if (mem->flags & NVKMD_MEM_COHERENT)
+   if (!nvkmd_mem_is_cpu_cacheable(mem))
       return;
 
    const uint32_t atom_size_B = mem->dev->pdev->dev_info.nc_atom_size_B;

@@ -93,6 +93,12 @@ enum nvk_debug {
 
    /* Do not report the kernel's ZCULL geometry */
    NVK_DEBUG_NO_ZCULL = 1ull << 24,
+
+   /* Map every allocation CPU-uncached, while leaving the GPU mapping cacheable */
+   NVK_DEBUG_CPU_UNCACHED = 1ull << 25,
+
+   /* Keep write-only maps CPU-cached and flush them by hand */
+   NVK_DEBUG_NO_CPU_UNCACHED = 1ull << 26,
 };
 
 enum nvk_experimental {

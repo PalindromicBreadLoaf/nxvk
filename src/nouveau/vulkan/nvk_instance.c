@@ -113,6 +113,8 @@ nvk_init_debug_flags(struct nvk_instance *instance)
       { "no_ubo_cbuf", NVK_DEBUG_NO_UBO_CBUF },
       { "full_push_desc", NVK_DEBUG_FULL_PUSH_DESC },
       { "no_zcull", NVK_DEBUG_NO_ZCULL },
+      { "cpu_uncached", NVK_DEBUG_CPU_UNCACHED },
+      { "no_cpu_uncached", NVK_DEBUG_NO_CPU_UNCACHED },
       { NULL, 0 },
    };
 

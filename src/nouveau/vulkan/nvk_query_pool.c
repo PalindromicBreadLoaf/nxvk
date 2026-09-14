@@ -254,7 +254,7 @@ static void
 nvk_sync_queries_to_gpu(struct nvk_query_pool *pool,
                         uint32_t first_query, uint32_t count)
 {
-   if (pool->mem->flags & NVKMD_MEM_COHERENT)
+   if (!nvkmd_mem_is_cpu_cacheable(pool->mem))
       return;
 
    assert(pool->layout != NVK_QUERY_POOL_LAYOUT_SEPARATE);
@@ -266,7 +266,7 @@ static void
 nvk_sync_queries_from_gpu(struct nvk_query_pool *pool,
                           uint32_t first_query, uint32_t count)
 {
-   if (pool->mem->flags & NVKMD_MEM_COHERENT)
+   if (!nvkmd_mem_is_cpu_cacheable(pool->mem))
       return;
 
    assert(pool->layout != NVK_QUERY_POOL_LAYOUT_SEPARATE);
