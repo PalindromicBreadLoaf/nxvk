@@ -115,10 +115,14 @@ nvk_init_debug_flags(struct nvk_instance *instance)
       { "no_zcull", NVK_DEBUG_NO_ZCULL },
       { "cpu_uncached", NVK_DEBUG_CPU_UNCACHED },
       { "no_cpu_uncached", NVK_DEBUG_NO_CPU_UNCACHED },
+      { "no_t210_subtiling", NVK_DEBUG_NO_T210_SUBTILING },
       { NULL, 0 },
    };
 
    instance->debug_flags = parse_debug_string(os_get_option("NVK_DEBUG"), flags);
+
+   const char *knob = os_get_option("NVK_SUBTILING_KNOB");
+   instance->subtiling_knob = knob != NULL ? strtoul(knob, NULL, 0) : 0;
 
    if (instance->debug_flags & NVK_DEBUG_ERRORS)
       instance->vk.enable_debug_logging = true;

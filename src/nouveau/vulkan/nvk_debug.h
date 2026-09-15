@@ -99,6 +99,9 @@ enum nvk_debug {
 
    /* Keep write-only maps CPU-cached and flush them by hand */
    NVK_DEBUG_NO_CPU_UNCACHED = 1ull << 26,
+
+   /* Partition the SPM for fragment shaders the way a discrete GPU does */
+   NVK_DEBUG_NO_T210_SUBTILING = 1ull << 27,
 };
 
 enum nvk_experimental {

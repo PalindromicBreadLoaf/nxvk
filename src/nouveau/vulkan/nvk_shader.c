@@ -791,6 +791,21 @@ nvk_max_shader_push_dw(const struct nvk_physical_device *pdev,
    return max_dw_count;
 }
 
+static uint32_t
+nvk_fs_subtiling_perf_knob(const struct nvk_physical_device *pdev)
+{
+   const struct nvk_instance *instance = nvk_physical_device_instance(pdev);
+
+   if (instance->subtiling_knob != 0)
+      return instance->subtiling_knob;
+
+   if (pdev->info.sm != 53 ||
+       (pdev->debug_flags & NVK_DEBUG_NO_T210_SUBTILING))
+      return 0x20164010;
+
+   return 0x087f6080;
+}
+
 static VkResult
 nvk_shader_fill_push(struct nvk_device *dev,
                      struct nvk_shader *shader,
@@ -927,12 +942,13 @@ nvk_shader_fill_push(struct nvk_device *dev,
    } else if (shader->info.stage == MESA_SHADER_FRAGMENT) {
       max_dw_count += 13;
 
+      const uint32_t knob = nvk_fs_subtiling_perf_knob(pdev);
       P_MTHD(p, NVC397, SET_SUBTILING_PERF_KNOB_A);
       P_NV9097_SET_SUBTILING_PERF_KNOB_A(p, {
-         .fraction_of_spm_register_file_per_subtile         = 0x10,
-         .fraction_of_spm_pixel_output_buffer_per_subtile   = 0x40,
-         .fraction_of_spm_triangle_ram_per_subtile          = 0x16,
-         .fraction_of_max_quads_per_subtile                 = 0x20,
+         .fraction_of_spm_register_file_per_subtile         = (knob >>  0) & 0xff,
+         .fraction_of_spm_pixel_output_buffer_per_subtile   = (knob >>  8) & 0xff,
+         .fraction_of_spm_triangle_ram_per_subtile          = (knob >> 16) & 0xff,
+         .fraction_of_max_quads_per_subtile                 = (knob >> 24) & 0xff,
       });
       P_NV9097_SET_SUBTILING_PERF_KNOB_B(p, 0x20);
 
