@@ -17,9 +17,10 @@ typedef uint32_t spv_binary_to_text_options_t;
 #define SPV_SUCCESS 0
 #define SPV_ENV_UNIVERSAL_1_6 0
 
-#define SPV_BINARY_TO_TEXT_OPTION_INDENT         0x1
-#define SPV_BINARY_TO_TEXT_OPTION_FRIENDLY_NAMES 0x2
-#define SPV_BINARY_TO_TEXT_OPTION_COLOR          0x4
+#define SPV_BINARY_TO_TEXT_OPTION_INDENT           0x1
+#define SPV_BINARY_TO_TEXT_OPTION_FRIENDLY_NAMES   0x2
+#define SPV_BINARY_TO_TEXT_OPTION_COLOR            0x4
+#define SPV_BINARY_TO_TEXT_OPTION_SHOW_BYTE_OFFSET 0x8
 
 typedef struct spv_context_t    *spv_context;
 typedef struct spv_diagnostic_t *spv_diagnostic;
