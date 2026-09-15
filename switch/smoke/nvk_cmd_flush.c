@@ -28,9 +28,15 @@ static uint64_t now_ns(void)
    return armTicksToNs(armGetSystemTick());
 }
 
-static bool run_phase(const char *name, struct phase *out)
+static bool run_phase(const char *name, const char *debug, struct phase *out)
 {
    bool ok = false;
+
+   if (debug)
+      setenv("NVK_DEBUG", debug, 1);
+   else
+      unsetenv("NVK_DEBUG");
+
    VkBuffer buf = VK_NULL_HANDLE;
    VkDeviceMemory mem = VK_NULL_HANDLE;
    void *cpu = NULL;
@@ -147,8 +153,9 @@ static bool run_phase(const char *name, struct phase *out)
       }
    }
 
-   LOG("%s: empty record %llu ns, %u-fill record %llu ns, readback %s",
-       name, (unsigned long long)out->record_ns, FILLS,
+   LOG("%s [NVK_DEBUG=%s]: empty record %llu ns, %u-fill record %llu ns, readback %s",
+       name, debug ? debug : "",
+       (unsigned long long)out->record_ns, FILLS,
        (unsigned long long)out->big_record_ns,
        out->readback_ok ? "OK" : "BAD");
    ok = true;
@@ -178,34 +185,50 @@ int main(void)
    LOG("=== nvk_cmd_flush ===");
    LOG("params: records/phase=%u fills=%u", RECORDS, FILLS);
 
-   struct phase full = {0}, ranged = {0};
+   struct phase full = {0}, ranged = {0}, full_c = {0}, ranged_c = {0};
 
-   setenv("NVK_DEBUG", "full_cmd_flush", 1);
-   if (!run_phase("full", &full)) goto fail;
+   if (!run_phase("full",          "full_cmd_flush",                 &full))     goto fail;
+   if (!run_phase("ranged",        NULL,                             &ranged))   goto fail;
+   if (!run_phase("full_cached",   "full_cmd_flush,no_cpu_uncached", &full_c))   goto fail;
+   if (!run_phase("ranged_cached", "no_cpu_uncached",                &ranged_c)) goto fail;
 
-   unsetenv("NVK_DEBUG");
-   if (!run_phase("ranged", &ranged)) goto fail;
-
-   if (!full.readback_ok || !ranged.readback_ok) {
+   if (!full.readback_ok || !ranged.readback_ok ||
+       !full_c.readback_ok || !ranged_c.readback_ok) {
       LOG("FAIL: the GPU did not see the whole pushbuf");
       goto fail;
    }
 
-   if (ranged.record_ns == 0) { LOG("FAIL: timer resolution too coarse"); goto fail; }
+   if (ranged.record_ns == 0 || ranged_c.record_ns == 0) {
+      LOG("FAIL: timer resolution too coarse");
+      goto fail;
+   }
 
-   const uint64_t pct = full.record_ns * 100ull / ranged.record_ns;
-   LOG("empty record: %llu -> %llu ns (%llu%% of ranged)",
+   const uint64_t pct   = full.record_ns   * 100ull / ranged.record_ns;
+   const uint64_t pct_c = full_c.record_ns * 100ull / ranged_c.record_ns;
+
+   LOG("empty record, cmd mem as shipped: %llu -> %llu ns (%llu%% of ranged)",
        (unsigned long long)full.record_ns,
        (unsigned long long)ranged.record_ns,
        (unsigned long long)pct);
+   LOG("empty record, cmd mem CPU-cached: %llu -> %llu ns (%llu%% of ranged)",
+       (unsigned long long)full_c.record_ns,
+       (unsigned long long)ranged_c.record_ns,
+       (unsigned long long)pct_c);
 
-   if (pct >= MIN_SPEEDUP_PCT) {
+   if (pct < MIN_SPEEDUP_PCT) {
+      LOG("as shipped the two are level, so no flush is reaching the memory at");
+      LOG("  all");
+   } else {
+      LOG("as shipped the flush is still being paid");
+   }
+
+   if (pct_c >= MIN_SPEEDUP_PCT) {
       LOG("CMD FLUSH OK");
       LOG("=== nvk_cmd_flush PASSED ===");
    } else {
-      LOG("CMD FLUSH FAIL: recording an empty command buffer still pays for the");
-      LOG("  whole 64 KiB mem (%llu%% < %u%%)",
-          (unsigned long long)pct, MIN_SPEEDUP_PCT);
+      LOG("CMD FLUSH FAIL: with cacheable command memory, recording an empty");
+      LOG("  command buffer still pays for the whole 64 KiB mem (%llu%% < %u%%)",
+          (unsigned long long)pct_c, MIN_SPEEDUP_PCT);
       LOG("=== nvk_cmd_flush FAILED ===");
    }
 
