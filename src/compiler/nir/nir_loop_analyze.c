@@ -26,6 +26,11 @@
 #include "util/ralloc.h"
 #include "nir.h"
 #include "nir_constant_expressions.h"
+#include "nir_search_helpers.h"
+
+#define IS_UNIFORM_UNKNOWN 0
+#define IS_UNIFORM_TRUE    1
+#define IS_UNIFORM_FALSE   2
 
 typedef struct {
    /* The loop we store information for */
@@ -96,6 +101,10 @@ instr_cost(loop_info_state *state, nir_instr *instr,
       return 0;
    } else if (nir_op_is_vec_or_mov(alu->op)) {
       /* movs and vecs are likely free. */
+      return 0;
+   } else if ((alu->op == nir_op_fmul || alu->op == nir_op_fmulz) &&
+              is_only_used_by_fadd(alu)) {
+      /* If we can fuse fma/mad, do not count the mul. */
       return 0;
    }
 
@@ -194,30 +203,46 @@ is_only_uniform_src(nir_src *src)
 {
    nir_instr *instr = nir_def_instr(src->ssa);
 
+   /* Lookup memoized result */
+   if (instr->pass_flags == IS_UNIFORM_TRUE)
+      return true;
+   if (instr->pass_flags == IS_UNIFORM_FALSE)
+      return false;
+
+   bool result = true;
    switch (instr->type) {
    case nir_instr_type_alu: {
       /* Return true if all sources return true. */
       nir_alu_instr *alu = nir_instr_as_alu(instr);
       for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
-         if (!is_only_uniform_src(&alu->src[i].src))
-            return false;
+         if (!is_only_uniform_src(&alu->src[i].src)) {
+            result = false;
+            break;
+         }
       }
-      return true;
+      break;
    }
 
    case nir_instr_type_intrinsic: {
       nir_intrinsic_instr *inst = nir_instr_as_intrinsic(instr);
       /* current uniform inline only support load ubo */
-      return inst->intrinsic == nir_intrinsic_load_ubo;
+      result = (inst->intrinsic == nir_intrinsic_load_ubo);
+      break;
    }
 
    case nir_instr_type_load_const:
       /* Always return true for constants. */
-      return true;
+      result = true;
+      break;
 
    default:
-      return false;
+      result = false;
+      break;
    }
+   /* Store memoized result */
+   instr->pass_flags = result ? IS_UNIFORM_TRUE : IS_UNIFORM_FALSE;
+
+   return result;
 }
 
 static bool
@@ -1222,6 +1247,7 @@ find_trip_count(loop_info_state *state, unsigned execution_mode,
        */
 
       nir_loop_induction_variable *lv = get_loop_var(basic_ind.def, state);
+      terminator->init_src = lv->init_src;
 
       /* The basic induction var might be a vector but, because we guarantee
        * earlier that the phi source has a scalar swizzle, we can take the
@@ -1234,7 +1260,7 @@ find_trip_count(loop_info_state *state, unsigned execution_mode,
       };
 
       nir_alu_instr *step_alu =
-         nir_instr_as_alu(nir_src_parent_instr(&lv->update_src->src));
+         nir_instr_as_alu(nir_src_use_instr(&lv->update_src->src));
 
       /* If the comparision is of unsigned type we don't necessarily need to
        * know the initial value to be able to calculate the max number of
@@ -1557,6 +1583,10 @@ nir_loop_analyze_impl(nir_function_impl *impl,
 {
    struct hash_table *range_ht = _mesa_pointer_hash_table_create(NULL);
    nir_metadata_require(impl, nir_metadata_block_index);
+
+   /* Clear pass_flags before using it for memoization */
+   nir_shader *shader = impl->function->shader;
+   nir_shader_clear_pass_flags(shader);
 
    foreach_list_typed(nir_cf_node, node, node, &impl->body)
       process_loops(node, indirect_mask, force_unroll_sampler_indirect, range_ht);

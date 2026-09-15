@@ -21,12 +21,23 @@
 
 #include "vk_command_buffer.h"
 #include "vk_format.h"
+#include "vk_meta.h"
 #include "util/u_tristate.h"
 
 #include "pan_fb.h"
 #include "pan_props.h"
 
 #define MAX_VBS 16
+
+#if PAN_ARCH < 10
+#define MAX_FRAMEBUFFER_DIMENSION (1 << 14)
+#elif PAN_ARCH < 11
+#define MAX_FRAMEBUFFER_DIMENSION (1 << 15)
+#else
+#define MAX_FRAMEBUFFER_DIMENSION (1 << 16)
+#endif
+
+#define MAX_FRAMEBUFFER_LAYERS 256
 
 struct panvk_cmd_buffer;
 
@@ -123,15 +134,16 @@ struct panvk_rendering_state {
 };
 
 enum panvk_cmd_graphics_dirty_state {
+   PANVK_CMD_GRAPHICS_DIRTY_BASE_INSTANCE,
    PANVK_CMD_GRAPHICS_DIRTY_VS,
    PANVK_CMD_GRAPHICS_DIRTY_FS,
    PANVK_CMD_GRAPHICS_DIRTY_VB,
-   PANVK_CMD_GRAPHICS_DIRTY_IB,
    PANVK_CMD_GRAPHICS_DIRTY_OQ,
    PANVK_CMD_GRAPHICS_DIRTY_DESC_STATE,
    PANVK_CMD_GRAPHICS_DIRTY_RENDER_STATE,
    PANVK_CMD_GRAPHICS_DIRTY_VS_PUSH_UNIFORMS,
    PANVK_CMD_GRAPHICS_DIRTY_FS_PUSH_UNIFORMS,
+   PANVK_CMD_GRAPHICS_DIRTY_IDVS,
    PANVK_CMD_GRAPHICS_DIRTY_STATE_COUNT,
 };
 
@@ -165,6 +177,11 @@ struct panvk_cmd_graphics_state {
    } fs;
 
    struct {
+      enum mesa_prim prim;
+      bool restart;
+   } idvs;
+
+   struct {
       const struct panvk_shader *shader;
       struct panvk_shader_desc_state desc;
       uint64_t push_uniforms;
@@ -174,7 +191,12 @@ struct panvk_cmd_graphics_state {
       uint64_t indirect_attribs_infos;
       uint64_t indirect_attrib_bufs_infos;
       uint64_t indirect_varying_bufs_infos;
-      bool previous_draw_was_indirect;
+#else
+      /* The number of times desc is repeated.  Zero means that it is not
+       * repeated but also that it's re-usable across draws and we're not
+       * allowed to patch it from the CSF.
+       */
+      uint32_t desc_repeat_count;
 #endif
    } vs;
 
@@ -185,6 +207,7 @@ struct panvk_cmd_graphics_state {
 
 #if PAN_ARCH >= 10
    struct {
+      uint32_t base_instance;
       uint32_t attribs_changing_on_base_instance;
    } vi;
 #endif
@@ -243,7 +266,7 @@ struct panvk_cmd_graphics_state {
       }                                                                        \
    } while (0)
 
-#if PAN_ARCH >= 10
+#if PAN_ARCH >= 10 && PAN_ARCH < 14
 struct panvk_device_draw_context {
    struct panvk_priv_bo *fns_bo;
    uint64_t fn_set_fbds_provoking_vertex_stride;
@@ -376,8 +399,7 @@ cached_fs_required(ASSERTED const struct panvk_cmd_graphics_state *state,
          gfx_state_set_dirty(__cmdbuf, FS_PUSH_UNIFORMS);                      \
    } while (0)
 
-
-#if PAN_ARCH >= 10
+#if PAN_ARCH >= 10 && PAN_ARCH < 14
 VkResult
 panvk_per_arch(device_draw_context_init)(struct panvk_device *dev);
 
@@ -393,8 +415,11 @@ void panvk_per_arch(cmd_select_tile_size)(struct panvk_cmd_buffer *cmdbuf);
 
 struct panvk_draw_info {
    struct {
-      uint32_t size;
+      uint64_t buffer_dev_addr;
+      uint64_t buffer_size;
+      uint32_t index_size;
       uint32_t offset;
+      bool restart_enable;
    } index;
 
    struct {
@@ -417,14 +442,29 @@ struct panvk_draw_info {
       uint32_t stride;
    } indirect;
 
+   enum mesa_prim prim;
+
 #if PAN_ARCH < 9
    uint32_t layer_id;
 #endif
 };
 
+#define panvk_draw_info_index(__cmdbuf, __offset) {                            \
+   .buffer_dev_addr = (__cmdbuf)->state.gfx.ib.dev_addr,                       \
+   .buffer_size = (__cmdbuf)->state.gfx.ib.size,                               \
+   .index_size = (__cmdbuf)->state.gfx.ib.index_size,                          \
+   .offset = (__offset),                                                       \
+   .restart_enable =                                                           \
+      (__cmdbuf)->vk.dynamic_graphics_state.ia.primitive_restart_enable,       \
+}
+
+#define panvk_get_client_prim(__cmdbuf) vk_topology_to_mesa(                   \
+      (__cmdbuf)->vk.dynamic_graphics_state.ia.primitive_topology)
+
 void
 panvk_per_arch(cmd_prepare_draw_sysvals)(struct panvk_cmd_buffer *cmdbuf,
-                                         const struct panvk_draw_info *info);
+                                         const struct panvk_draw_info *info,
+                                         const struct panvk_shader_variant *fs);
 
 static inline uint32_t
 color_attachment_written_mask(
@@ -470,6 +510,8 @@ color_attachment_read_mask(const struct panvk_shader_variant *fs,
       }
    }
 
+   catt_read_mask |= fs->fs.tile_image_color_read & color_attachment_mask;
+
    return catt_read_mask;
 }
 
@@ -482,7 +524,8 @@ z_attachment_read(const struct panvk_shader_variant *fs,
                          : ial->depth_att != MESA_VK_ATTACHMENT_UNUSED
                             ? BITFIELD_BIT(ial->depth_att + 1)
                             : 0;
-   return depth_mask & fs->fs.input_attachment_read;
+   return (depth_mask & fs->fs.input_attachment_read) ||
+          fs->fs.tile_image_z_read;
 }
 
 static inline bool
@@ -495,7 +538,20 @@ s_attachment_read(const struct panvk_shader_variant *fs,
                               ? BITFIELD_BIT(ial->stencil_att + 1)
                               : 0;
 
-   return stencil_mask & fs->fs.input_attachment_read;
+   return (stencil_mask & fs->fs.input_attachment_read) ||
+          fs->fs.tile_image_s_read;
 }
+
+#if PAN_ARCH >= 10
+void panvk_per_arch(cmd_draw_rects)(struct vk_command_buffer *cmd,
+                                    struct vk_meta_device *meta,
+                                    uint32_t rect_count,
+                                    const struct vk_meta_rect *rects);
+
+void panvk_per_arch(cmd_draw_volume)(struct vk_command_buffer *cmd,
+                                     struct vk_meta_device *meta,
+                                     const struct vk_meta_rect *rect,
+                                     uint32_t layer_count);
+#endif
 
 #endif

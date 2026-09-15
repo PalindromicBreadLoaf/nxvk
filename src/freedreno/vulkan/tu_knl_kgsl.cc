@@ -95,7 +95,17 @@ bo_init_new_dmaheap(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
                        "DMA_HEAP_IOCTL_ALLOC failed (%s)", strerror(errno));
    }
 
-   return tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, alloc.fd);
+   /* tu_bo_init_dmabuf() only borrows the fd: it keeps a dup of its own in
+    * bo->shared_fd, which is what kgsl_bo_finish() closes. That is correct for
+    * an imported dma-buf, whose fd belongs to the caller, but here the fd is
+    * ours and nobody else will ever drop it. Leaking it keeps the dma-buf
+    * alive after the BO is destroyed, so the memory is never reclaimed.
+    */
+   VkResult result =
+      tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, alloc.fd);
+   close(alloc.fd);
+
+   return result;
 }
 
 static VkResult
@@ -116,7 +126,12 @@ bo_init_new_ion(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
                        "ION_IOC_NEW_ALLOC failed (%s)", strerror(errno));
    }
 
-   return tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, alloc.fd);
+   /* See bo_init_new_dmaheap(): the fd is ours to close. */
+   VkResult result =
+      tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, alloc.fd);
+   close(alloc.fd);
+
+   return result;
 }
 
 static VkResult
@@ -158,7 +173,12 @@ bo_init_new_ion_legacy(struct tu_device *dev, struct tu_bo **out_bo, uint64_t si
                        "ION_IOC_FREE failed (%s)", strerror(errno));
    }
 
-   return tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, share.fd);
+   /* See bo_init_new_dmaheap(): the fd is ours to close. */
+   VkResult result =
+      tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, share.fd);
+   close(share.fd);
+
+   return result;
 }
 
 static VkResult
@@ -298,6 +318,8 @@ kgsl_bo_init(struct tu_device *dev,
       .base = base,
    };
 
+   tu_dump_bo_init(dev, bo);
+
    VkResult result = VK_SUCCESS;
 
    if (lazy_vma) {
@@ -308,8 +330,6 @@ kgsl_bo_init(struct tu_device *dev,
 
    if (result != VK_SUCCESS)
       return result;
-
-   tu_dump_bo_init(dev, bo);
 
    *out_bo = bo;
 
@@ -793,7 +813,7 @@ wait_timestamp_safe(int fd,
    }
 }
 
-VkResult
+static VkResult
 kgsl_queue_wait_fence(struct tu_queue *queue, uint32_t fence,
                       uint64_t timeout_ns)
 {
@@ -1459,7 +1479,8 @@ kgsl_queue_submit(struct tu_queue *queue, void *_submit,
 
    struct kgsl_command_object *objs = (struct kgsl_command_object *)
       vk_alloc(&queue->device->vk.alloc, sizeof(*objs) * obj_count,
-               alignof(*objs), VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+               alignof(struct kgsl_command_object),
+               VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
 
    struct kgsl_cmdbatch_profiling_buffer *profiling_buffer = NULL;
    uint32_t obj_idx = 0;
@@ -1701,6 +1722,12 @@ kgsl_device_check_status(struct tu_device *device)
 {
    for (unsigned i = 0; i < TU_MAX_QUEUE_FAMILIES; i++) {
       for (unsigned q = 0; q < device->queue_count[i]; q++) {
+         /* Emulated queues share the real queue's context and have no
+          * kernel submitqueue of their own, so skip them.
+          */
+         if (vk_queue_is_emulated(&device->queues[i][q].vk))
+            continue;
+
          /* KGSL's KGSL_PROP_GPU_RESET_STAT takes the u32 msm_queue_id and returns a
          * KGSL_CTX_STAT_* for the worst reset that happened since the last time it
          * was queried on that queue.

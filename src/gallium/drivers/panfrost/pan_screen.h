@@ -83,6 +83,23 @@ struct panfrost_vtable {
    void (*emit_write_timestamp)(struct panfrost_batch *batch,
                                 struct panfrost_resource *dst, unsigned offset);
 
+   /* Like emit_write_timestamp but without setting has_time_query, which is
+    * only needed to prevent empty-batch skipping for user-visible
+    * PIPE_QUERY_TIMESTAMP / PIPE_QUERY_TIME_ELAPSED queries. For v10+
+    * sb_wait_mask is used to defer the write until scoreboard slots signal.
+    */
+   void (*emit_trace_ts)(struct panfrost_batch *batch,
+                         struct panfrost_resource *dst, uint64_t offset,
+                         uint16_t sb_wait_mask);
+
+   /* Copy size_B bytes from an absolute GPU address (src_gpu_addr) into dst
+    * at dst_offset_B by emitting GPU commands. Only implemented for v10+ at
+    * present.
+    */
+   void (*emit_trace_copy)(struct panfrost_batch *batch,
+                           struct panfrost_resource *dst, uint64_t dst_offset_B,
+                           uint64_t src_gpu_addr, uint32_t size_B);
+
    /* Select the tile size and calculate the color buffer allocation size */
    void (*select_tile_size)(struct pan_fb_info *fb);
 
@@ -105,6 +122,8 @@ struct panfrost_screen {
    char renderer_string[100];
    struct panfrost_vtable vtbl;
    struct disk_cache *disk_cache;
+
+   float heap_memory_percent;
 
    /* Use AFBC tiled layout whenever possible */
    bool afbc_tiled;
@@ -155,6 +174,7 @@ void panfrost_cmdstream_screen_init_v9(struct panfrost_screen *screen);
 void panfrost_cmdstream_screen_init_v10(struct panfrost_screen *screen);
 void panfrost_cmdstream_screen_init_v12(struct panfrost_screen *screen);
 void panfrost_cmdstream_screen_init_v13(struct panfrost_screen *screen);
+void panfrost_cmdstream_screen_init_v14(struct panfrost_screen *screen);
 
 #define perf_debug(ctx, ...)                                                   \
    do {                                                                        \

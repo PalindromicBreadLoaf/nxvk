@@ -8,9 +8,6 @@
 #ifndef AC_NIR_HELPERS_H
 #define AC_NIR_HELPERS_H
 
-#include "ac_hw_stage.h"
-#include "ac_shader_args.h"
-#include "ac_shader_util.h"
 #include "ac_nir.h"
 #include "nir_defines.h"
 

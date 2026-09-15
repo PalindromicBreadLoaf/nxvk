@@ -232,11 +232,18 @@ tu_physical_device_get_format_properties(
 
    if (supported_color) {
       assert(supported_tex);
-      optimal |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT |
-                 VK_FORMAT_FEATURE_2_BLIT_DST_BIT |
-                 VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT |
-                 VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT |
-                 VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT;
+      optimal |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
+
+      /* "Compatibility Between SPIR-V Image Formats and Vulkan Formats" doesn't
+       * map any SPIR-V image formats formats to Vulkan depth/stencil formats,
+       * except for "Unknown" which maps to anything with the feature flags set.
+       * Don't bother supporting that unformatted z/s access, either, since
+       * x8_d24 fails and it seems like an unintended corner of the spec.
+       */
+      if (!vk_format_is_depth_or_stencil(vk_format)) {
+         optimal |= VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT |
+                    VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT;
+      }
 
       buffer |= VK_FORMAT_FEATURE_2_STORAGE_TEXEL_BUFFER_BIT |
                 VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT |
@@ -288,7 +295,18 @@ tu_physical_device_get_format_properties(
          if ((desc->is_unorm || desc->is_snorm) &&
              vk_format != VK_FORMAT_R8G8_SNORM) {
             optimal |= VK_FORMAT_FEATURE_2_BOX_FILTER_SAMPLED_BIT_QCOM;
-            optimal |= VK_FORMAT_FEATURE_2_WEIGHT_SAMPLED_IMAGE_BIT_QCOM;
+
+            /* Weight image sampling requires that image component substitution
+             * occur before filtering, so we can't do it on a format that
+             * requires image component substitution during the texture swizzle
+             * after filtering.
+             */
+            uint8_t format_swiz[4];
+            fdl6_format_swiz(format, physical_device->info->props.has_z24uint_s8uint, format_swiz);
+            if (format_swiz[0] == PIPE_SWIZZLE_X && format_swiz[1] == PIPE_SWIZZLE_Y &&
+                format_swiz[2] == PIPE_SWIZZLE_Z && format_swiz[3] == PIPE_SWIZZLE_W) {
+               optimal |= VK_FORMAT_FEATURE_2_WEIGHT_SAMPLED_IMAGE_BIT_QCOM;
+            }
          }
       }
 

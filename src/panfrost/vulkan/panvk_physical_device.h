@@ -102,9 +102,16 @@ VkSampleCountFlags panvk_get_sample_counts(unsigned arch,
                                            unsigned max_cbuf_atts,
                                            unsigned format_size);
 
+VkDeviceSize
+panvk_get_max_resource_size(const struct panvk_physical_device *device);
+
+VkDeviceSize
+panvk_get_max_buffer_size(const struct panvk_physical_device *device);
+
 #ifdef PAN_ARCH
 void panvk_per_arch(get_physical_device_extensions)(
    const struct panvk_physical_device *device,
+   const struct panvk_instance *instance,
    struct vk_device_extension_table *ext);
 
 void panvk_per_arch(get_physical_device_features)(

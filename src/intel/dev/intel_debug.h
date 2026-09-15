@@ -94,6 +94,8 @@ enum intel_debug_flag {
    DEBUG_BVH_TLAS_IR_HDR,
    DEBUG_BVH_BLAS_IR_AS,
    DEBUG_BVH_TLAS_IR_AS,
+   DEBUG_BVH_PCREL_MAP,
+   DEBUG_BVH_UPDATE_AS,
    DEBUG_BVH_NO_BUILD,
    DEBUG_NO_SEND_GATHER,
    DEBUG_NO_VRT,
@@ -109,11 +111,6 @@ enum intel_debug_flag {
    DEBUG_MESH,
    DEBUG_CS,
    DEBUG_RT,
-   DEBUG_NO8,
-
-   DEBUG_NO16,
-   DEBUG_NO32,
-   DEBUG_DO32,
 
    /* Must be the last entry */
    INTEL_DEBUG_MAX,
@@ -134,16 +131,19 @@ extern BITSET_WORD intel_debug[BITSET_WORDS(INTEL_DEBUG_MAX)];
                                       INTEL_DEBUG(DEBUG_BVH_BLAS_IR_HDR) || \
                                       INTEL_DEBUG(DEBUG_BVH_TLAS_IR_HDR) || \
                                       INTEL_DEBUG(DEBUG_BVH_BLAS_IR_AS) || \
-                                      INTEL_DEBUG(DEBUG_BVH_TLAS_IR_AS)))
+                                      INTEL_DEBUG(DEBUG_BVH_TLAS_IR_AS) || \
+                                      INTEL_DEBUG(DEBUG_BVH_UPDATE_AS) || \
+                                      INTEL_DEBUG(DEBUG_BVH_PCREL_MAP)))
 
 extern uint64_t intel_simd;
+extern uint32_t intel_simd_overridden; /**< bit per stage if overridden */
 extern uint32_t intel_debug_bkp_before_draw_count;
 extern uint32_t intel_debug_bkp_after_draw_count;
 extern uint32_t intel_debug_bkp_before_dispatch_count;
 extern uint32_t intel_debug_bkp_after_dispatch_count;
 extern uint64_t intel_debug_batch_frame_start;
 extern uint64_t intel_debug_batch_frame_stop;
-extern uint32_t intel_shader_dump_filter;
+extern uint64_t intel_shader_dump_filter;
 
 #define INTEL_SIMD(type, size)        (!!(intel_simd & (DEBUG_ ## type ## _SIMD ## size)))
 
@@ -175,15 +175,8 @@ extern uint32_t intel_shader_dump_filter;
 
 #ifdef HAVE_ANDROID_PLATFORM
 #define LOG_TAG "INTEL-MESA"
-#if ANDROID_API_LEVEL >= 26
-#include <log/log.h>
-#else
-#include <cutils/log.h>
-#endif /* use log/log.h start from android 8 major version */
-#ifndef ALOGW
-#define ALOGW LOGW
-#endif
-#define dbg_printf(...)	ALOGW(__VA_ARGS__)
+#include <android/log.h>
+#define dbg_printf(...)	__android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #else
 #define dbg_printf(...)	fprintf(stderr, __VA_ARGS__)
 #endif /* HAVE_ANDROID_PLATFORM */

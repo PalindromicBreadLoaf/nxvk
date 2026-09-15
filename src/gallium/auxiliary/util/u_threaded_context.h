@@ -221,6 +221,8 @@ struct tc_unflushed_batch_token;
  * - it's conformant
  * - doesn't cause any known issues
  * - massively improves performance
+ *
+ * update 2026: chromium svg rendering requires this due to skia bugs
  */
 #define TC_RESOLVE_STRICT 0
 
@@ -475,6 +477,14 @@ struct tc_renderpass_info {
       /* zsbuf fb info is in data8[3] & BITFIELD_MASK(4) */
       uint8_t data8[8];
    };
+   struct {
+      uint16_t x;
+      uint16_t y;
+      uint16_t z;
+      uint16_t width;
+      uint16_t height;
+      uint16_t depth;
+   } resolve_geometry;
    /* only valid if has_resolve is true and the resolve member of pipe_framebuffer_state is NULL */
    struct pipe_resource *resolve[2]; //[color, depth]
 };

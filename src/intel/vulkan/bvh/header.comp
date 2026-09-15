@@ -7,7 +7,9 @@
 
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
-#include "anv_build_interface.h"
+#include "anv_bvh_defines.h"
+#define VK_USED_BUILD_FLAGS (0)
+#include "anv_bvh_helpers.h"
 
 layout(push_constant) uniform CONSTS
 {
@@ -34,11 +36,11 @@ main(void)
    DEREF(args.dst).instance_count = args.instance_count;
    DEREF(args.dst).instance_leaves_offset = args.instance_leaves_offset;
 
-   /* 128 is local_size_x in copy.comp shader, 8 is the amount of data
+   /* 128 is local_size_x in copy.comp shader, 16bytes is the amount of data
     * copied by each iteration of that shader's loop
     */
    DEREF(args.dst).copy_dispatch_size[0] =
-      uint32_t(DIV_ROUND_UP(compacted_size, 8 * 128));
+      uint32_t(DIV_ROUND_UP(compacted_size, 16 * 128));
    DEREF(args.dst).copy_dispatch_size[1] = 1;
    DEREF(args.dst).copy_dispatch_size[2] = 1;
 #if GFX_VERx10 >= 300

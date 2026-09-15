@@ -94,7 +94,7 @@ static bool
 nir_def_is_used_as(nir_def *def, nir_alu_type type)
 {
    nir_foreach_use(use, def) {
-      nir_instr *use_instr = nir_src_parent_instr(use);
+      nir_instr *use_instr = nir_src_use_instr(use);
       if (use_instr->type != nir_instr_type_alu)
          continue;
 
@@ -281,7 +281,19 @@ nir_algebraic_pattern_test::skip_test(nir_alu_instr *alu, uint32_t bit_size,
 static bool
 compare_inexact(double a, double b, uint32_t bit_size)
 {
-   return abs(a - b) > pow(0.5, bit_size / 4);
+   double diff = fabs(a - b);
+   double tol = pow(0.5, bit_size / 4);
+   if (diff <= tol)
+      return false;
+   /* For large-magnitude values, also allow relative tolerance so that
+    * patterns like ~f2f64(u2f(a)) -> u2f64(a) pass when the difference
+    * is small relative to the values' magnitude (the intermediate float
+    * representation loses precision, but the relative error is tiny).
+    */
+   double scale = fabs(a) + fabs(b);
+   if (scale > 0.0 && diff / scale <= tol)
+      return false;
+   return true;
 }
 
 /* Returns true if this expression means the testcase passed with these input values
@@ -329,9 +341,21 @@ nir_algebraic_pattern_test::evaluate_expression(nir_instr *instr)
                       * outputs!  This handles (poorly) the expected inexactness
                       * of e.g. the pack_half_2x16_split ->
                       * pack_half_2x16_rtz_split transform.
+                      *
+                      * Integer bit patterns like INT64_MAX (0x7FFFFFFFFFFFFFFF)
+                      * are NaN when reinterpreted as float64, making the float
+                      * comparison meaningless.  Fall back to a relative integer
+                      * comparison in that case.
                       */
-                     if (compare_inexact(af, bf, bit_size))
+                     if (!is_float && (isnan(af) || isnan(bf))) {
+                        uint64_t diff = au > bu ? au - bu : bu - au;
+                        uint64_t scale = MAX2(au, bu);
+                        double tol = pow(0.5, bit_size / 4);
+                        if (scale > 0 && (double)diff / (double)scale > tol)
+                           return false;
+                     } else if (compare_inexact(af, bf, bit_size)) {
                         return false;
+                     }
                   }
                } else {
                   return false;

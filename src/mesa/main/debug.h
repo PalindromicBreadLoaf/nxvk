@@ -42,7 +42,6 @@ struct gl_context;
 struct gl_texture_image;
 
 extern void _mesa_print_state( const char *msg, GLuint state );
-extern void _mesa_print_info( struct gl_context *ctx );
 extern void _mesa_init_debug( struct gl_context *ctx );
 
 #endif

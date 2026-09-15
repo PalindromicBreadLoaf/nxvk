@@ -23,8 +23,7 @@ option(
   type : 'combo',
   value : 'auto',
   choices : [
-    'auto', 'x11', 'wayland', 'haiku', 'android', 'windows',
-    'surfaceless', 'drm', 'horizon',
+    'auto', 'x11', 'haiku', 'android', 'surfaceless', 'horizon',
   ],
   description : 'the window system EGL assumes for EGL_DEFAULT_DISPLAY',
 )
@@ -148,7 +147,7 @@ option(
   'gallium-rusticl-enable-drivers',
   type : 'array',
   value : ['auto'],
-  choices : ['auto', 'asahi', 'freedreno', 'radeonsi'],
+  choices : ['auto', 'asahi', 'freedreno', 'panfrost', 'radeonsi'],
   description : 'List of gallium drivers for which rusticl will be enabled ' +
                 'by default',
 )
@@ -305,6 +304,14 @@ option(
   type : 'string',
   value : '',
   description : 'Location of the MoltenVk SDK. Default: '
+)
+
+option(
+  'vulkan-loader-rpath',
+  type : 'string',
+  value : '/usr/local/lib',
+  description : 'The path where the vulkan loader (libvulkan.1.dylib) exists at runtime.' +
+                'Defaults to /usr/local/lib since that is where the Vulkan SDK installs it to by default.'
 )
 
 option(
@@ -550,9 +557,9 @@ option(
   'tools',
   type : 'array',
   value : [],
-  choices : ['drm-shim', 'etnaviv', 'freedreno', 'glsl', 'intel', 'intel-ui',
-             'nir', 'nouveau', 'lima', 'panfrost', 'asahi', 'imagination',
-             'zink', 'all', 'dlclose-skip'],
+  choices : ['amd', 'asahi', 'dlclose-skip', 'drm-shim', 'etnaviv', 'freedreno',  
+             'gamma', 'glsl', 'imagination', 'intel', 'intel-ui', 'lima', 'nir',
+             'nouveau', 'panfrost', 'zink', 'all'],
   description : 'List of tools to build. (Note: `intel-ui` selects `intel`)',
 )
 
@@ -753,7 +760,29 @@ option(
 )
 
 option(
+  'radv-u_trace',
+  type : 'boolean',
+  value : false,
+  description : 'Enable u_trace profiling features.'
+)
+
+option(
   'radeonsi-build-id',
+  type : 'string',
+  value : '',
+  description : 'Override build id for shader cache keys (hex string). ' +
+                'Can be extracted with readelf -x .note.gnu.build-id'
+)
+
+option(
+  'tu-build-id',
+  type : 'string',
+  value : '',
+  description : 'Override build id for shader cache keys (hex string). '
+)
+
+option(
+  'nvk-build-id',
   type : 'string',
   value : '',
   description : 'Override build id for shader cache keys (hex string). ' +
@@ -878,4 +907,11 @@ option(
   type : 'boolean',
   value : false,
   description : 'use experimental virtio backend for intel driver',
+)
+
+option(
+  'panfrost-rust',
+  type : 'boolean',
+  value : false,
+  description : 'Build panfrost Rust components.'
 )

@@ -232,16 +232,12 @@ anv_image_view_init(struct anv_device *device,
             anv_layout_to_aux_usage(device->info, image, 1UL << iaspect_bit,
                                     VK_IMAGE_USAGE_SAMPLED_BIT,
                                     VK_IMAGE_LAYOUT_GENERAL,
-                                    VK_QUEUE_GRAPHICS_BIT |
-                                    VK_QUEUE_COMPUTE_BIT |
-                                    VK_QUEUE_TRANSFER_BIT);
+                                    device->view_queues);
          enum isl_aux_usage optimal_aux_usage =
             anv_layout_to_aux_usage(device->info, image, 1UL << iaspect_bit,
                                     VK_IMAGE_USAGE_SAMPLED_BIT,
                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                    VK_QUEUE_GRAPHICS_BIT |
-                                    VK_QUEUE_COMPUTE_BIT |
-                                    VK_QUEUE_TRANSFER_BIT);
+                                    device->view_queues);
 
          anv_image_fill_surface_state(device, image, 1ULL << iaspect_bit,
                                       &iview->planes[vplane].isl,
@@ -270,9 +266,7 @@ anv_image_view_init(struct anv_device *device,
             anv_layout_to_aux_usage(device->info, image, 1UL << iaspect_bit,
                                     VK_IMAGE_USAGE_STORAGE_BIT,
                                     VK_IMAGE_LAYOUT_GENERAL,
-                                    VK_QUEUE_GRAPHICS_BIT |
-                                    VK_QUEUE_COMPUTE_BIT |
-                                    VK_QUEUE_TRANSFER_BIT);
+                                    device->view_queues);
          iview->planes[vplane].storage.state =
             anv_device_maybe_alloc_surface_state(device, surface_state_stream);
 
@@ -295,17 +289,17 @@ anv_image_view_finish(struct anv_image_view *iview)
    if (!iview->use_surface_state_stream) {
       for (uint32_t plane = 0; plane < iview->n_planes; plane++) {
          if (iview->planes[plane].optimal_sampler.state.alloc_size) {
-            anv_state_pool_free(&device->bindless_surface_state_pool,
+            anv_state_pool_free(anv_device_get_bindless_surface_state_pool(device),
                   iview->planes[plane].optimal_sampler.state);
          }
 
          if (iview->planes[plane].general_sampler.state.alloc_size) {
-            anv_state_pool_free(&device->bindless_surface_state_pool,
+            anv_state_pool_free(anv_device_get_bindless_surface_state_pool(device),
                   iview->planes[plane].general_sampler.state);
          }
 
          if (iview->planes[plane].storage.state.alloc_size) {
-            anv_state_pool_free(&device->bindless_surface_state_pool,
+            anv_state_pool_free(anv_device_get_bindless_surface_state_pool(device),
                   iview->planes[plane].storage.state);
          }
       }

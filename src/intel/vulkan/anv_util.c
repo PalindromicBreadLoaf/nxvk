@@ -31,9 +31,12 @@
 #include <sys/stat.h>
 
 #include "anv_private.h"
+#include "anv_internal_kernels.h"
 #include "vk_enum_to_str.h"
 
 #include "compiler/brw/brw_nir_rt.h"
+#include "compiler/jay/jay.h"
+#include "shaders/float64_spv.h"
 
 #ifdef NO_REGEX
 typedef int regex_t;
@@ -292,6 +295,12 @@ create_bvh_dump_file(struct anv_bvh_dump *bvh)
    case BVH_IR_AS:
       dump_sub_directory = "BVH_IR_AS";
       break;
+   case BVH_ANV_PCREL:
+      dump_sub_directory = "BVH_ANV_PCREL";
+      break;
+   case BVH_ANV_UPDATE:
+      dump_sub_directory = "BVH_ANV_UPDATE";
+      break;
    default:
       UNREACHABLE("invalid dump type");
    }
@@ -376,6 +385,30 @@ void anv_wait_for_attach() {
    }
 }
 
+static debug_archiver *
+anv_rt_debug_archiver_open(void *mem_ctx,
+                            const struct nir_shader *nir,
+                            const void *key,
+                            unsigned key_size)
+{
+   if (!INTEL_DEBUG(DEBUG_MDA))
+      return NULL;
+
+   uint8_t blake3[BLAKE3_KEY_LEN];
+   _mesa_blake3_compute(key, key_size, blake3);
+   char name[BLAKE3_HEX_LEN + 16] = {};
+   _mesa_blake3_format(name, blake3);
+   memcpy(&name[BLAKE3_HEX_LEN - 1], ".init_rt_shaders", 16);
+
+   debug_archiver *archiver = debug_archiver_open(mem_ctx, name,
+                                                  "init_rt_shaders");
+   debug_archiver_set_prefix(
+      archiver,
+      _mesa_shader_stage_to_abbrev(nir->info.stage));
+
+   return archiver;
+}
+
 VkResult
 anv_device_init_rt_shaders(struct anv_device *device)
 {
@@ -392,6 +425,7 @@ anv_device_init_rt_shaders(struct anv_device *device)
    } trampoline_key = {
       .name = "rt-trampoline",
    };
+
    device->rt_trampoline =
       anv_device_search_for_kernel(device, device->internal_cache,
                                    &trampoline_key, sizeof(trampoline_key),
@@ -407,20 +441,36 @@ anv_device_init_rt_shaders(struct anv_device *device)
       trampoline_nir->info.max_subgroup_size = require_size;
       trampoline_nir->info.min_subgroup_size = require_size;
 
+      debug_archiver *debug_archiver =
+         anv_rt_debug_archiver_open(tmp_ctx, trampoline_nir,
+                                    &trampoline_key, sizeof(trampoline_key));
+
       struct brw_cs_prog_data trampoline_prog_data = {
          .uses_btd_stack_ids = true,
       };
       struct brw_compile_cs_params params = {
          .base = {
             .nir = trampoline_nir,
+            .key = &trampoline_key.key.base,
+            .prog_data = (struct brw_stage_prog_data *)&trampoline_prog_data,
             .log_data = device,
             .mem_ctx = tmp_ctx,
+            .archiver = debug_archiver,
          },
-         .key = &trampoline_key.key,
-         .prog_data = &trampoline_prog_data,
       };
-      const unsigned *tramp_data =
-         brw_compile_cs(device->physical->compiler, &params);
+
+      const unsigned *tramp_data = NULL;
+      if (intel_use_jay(device->info, MESA_SHADER_COMPUTE)) {
+         struct jay_shader_bin *bin =
+            jay_compile(device->info, tmp_ctx, trampoline_nir,
+                        (union brw_any_prog_data *)&trampoline_prog_data,
+                        (union brw_any_prog_key *)&trampoline_key.key.base,
+                        debug_archiver);
+
+         tramp_data = bin->kernel;
+      } else {
+         tramp_data = brw_compile(device->physical->compiler, &params.base);
+      }
 
       struct anv_shader_upload_params upload_params = {
          .stage               = MESA_SHADER_COMPUTE,
@@ -438,6 +488,7 @@ anv_device_init_rt_shaders(struct anv_device *device)
          anv_device_upload_kernel(device, device->internal_cache,
                                   &upload_params);
 
+      debug_archiver_close(debug_archiver);
       ralloc_free(tmp_ctx);
 
       if (device->rt_trampoline == NULL)
@@ -464,6 +515,10 @@ anv_device_init_rt_shaders(struct anv_device *device)
       nir_shader *trivial_return_nir =
          brw_nir_create_trivial_return_shader(device->physical->compiler, tmp_ctx);
 
+      debug_archiver *debug_archiver =
+         anv_rt_debug_archiver_open(tmp_ctx, trivial_return_nir,
+                                    &return_key, sizeof(return_key));
+
       NIR_PASS(_, trivial_return_nir, brw_nir_lower_rt_intrinsics,
                  &return_key.key.base, device->info);
 
@@ -471,14 +526,26 @@ anv_device_init_rt_shaders(struct anv_device *device)
       struct brw_compile_bs_params params = {
          .base = {
             .nir = trivial_return_nir,
+            .key = &return_key.key.base,
+            .prog_data = (struct brw_stage_prog_data *)&return_prog_data,
             .log_data = device,
             .mem_ctx = tmp_ctx,
+            .archiver = debug_archiver,
          },
-         .key = &return_key.key,
-         .prog_data = &return_prog_data,
       };
-      const unsigned *return_data =
-         brw_compile_bs(device->physical->compiler, &params);
+
+      const unsigned *return_data = NULL;
+      if (intel_use_jay(device->info, MESA_SHADER_CALLABLE)) {
+         struct jay_shader_bin *bin =
+            jay_compile(device->info, tmp_ctx, trivial_return_nir,
+                        (union brw_any_prog_data *)&return_prog_data,
+                        (union brw_any_prog_key *)&return_key.key.base,
+                        debug_archiver);
+
+         return_data = bin->kernel;
+      } else {
+         return_data = brw_compile(device->physical->compiler, &params.base);
+      }
 
       struct anv_shader_upload_params upload_params = {
          .stage               = MESA_SHADER_CALLABLE,
@@ -496,6 +563,7 @@ anv_device_init_rt_shaders(struct anv_device *device)
          anv_device_upload_kernel(device, device->internal_cache,
                                   &upload_params);
 
+      debug_archiver_close(debug_archiver);
       ralloc_free(tmp_ctx);
 
       if (device->rt_trivial_return == NULL)
@@ -522,6 +590,9 @@ anv_device_init_rt_shaders(struct anv_device *device)
       nir_shader *null_ahs_nir =
          brw_nir_create_null_ahs_shader(device->physical->compiler, tmp_ctx);
 
+      debug_archiver *debug_archiver =
+         anv_rt_debug_archiver_open(tmp_ctx, null_ahs_nir,
+                                    &null_return_key, sizeof(null_return_key));
       NIR_PASS(_, null_ahs_nir, brw_nir_lower_rt_intrinsics,
                  &null_return_key.key.base, device->info);
 
@@ -529,14 +600,25 @@ anv_device_init_rt_shaders(struct anv_device *device)
       struct brw_compile_bs_params params = {
          .base = {
             .nir = null_ahs_nir,
+            .key = &null_return_key.key.base,
+            .prog_data = (struct brw_stage_prog_data *)&return_prog_data,
             .log_data = device,
             .mem_ctx = tmp_ctx,
          },
-         .key = &null_return_key.key,
-         .prog_data = &return_prog_data,
       };
-      const unsigned *return_data =
-         brw_compile_bs(device->physical->compiler, &params);
+      const unsigned *return_data = NULL;
+      if (intel_use_jay(device->info, MESA_SHADER_CALLABLE)) {
+         struct jay_shader_bin *bin =
+            jay_compile(device->info, tmp_ctx, null_ahs_nir,
+                        (union brw_any_prog_data *)&return_prog_data,
+                        (union brw_any_prog_key *)&null_return_key.key.base,
+                        debug_archiver);
+
+         return_data = bin->kernel;
+      } else {
+         return_data = brw_compile(device->physical->compiler, &params.base);
+      }
+
 
       struct anv_shader_upload_params upload_params = {
          .stage               = MESA_SHADER_CALLABLE,
@@ -554,6 +636,7 @@ anv_device_init_rt_shaders(struct anv_device *device)
          anv_device_upload_kernel(device, device->internal_cache,
                                   &upload_params);
 
+      debug_archiver_close(debug_archiver);
       ralloc_free(tmp_ctx);
 
       if (device->rt_null_ahs == NULL)
@@ -573,4 +656,165 @@ anv_device_finish_rt_shaders(struct anv_device *device)
 {
    if (!device->vk.enabled_extensions.KHR_ray_tracing_pipeline)
       return;
+}
+
+struct anv_pipeline_bind_map *
+anv_pipeline_bind_map_clone(struct anv_device *device,
+                            const VkAllocationCallbacks *alloc,
+                            const struct anv_pipeline_bind_map *src)
+{
+   VK_MULTIALLOC(ma);
+   VK_MULTIALLOC_DECL(&ma, struct anv_pipeline_bind_map, bind_map, 1);
+   VK_MULTIALLOC_DECL(&ma, struct anv_pipeline_binding, surfaces, src->surface_count);
+   VK_MULTIALLOC_DECL(&ma, struct anv_pipeline_binding, samplers, src->sampler_count);
+   VK_MULTIALLOC_DECL(&ma, struct anv_pipeline_embedded_sampler_binding, embedded_samplers, src->embedded_sampler_count);
+
+   if (!vk_multialloc_zalloc2(&ma, &device->vk.alloc, alloc,
+                              VK_SYSTEM_ALLOCATION_SCOPE_DEVICE))
+      return NULL;
+
+   memcpy(bind_map, src, sizeof(*src));
+
+   memcpy(surfaces, src->surface_to_descriptor,
+          sizeof(*surfaces) * src->surface_count);
+   bind_map->surface_to_descriptor = surfaces;
+   memcpy(samplers, src->sampler_to_descriptor,
+          sizeof(*samplers) * src->sampler_count);
+   bind_map->sampler_to_descriptor = samplers;
+   memcpy(embedded_samplers, src->embedded_sampler_to_binding,
+          sizeof(*embedded_samplers) * src->embedded_sampler_count);
+   bind_map->embedded_sampler_to_binding = embedded_samplers;
+
+   return bind_map;
+}
+
+void
+anv_cmd_buffer_dump_commands(struct anv_cmd_buffer *cmd_buffer,
+                             uint64_t preprocess_cmd_addr,
+                             uint32_t n_dwords)
+{
+   struct anv_device *device = cmd_buffer->device;
+   struct anv_shader_internal *generate_kernel;
+   VkResult ret =
+      anv_device_get_internal_shader(device,
+                                     anv_internal_kernel_variant(
+                                        cmd_buffer, DGC_DUMP),
+                                     &generate_kernel);
+   if (ret != VK_SUCCESS) {
+      anv_batch_set_error(&cmd_buffer->batch, ret);
+      return;
+   }
+
+   anv_add_pending_pipe_bits(cmd_buffer,
+                             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT_KHR |
+                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR,
+                             VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                             ANV_PIPE_HDC_PIPELINE_FLUSH_BIT |
+                             ANV_PIPE_UNTYPED_DATAPORT_CACHE_FLUSH_BIT,
+                             "pre gfx cmd dump");
+   anv_genX(device->info, cmd_buffer_apply_pipe_flushes)(cmd_buffer);
+
+   struct anv_simple_shader simple_state = {
+      .device               = device,
+      .cmd_buffer           = cmd_buffer,
+      .dynamic_state_stream = &cmd_buffer->dynamic_state_stream,
+      .general_state_stream = &cmd_buffer->general_state_stream,
+      .batch                = &cmd_buffer->batch,
+      .kernel               = generate_kernel,
+   };
+   anv_genX(device->info, emit_simple_shader_init)(&simple_state);
+
+   struct anv_dgc_dump_params *params;
+   struct anv_state push_data_state =
+      anv_genX(device->info, simple_shader_alloc_push)(
+         &simple_state, sizeof(*params));
+   if (push_data_state.map == NULL)
+      return;
+   params = push_data_state.map;
+
+   *params = (struct anv_dgc_dump_params) {
+      .cmd_addr = preprocess_cmd_addr,
+      .n_dwords = n_dwords,
+      .call_addr = anv_address_physical(
+         anv_batch_current_address(&cmd_buffer->batch)),
+   };
+
+   anv_genX(device->info, emit_simple_shader_dispatch)(
+      &simple_state, 1, push_data_state);
+
+   anv_add_pending_pipe_bits(cmd_buffer,
+                             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT_KHR |
+                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR,
+                             VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                             0,
+                             "post gfx cmd dump");
+   anv_genX(device->info, cmd_buffer_apply_pipe_flushes)(cmd_buffer);
+}
+
+nir_shader *
+anv_ensure_fp64_shader(struct anv_device *device)
+{
+   assert(!device->info->has_64bit_float);
+
+   if (device->fp64_nir)
+      return device->fp64_nir;
+
+   simple_mtx_lock(&device->fp64_mutex);
+
+   if (!device->fp64_nir) {
+      const nir_shader_compiler_options *nir_options =
+         &device->physical->compiler->nir_options[MESA_SHADER_VERTEX];
+
+      const char* shader_name = "float64_spv_lib";
+      blake3_hasher blake3_ctx;
+      uint8_t blake3[BLAKE3_KEY_LEN];
+      _mesa_blake3_init(&blake3_ctx);
+      _mesa_blake3_update(&blake3_ctx, shader_name, strlen(shader_name));
+      _mesa_blake3_final(&blake3_ctx, blake3);
+
+      device->fp64_nir =
+         anv_device_search_for_nir(device, device->internal_cache,
+                                   nir_options, blake3, NULL);
+
+      /* The shader found, no need to call spirv_to_nir() again. */
+      if (!device->fp64_nir) {
+         const struct spirv_capabilities spirv_caps = {
+            .Addresses = true,
+            .Float64 = true,
+            .Int8 = true,
+            .Int16 = true,
+            .Int64 = true,
+            .Shader = true,
+         };
+
+         struct spirv_to_nir_options spirv_options = {
+            .capabilities = &spirv_caps,
+            .environment = NIR_SPIRV_VULKAN,
+            .create_library = true
+         };
+
+         nir_shader* nir =
+            spirv_to_nir(float64_spv_source, sizeof(float64_spv_source) / 4,
+                         NULL, MESA_SHADER_VERTEX, "main",
+                         &spirv_options, nir_options);
+
+         assert(nir != NULL);
+
+         nir_validate_shader(nir, "after spirv_to_nir");
+
+         NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp);
+         NIR_PASS(_, nir, nir_lower_returns);
+         NIR_PASS(_, nir, nir_inline_functions);
+
+         nir_sweep(nir);
+
+         anv_device_upload_nir(device, device->internal_cache, nir, blake3);
+
+         device->fp64_nir = nir;
+      }
+   }
+
+   simple_mtx_unlock(&device->fp64_mutex);
+
+   return device->fp64_nir;
 }

@@ -234,7 +234,7 @@ st_DrawTex(struct gl_context *ctx, GLfloat x, GLfloat y, GLfloat z,
             SET_ATTRIB(2, tex_attr, s1, t1, 0.0f, 1.0f);  /* upper right */
             SET_ATTRIB(3, tex_attr, s0, t1, 0.0f, 1.0f);  /* upper left */
 
-            slots[tex_attr] = st->needs_texcoord_semantic ?
+            slots[tex_attr] = st->screen->caps.tgsi_texcoord ?
                VARYING_SLOT_TEX0 : VARYING_SLOT_VAR0;
 
             tex_attr++;
@@ -246,14 +246,8 @@ st_DrawTex(struct gl_context *ctx, GLfloat x, GLfloat y, GLfloat z,
 #undef SET_ATTRIB
    }
 
-   cso_save_state(cso, (CSO_BIT_VIEWPORT |
-                        CSO_BIT_STREAM_OUTPUTS |
-                        CSO_BIT_VERTEX_SHADER |
-                        CSO_BIT_TESSCTRL_SHADER |
-                        CSO_BIT_TESSEVAL_SHADER |
-                        CSO_BIT_GEOMETRY_SHADER |
-                        CSO_BIT_MESH_SHADER |
-                        CSO_BIT_VERTEX_ELEMENTS));
+   /* Save only states that have no st_atom — they can't be re-derived. */
+   cso_save_state(cso, CSO_BIT_STREAM_OUTPUTS);
 
    {
       void *vs = lookup_shader(st, numAttribs, slots);
@@ -305,10 +299,20 @@ st_DrawTex(struct gl_context *ctx, GLfloat x, GLfloat y, GLfloat z,
 
    pipe_resource_release(pipe, releasebuf);
 
-   /* restore state */
+   /* Restore atomless states via CSO. */
    cso_restore_state(cso, 0);
-   ctx->Array.NewVertexElements = true;
-   ST_SET_STATE(ctx->NewDriverState, ST_NEW_VERTEX_ARRAYS);
+
+   /* Invalidate all states this meta-op modified. The atoms will
+    * re-derive them from GL state before the next draw.
+    */
+   st_context_invalidate_state(st,
+                               ST_INVALIDATE_VIEWPORT |
+                               ST_INVALIDATE_VERTEX_BUFFERS |
+                               ST_INVALIDATE_VS_STATE |
+                               ST_INVALIDATE_GS_STATE |
+                               ST_INVALIDATE_TCS_STATE |
+                               ST_INVALIDATE_TES_STATE |
+                               ST_INVALIDATE_MESH_STATE);
 }
 
 /**

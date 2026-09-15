@@ -416,13 +416,16 @@ build_process_cs_cmd_seq(nir_builder *b, struct nvk_nir_push *p,
 
             nir_def *local_x = nir_ubitfield_extract_imm(
                b, qmd_repl[qmd_layout.local_x_start / 32],
-               qmd_layout.local_x_start % 32, qmd_layout.local_x_end % 32);
+               qmd_layout.local_x_start % 32,
+               qmd_layout.local_x_end - qmd_layout.local_x_start);
             nir_def *local_y = nir_ubitfield_extract_imm(
                b, qmd_repl[qmd_layout.local_y_start / 32],
-               qmd_layout.local_y_start % 32, qmd_layout.local_y_end % 32);
+               qmd_layout.local_y_start % 32,
+               qmd_layout.local_y_end - qmd_layout.local_y_start);
             nir_def *local_z = nir_ubitfield_extract_imm(
                b, qmd_repl[qmd_layout.local_z_start / 32],
-               qmd_layout.local_z_start % 32, qmd_layout.local_z_end % 32);
+               qmd_layout.local_z_start % 32,
+               qmd_layout.local_z_end - qmd_layout.local_z_start);
             nir_def *local_size =
                nir_imul(b, nir_imul(b, local_x, local_y), local_z);
 
@@ -500,7 +503,8 @@ build_gfx_set_exec(nir_builder *b, struct nvk_nir_push *p, nir_def *token_addr,
          if (stage != MESA_SHADER_FRAGMENT)
             last_vtgm = stage;
 
-         uint32_t type = mesa_to_nv9097_shader_type(stage);
+         uint32_t type = mesa_to_nv9097_shader_type(
+            stage, token->shaderStages & VK_SHADER_STAGE_TASK_BIT_EXT);
          type_stage[type] = stage;
          type_shader_idx[type] = load_global_dw(b, token_addr, i++);
       }
@@ -678,10 +682,11 @@ build_draw_count(nir_builder *b, struct nvk_nir_push *p, nir_def *token_addr)
    nir_def *stride  = load_global_dw(b, token_addr, 2);
    nir_def *count   = load_global_dw(b, token_addr, 3);
 
-   nvk_nir_P_1INC(b, p, NV9097, CALL_MME_MACRO(NVK_MME_DRAW_INDIRECT), 4);
+   nvk_nir_P_1INC(b, p, NV9097, CALL_MME_MACRO(NVK_MME_DRAW_INDIRECT), 5);
    nvk_nir_push_dw(b, p, addr_hi);
    nvk_nir_push_dw(b, p, addr_lo);
    nvk_nir_push_dw(b, p, count);
+   nvk_nir_push_dw(b, p, nir_imm_zero(b, 1, 32)); // stride >> 32
    nvk_nir_push_dw(b, p, stride);
 }
 
@@ -694,10 +699,40 @@ build_draw_indexed_count(nir_builder *b, struct nvk_nir_push *p,
    nir_def *stride  = load_global_dw(b, token_addr, 2);
    nir_def *count   = load_global_dw(b, token_addr, 3);
 
-   nvk_nir_P_1INC(b, p, NV9097, CALL_MME_MACRO(NVK_MME_DRAW_INDEXED_INDIRECT), 4);
+   nvk_nir_P_1INC(b, p, NV9097, CALL_MME_MACRO(NVK_MME_DRAW_INDEXED_INDIRECT), 5);
    nvk_nir_push_dw(b, p, addr_hi);
    nvk_nir_push_dw(b, p, addr_lo);
    nvk_nir_push_dw(b, p, count);
+   nvk_nir_push_dw(b, p, nir_imm_zero(b, 1, 32)); // stride >> 32
+   nvk_nir_push_dw(b, p, stride);
+}
+
+static void
+build_draw_mesh_tasks(nir_builder *b, struct nvk_nir_push *p, nir_def *token_addr)
+{
+   nir_def *group_count_x = load_global_dw(b, token_addr, 0);
+   nir_def *group_count_y = load_global_dw(b, token_addr, 1);
+   nir_def *group_count_z = load_global_dw(b, token_addr, 2);
+
+   nvk_nir_P_1INC(b, p, NV9097, CALL_MME_MACRO(NVK_MME_DRAW_MESH), 3);
+   nvk_nir_push_dw(b, p, group_count_x);
+   nvk_nir_push_dw(b, p, group_count_y);
+   nvk_nir_push_dw(b, p, group_count_z);
+}
+
+static void
+build_draw_mesh_tasks_count(nir_builder *b, struct nvk_nir_push *p, nir_def *token_addr)
+{
+   nir_def *addr_lo = load_global_dw(b, token_addr, 0);
+   nir_def *addr_hi = load_global_dw(b, token_addr, 1);
+   nir_def *stride  = load_global_dw(b, token_addr, 2);
+   nir_def *count   = load_global_dw(b, token_addr, 3);
+
+   nvk_nir_P_1INC(b, p, NV9097, CALL_MME_MACRO(NVK_MME_DRAW_MESH_INDIRECT), 5);
+   nvk_nir_push_dw(b, p, addr_hi);
+   nvk_nir_push_dw(b, p, addr_lo);
+   nvk_nir_push_dw(b, p, count);
+   nvk_nir_push_dw(b, p, nir_imm_zero(b, 1, 32)); // stride >> 32
    nvk_nir_push_dw(b, p, stride);
 }
 
@@ -751,6 +786,14 @@ build_process_gfx_cmd_seq(nir_builder *b, struct nvk_nir_push *p,
 
       case VK_INDIRECT_COMMANDS_TOKEN_TYPE_DRAW_COUNT_EXT:
          build_draw_count(b, p, token_addr);
+         break;
+
+      case VK_INDIRECT_COMMANDS_TOKEN_TYPE_DRAW_MESH_TASKS_EXT:
+         build_draw_mesh_tasks(b, p, token_addr);
+         break;
+
+      case VK_INDIRECT_COMMANDS_TOKEN_TYPE_DRAW_MESH_TASKS_COUNT_EXT:
+         build_draw_mesh_tasks_count(b, p, token_addr);
          break;
 
       default:
@@ -1150,7 +1193,8 @@ nvk_CmdExecuteGeneratedCommandsEXT(VkCommandBuffer commandBuffer,
          uint8_t set_types = 0;
          u_foreach_bit(s, layout->set_stages) {
             mesa_shader_stage stage = vk_to_mesa_shader_stage(1 << s);
-            uint32_t type = mesa_to_nv9097_shader_type(stage);
+            uint32_t type = mesa_to_nv9097_shader_type(
+               stage, layout->set_stages & VK_SHADER_STAGE_TASK_BIT_EXT);
             set_types |= BITFIELD_BIT(type);
          }
 

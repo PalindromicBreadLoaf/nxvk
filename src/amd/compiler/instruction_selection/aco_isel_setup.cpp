@@ -6,7 +6,6 @@
 
 #include "aco_instruction_selection.h"
 #include "aco_interface.h"
-#include "aco_nir_call_attribs.h"
 
 #include "nir_builder.h"
 #include "nir_control_flow.h"
@@ -23,9 +22,9 @@ bool
 only_used_by_cross_lane_instrs(nir_def* ssa, bool follow_phis = true)
 {
    nir_foreach_use (src, ssa) {
-      switch (nir_src_parent_instr(src)->type) {
+      switch (nir_src_use_instr(src)->type) {
       case nir_instr_type_alu: {
-         nir_alu_instr* alu = nir_instr_as_alu(nir_src_parent_instr(src));
+         nir_alu_instr* alu = nir_instr_as_alu(nir_src_use_instr(src));
          if (alu->op != nir_op_unpack_64_2x32_split_x && alu->op != nir_op_unpack_64_2x32_split_y)
             return false;
          if (!only_used_by_cross_lane_instrs(&alu->def, follow_phis))
@@ -34,7 +33,7 @@ only_used_by_cross_lane_instrs(nir_def* ssa, bool follow_phis = true)
          continue;
       }
       case nir_instr_type_intrinsic: {
-         nir_intrinsic_instr* intrin = nir_instr_as_intrinsic(nir_src_parent_instr(src));
+         nir_intrinsic_instr* intrin = nir_instr_as_intrinsic(nir_src_use_instr(src));
          if (intrin->intrinsic != nir_intrinsic_read_invocation &&
              intrin->intrinsic != nir_intrinsic_read_first_invocation &&
              intrin->intrinsic != nir_intrinsic_lane_permute_16_amd)
@@ -47,7 +46,7 @@ only_used_by_cross_lane_instrs(nir_def* ssa, bool follow_phis = true)
          if (!follow_phis)
             return false;
 
-         nir_phi_instr* phi = nir_instr_as_phi(nir_src_parent_instr(src));
+         nir_phi_instr* phi = nir_instr_as_phi(nir_src_use_instr(src));
          if (!only_used_by_cross_lane_instrs(&phi->def, false))
             return false;
 
@@ -215,10 +214,6 @@ apply_nuw_to_offsets(isel_context* ctx, nir_function_impl* impl)
             break;
          case nir_intrinsic_load_scratch: apply_nuw_to_ssa(ctx, intrin->src[0].ssa); break;
          case nir_intrinsic_store_scratch: apply_nuw_to_ssa(ctx, intrin->src[1].ssa); break;
-         case nir_intrinsic_load_global_amd:
-            if (nir_intrinsic_access(intrin) & ACCESS_SMEM_AMD)
-               apply_nuw_to_ssa(ctx, intrin->src[1].ssa);
-            break;
          default: break;
          }
       }
@@ -270,9 +265,9 @@ skip_uniformize_merge_phi(nir_def* ssa, unsigned depth)
       return false;
 
    nir_foreach_use (src, ssa) {
-      switch (nir_src_parent_instr(src)->type) {
+      switch (nir_src_use_instr(src)->type) {
       case nir_instr_type_alu: {
-         nir_alu_instr* alu = nir_instr_as_alu(nir_src_parent_instr(src));
+         nir_alu_instr* alu = nir_instr_as_alu(nir_src_use_instr(src));
          if (alu->def.divergent)
             break;
 
@@ -303,7 +298,7 @@ skip_uniformize_merge_phi(nir_def* ssa, unsigned depth)
          break;
       }
       case nir_instr_type_intrinsic: {
-         nir_intrinsic_instr* intrin = nir_instr_as_intrinsic(nir_src_parent_instr(src));
+         nir_intrinsic_instr* intrin = nir_instr_as_intrinsic(nir_src_use_instr(src));
          unsigned src_idx = src - intrin->src;
          /* nir_intrinsic_lane_permute_16_amd is only safe because we don't use divergence analysis
           * for it's instruction selection. We use that intrinsic for NGG culling. All others are
@@ -322,7 +317,7 @@ skip_uniformize_merge_phi(nir_def* ssa, unsigned depth)
          return false;
       }
       case nir_instr_type_phi: {
-         nir_phi_instr* phi = nir_instr_as_phi(nir_src_parent_instr(src));
+         nir_phi_instr* phi = nir_instr_as_phi(nir_src_use_instr(src));
          if (phi->def.divergent || skip_uniformize_merge_phi(&phi->def, depth + 1))
             break;
          return false;
@@ -380,7 +375,6 @@ init_context(isel_context* ctx, nir_shader* shader)
 
    /* Init NIR range analysis. */
    ctx->range_ht = _mesa_pointer_hash_table_create(NULL);
-   ctx->numlsb_ht = _mesa_pointer_hash_table_create(NULL);
    ctx->fp_class_ht = nir_create_fp_analysis_state(impl);
 
    uint32_t options =
@@ -558,8 +552,6 @@ init_context(isel_context* ctx, nir_shader* shader)
                }
                RegType type = RegType::sgpr;
                switch (intrinsic->intrinsic) {
-               case nir_intrinsic_load_push_constant:
-               case nir_intrinsic_load_num_subgroups:
                case nir_intrinsic_vote_all:
                case nir_intrinsic_vote_any:
                case nir_intrinsic_read_first_invocation:
@@ -568,8 +560,6 @@ init_context(isel_context* ctx, nir_shader* shader)
                case nir_intrinsic_first_invocation:
                case nir_intrinsic_ballot:
                case nir_intrinsic_ballot_relaxed:
-               case nir_intrinsic_bindless_image_samples:
-               case nir_intrinsic_load_scalar_arg_amd:
                case nir_intrinsic_unit_test_uniform_input: type = RegType::sgpr; break;
                case nir_intrinsic_load_input:
                case nir_intrinsic_load_per_primitive_input:
@@ -633,7 +623,8 @@ init_context(isel_context* ctx, nir_shader* shader)
                case nir_intrinsic_ddy_fine:
                case nir_intrinsic_ddx_coarse:
                case nir_intrinsic_ddy_coarse:
-               case nir_intrinsic_load_return_param_amd: {
+               case nir_intrinsic_load_return_param_amd:
+               case nir_intrinsic_load_global_tr_amd: {
                   type = RegType::vgpr;
                   break;
                }
@@ -740,7 +731,6 @@ init_context(isel_context* ctx, nir_shader* shader)
 void
 cleanup_context(isel_context* ctx)
 {
-   _mesa_hash_table_destroy(ctx->numlsb_ht, NULL);
    _mesa_hash_table_destroy(ctx->range_ht, NULL);
    nir_free_fp_analysis_state(&ctx->fp_class_ht);
 }

@@ -29,10 +29,15 @@ dEQP-GLES2.functional.shaders.loops.for_constant_iterations.101_iterations_fragm
 dEQP-GLES2.functional.shaders.loops.for_constant_iterations.mixed_break_continue_fragment,Fail
 
 dEQP-GLES2.functional.shaders.random.all_features.fragment.5,Fail
+dEQP-GLES2.functional.shaders.random.all_features.fragment.22,Fail
+dEQP-GLES2.functional.shaders.random.all_features.fragment.32,Fail
+dEQP-GLES2.functional.shaders.random.all_features.fragment.79,Fail
 dEQP-GLES2.functional.shaders.random.all_features.fragment.93,Fail
 dEQP-GLES2.functional.shaders.random.all_features.fragment.97,Fail
 dEQP-GLES2.functional.shaders.random.trigonometric.fragment.15,Fail
+dEQP-GLES2.functional.shaders.random.trigonometric.fragment.26,Fail
 dEQP-GLES2.functional.shaders.random.trigonometric.fragment.45,Fail
+dEQP-GLES2.functional.shaders.random.trigonometric.fragment.81,Fail
 
 # Need to port the DP3 trick for all_equal from st_glsl_to_tgsi.
 dEQP-GLES2.functional.shaders.struct.uniform.equal_fragment,Fail
@@ -376,7 +381,6 @@ spec@arb_texture_compression@texwrap formats bordercolor@GL_COMPRESSED_RGBA- bor
 spec@ati_texture_compression_3dc@texwrap formats bordercolor,Fail
 spec@ati_texture_compression_3dc@texwrap formats bordercolor@GL_COMPRESSED_LUMINANCE_ALPHA_3DC_ATI- border color only,Fail
 
-spec@arb_texture_cube_map@copyteximage cube,Fail
 spec@arb_texture_rectangle@glsl-fs-shadow2drect,Fail
 spec@arb_texture_rectangle@glsl-fs-shadow2drect-01,Fail
 spec@arb_texture_rectangle@glsl-fs-shadow2drect-03,Fail
@@ -795,7 +799,6 @@ spec@glsl-1.10@execution@samplers@glsl-fs-shadow2dproj,Fail
 spec@glsl-1.10@execution@samplers@glsl-fs-shadow2dproj-bias,Fail
 
 spec@glsl-1.10@execution@temp-array-indexing@glsl-fs-vec4-indexing-temp-dst-in-nested-loop-combined,Fail
-spec@glsl-1.10@execution@temp-array-indexing@glsl-fs-vec4-indexing-temp-src-in-loop,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-fs-vec4-indexing-temp-src-in-nested-loop-combined,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-fs-vec4-indexing-temp-src-in-nested-loop-inner,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-fs-vec4-indexing-temp-src-in-nested-loop-outer,Fail
@@ -965,6 +968,9 @@ spec@glsl-1.20@execution@fs-vec4-const-array-indirect-access-048-elements,Fail
 spec@glsl-1.20@execution@fs-vec4-const-array-indirect-access-128-elements,Fail
 spec@glsl-1.20@execution@fs-vec4-const-array-indirect-access-256-elements,Fail
 
+# Loop unrolling regression
+spec@glsl-1.20@execution@fs-function-inout-array-of-structs,Fail
+
 # https://gitlab.freedesktop.org/mesa/mesa/-/issues/4980
 spec@glsl-1.20@execution@glsl-fs-frontfacing,Fail
 spec@glsl-1.20@execution@glsl-fs-frontfacing-not,Fail
@@ -1021,3 +1027,10 @@ spec@intel_performance_query@intel_performance_query-issue_2235,Fail
 spec@nv_primitive_restart@primitive-restart-draw-mode-lines,Fail
 spec@nv_primitive_restart@primitive-restart-draw-mode-quad_strip,Fail
 spec@nv_primitive_restart@primitive-restart-draw-mode-quads,Fail
+
+# uprev Piglit in Mesa
+spec@arb_texture_cube_map@copyteximage cube,Fail
+
+# Nightly run expectations update
+spec@glsl-1.10@execution@samplers@glsl-fs-shadow2d-consecutive-draws,Fail
+

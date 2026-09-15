@@ -13,7 +13,6 @@
 #include "ac_shader_util.h"
 #include "ac_nir.h"
 #include "nir/nir.h"
-#include "nir/nir_deref.h"
 #include "sid.h"
 #include "util/bitscan.h"
 #include "util/u_math.h"
@@ -761,8 +760,6 @@ static bool visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
       }
       break;
    case nir_op_ffma:
-      /* FMA is slow on gfx6-8, so it shouldn't be used. */
-      assert(instr->def.bit_size != 32 || ctx->ac.gfx_level >= GFX9);
       result = emit_fp_intrinsic(&ctx->ac, "llvm.fma", def_type, src[0], src[1], src[2]);
       break;
    case nir_op_ffmaz:
@@ -770,18 +767,8 @@ static bool visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
       src[0] = ac_to_float(&ctx->ac, src[0]);
       src[1] = ac_to_float(&ctx->ac, src[1]);
       src[2] = ac_to_float(&ctx->ac, src[2]);
-#if LLVM_VERSION_MAJOR <= 21
-      /* Workaround for LLVM bug that crashes when using legacy fma on GFX12. */
-      if (ctx->ac.gfx_level == GFX12) {
-         LLVMValueRef mulz = ac_build_intrinsic(&ctx->ac, "llvm.amdgcn.fmul.legacy",
-                                                ctx->ac.f32, src, 2, 0);
-         result = LLVMBuildFAdd(ctx->ac.builder, mulz, src[2], "");
-      } else
-#endif
-      {
-         result = ac_build_intrinsic(&ctx->ac, "llvm.amdgcn.fma.legacy", ctx->ac.f32,
-                                     src, 3, 0);
-      }
+      result = ac_build_intrinsic(&ctx->ac, "llvm.amdgcn.fma.legacy", ctx->ac.f32,
+                                  src, 3, 0);
       break;
    case nir_op_ldexp:
       src[0] = ac_to_float(&ctx->ac, src[0]);
@@ -943,9 +930,6 @@ static bool visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
       break;
    case nir_op_b2b1: /* after loads */
       result = emit_i2b(&ctx->ac, src[0]);
-      break;
-   case nir_op_b2b16: /* before stores */
-      result = LLVMBuildZExt(ctx->ac.builder, src[0], ctx->ac.i16, "");
       break;
    case nir_op_b2b32: /* before stores */
       result = LLVMBuildZExt(ctx->ac.builder, src[0], ctx->ac.i32, "");
@@ -2035,7 +2019,8 @@ static LLVMValueRef visit_load_ubo_buffer(struct ac_nir_context *ctx, nir_intrin
 
 static void visit_store_output(struct ac_nir_context *ctx, nir_intrinsic_instr *instr)
 {
-   unsigned base = nir_intrinsic_base(instr);
+   nir_shader *nir = instr->instr.block->impl->function->shader;
+   unsigned base = ac_nir_get_io_driver_location(nir, nir_intrinsic_io_semantics(instr).location, false);
    unsigned writemask = nir_intrinsic_write_mask(instr);
    unsigned component = nir_intrinsic_component(instr);
    LLVMValueRef src = ac_to_float(&ctx->ac, get_src(ctx, instr->src[0]));
@@ -2348,6 +2333,9 @@ static LLVMValueRef visit_image_atomic(struct ac_nir_context *ctx, const nir_int
    case nir_atomic_op_iadd:
       atomic_subop = ac_atomic_add;
       break;
+   case nir_atomic_op_isub:
+      atomic_subop = ac_atomic_sub;
+      break;
    case nir_atomic_op_imin:
       atomic_subop = ac_atomic_smin;
       break;
@@ -2612,12 +2600,9 @@ static LLVMValueRef load_interpolated_input(struct ac_nir_context *ctx, LLVMValu
 
 static LLVMValueRef visit_load_input(struct ac_nir_context *ctx, nir_intrinsic_instr *instr)
 {
-   LLVMValueRef values[8];
-   LLVMTypeRef dest_type = get_def_type(ctx, &instr->def);
-   unsigned base = nir_intrinsic_base(instr);
+   nir_io_semantics sem = nir_intrinsic_io_semantics(instr);
    unsigned component = nir_intrinsic_component(instr);
-   unsigned count = instr->def.num_components;
-   nir_src offset = *nir_get_io_offset_src(instr);
+   ASSERTED nir_src offset = *nir_get_io_offset_src(instr);
 
    assert(instr->def.bit_size == 16 || instr->def.bit_size == 32);
    /* No indirect indexing allowed. */
@@ -2625,16 +2610,9 @@ static LLVMValueRef visit_load_input(struct ac_nir_context *ctx, nir_intrinsic_i
 
    /* This is used to load TCS inputs from VGPRs in radeonsi. */
    if (ctx->stage == MESA_SHADER_TESS_CTRL) {
-      LLVMTypeRef component_type = LLVMGetTypeKind(dest_type) == LLVMVectorTypeKind ?
-                                      LLVMGetElementType(dest_type) : dest_type;
-
-      LLVMValueRef result = ctx->abi->load_tess_varyings(ctx->abi, component_type,
-                                                         base, component, count);
-      if (instr->def.bit_size == 16) {
-         result = ac_to_integer(&ctx->ac, result);
-         result = LLVMBuildTrunc(ctx->ac.builder, result, dest_type, "");
-      }
-      return LLVMBuildBitCast(ctx->ac.builder, result, dest_type, "");
+      return ctx->abi->load_tess_varyings(ctx->abi, instr->def.num_components,
+                                          instr->def.bit_size, sem.location,
+                                          component, sem.high_16bits);
    }
 
    assert(ctx->stage == MESA_SHADER_FRAGMENT);
@@ -2643,22 +2621,24 @@ static LLVMValueRef visit_load_input(struct ac_nir_context *ctx, nir_intrinsic_i
    if (instr->intrinsic == nir_intrinsic_load_input_vertex)
       vertex_id = nir_src_as_uint(instr->src[0]);
 
+   unsigned base = nir_intrinsic_base(instr);
    LLVMValueRef attr_number = LLVMConstInt(ctx->ac.i32, base, false);
+   LLVMTypeRef dest_type = get_def_type(ctx, &instr->def);
+   LLVMValueRef values[8];
 
-   for (unsigned chan = 0; chan < count; chan++) {
+   for (unsigned chan = 0; chan < instr->def.num_components; chan++) {
       LLVMValueRef llvm_chan = LLVMConstInt(ctx->ac.i32, (component + chan) % 4, false);
       values[chan] = ac_build_fs_interp_mov(&ctx->ac, vertex_id, llvm_chan, attr_number,
                                             ac_get_arg(&ctx->ac, ctx->args->prim_mask));
       values[chan] = LLVMBuildBitCast(ctx->ac.builder, values[chan], ctx->ac.i32, "");
-      if (instr->def.bit_size == 16 &&
-          nir_intrinsic_io_semantics(instr).high_16bits)
+      if (instr->def.bit_size == 16 && sem.high_16bits)
          values[chan] = LLVMBuildLShr(ctx->ac.builder, values[chan], LLVMConstInt(ctx->ac.i32, 16, 0), "");
       values[chan] =
          LLVMBuildTruncOrBitCast(ctx->ac.builder, values[chan],
                                  instr->def.bit_size == 16 ? ctx->ac.i16 : ctx->ac.i32, "");
    }
 
-   LLVMValueRef result = ac_build_gather_values(&ctx->ac, values, count);
+   LLVMValueRef result = ac_build_gather_values(&ctx->ac, values, instr->def.num_components);
    return LLVMBuildBitCast(ctx->ac.builder, result, dest_type, "");
 }
 
@@ -3147,6 +3127,7 @@ static bool visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
       break;
    }
    case nir_intrinsic_load_scalar_arg_amd:
+   case nir_intrinsic_load_scalar_arg_wg_div_amd:
    case nir_intrinsic_load_vector_arg_amd: {
       assert(nir_intrinsic_base(instr) < AC_MAX_ARGS);
       struct ac_arg arg;

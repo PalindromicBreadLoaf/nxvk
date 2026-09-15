@@ -3,11 +3,18 @@ Release Notes
 
 The release notes summarize what's new or changed in each Mesa release.
 
+-  :doc:`26.2.2 release notes <relnotes/26.2.2>`
+-  :doc:`26.2.1 release notes <relnotes/26.2.1>`
+-  :doc:`26.2.0 release notes <relnotes/26.2.0>`
 -  :doc:`26.1.4 release notes <relnotes/26.1.4>`
 -  :doc:`26.1.3 release notes <relnotes/26.1.3>`
 -  :doc:`26.1.2 release notes <relnotes/26.1.2>`
+-  :doc:`26.0.8 release notes <relnotes/26.0.8>`
 -  :doc:`26.1.1 release notes <relnotes/26.1.1>`
+-  :doc:`26.0.7 release notes <relnotes/26.0.7>`
 -  :doc:`26.1.0 release notes <relnotes/26.1.0>`
+-  :doc:`26.0.6 release notes <relnotes/26.0.6>`
+-  :doc:`26.0.5 release notes <relnotes/26.0.5>`
 -  :doc:`26.0.4 release notes <relnotes/26.0.4>`
 -  :doc:`26.0.3 release notes <relnotes/26.0.3>`
 -  :doc:`26.0.2 release notes <relnotes/26.0.2>`
@@ -486,11 +493,18 @@ The release notes summarize what's new or changed in each Mesa release.
    :maxdepth: 1
    :hidden:
 
+   26.2.2 <relnotes/26.2.2>
+   26.2.1 <relnotes/26.2.1>
+   26.2.0 <relnotes/26.2.0>
    26.1.4 <relnotes/26.1.4>
    26.1.3 <relnotes/26.1.3>
    26.1.2 <relnotes/26.1.2>
+   26.0.8 <relnotes/26.0.8>
    26.1.1 <relnotes/26.1.1>
+   26.0.7 <relnotes/26.0.7>
    26.1.0 <relnotes/26.1.0>
+   26.0.6 <relnotes/26.0.6>
+   26.0.5 <relnotes/26.0.5>
    26.0.4 <relnotes/26.0.4>
    26.0.3 <relnotes/26.0.3>
    26.0.2 <relnotes/26.0.2>

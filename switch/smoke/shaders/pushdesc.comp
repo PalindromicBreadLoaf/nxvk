@@ -1,0 +1,33 @@
+#version 450
+/* The same check as pushdesc.frag but for compute
+ */
+#define MAGIC 0x5A17C0DEu
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Slot {
+   uint word[];
+} slot[24];
+
+layout(set = 0, binding = 1, std430) writeonly buffer Out {
+   uint result[];
+} res;
+
+layout(push_constant) uniform PC {
+   uint base;
+   uint out_index;
+} pc;
+
+#define CHK(i) \
+   if (bad == 0u && slot[i].word[0] != (MAGIC ^ (pc.base + uint(i)))) \
+      bad = uint(i) + 1u;
+
+void main()
+{
+   uint bad = 0u;
+   CHK(0)  CHK(1)  CHK(2)  CHK(3)  CHK(4)  CHK(5)  CHK(6)  CHK(7)
+   CHK(8)  CHK(9)  CHK(10) CHK(11) CHK(12) CHK(13) CHK(14) CHK(15)
+   CHK(16) CHK(17) CHK(18) CHK(19) CHK(20) CHK(21) CHK(22) CHK(23)
+
+   res.result[pc.out_index] = bad;
+}

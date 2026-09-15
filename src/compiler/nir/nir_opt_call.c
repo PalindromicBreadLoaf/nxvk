@@ -31,6 +31,7 @@ can_remat_instr(nir_instr *instr)
       case nir_intrinsic_load_push_constant:
       case nir_intrinsic_load_global_constant:
       case nir_intrinsic_load_scalar_arg_amd:
+      case nir_intrinsic_load_scalar_arg_wg_div_amd:
       case nir_intrinsic_load_vector_arg_amd:
       case nir_intrinsic_load_push_data_intel:
          return true;
@@ -123,7 +124,7 @@ rewrite_instr_src_from_phi_builder(nir_src *src, void *data)
    struct hash_table *phi_value_table = data;
 
    if (nir_src_is_const(*src)) {
-      nir_builder b = nir_builder_at(nir_before_instr(nir_src_parent_instr(src)));
+      nir_builder b = nir_builder_at(nir_before_instr(nir_src_use_instr(src)));
       nir_src_rewrite(src, nir_build_imm(&b, src->ssa->num_components,
                                          src->ssa->bit_size,
                                          nir_src_as_const_value(*src)));
@@ -134,13 +135,13 @@ rewrite_instr_src_from_phi_builder(nir_src *src, void *data)
    if (!entry)
       return true;
 
-   nir_block *block = nir_src_parent_instr(src)->block;
+   nir_block *block = nir_src_use_instr(src)->block;
    nir_def *new_def = nir_phi_builder_value_get_block_def(entry->data, block);
 
    bool can_rewrite = true;
    if (nir_def_block(new_def) == block && new_def->index != UINT32_MAX)
       can_rewrite =
-         !nir_instr_is_before(nir_src_parent_instr(src), nir_def_instr(new_def));
+         !nir_instr_is_before(nir_src_use_instr(src), nir_def_instr(new_def));
 
    if (can_rewrite)
       nir_src_rewrite(src, new_def);

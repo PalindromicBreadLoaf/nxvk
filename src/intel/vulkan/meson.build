@@ -6,9 +6,12 @@ inc_anv = include_directories('.')
 anv_flags = [
   no_override_init_args,
   sse2_args,
+  soong_compat_c_args,
 ]
 
-anv_cpp_flags = []
+anv_cpp_flags = [
+  soong_compat_cpp_args,
+]
 
 anv_entrypoints = custom_target(
   'anv_entrypoints',
@@ -85,11 +88,44 @@ _dev_icd = custom_target(
 
 devenv.append('VK_DRIVER_FILES', _dev_icd.full_path())
 
+libanv_drirc_args = []
+if with_platform_android
+  libanv_drirc_args += [ '--android-ver', get_option('platform-sdk-version').to_string() ]
+endif
+
+libanv_drirc_files = custom_target(
+  'libanv_drirc',
+  input : ['anv_drirc_gen.py', drirc_gen, '00-anv-defaults.conf'],
+  output : ['anv_drirc.c', 'anv_drirc.h'],
+  command : [prog_python, '@INPUT0@',
+             '-p', join_paths(dir_source_root, 'src/util/'),
+             libanv_drirc_args,
+             '--drirc-src', '@OUTPUT0@',
+             '--drirc-hdr', '@OUTPUT1@',
+             '--validate', '@INPUT2@'],
+)
+
+libanv_drirc = static_library(
+  'libanv_drirc',
+  libanv_drirc_files,
+    include_directories : [
+      inc_include, inc_src, inc_intel,
+    ],
+    c_args : anv_flags,
+    gnu_symbol_visibility : 'hidden',
+    dependencies : idep_mesautil)
+
+idep_anv_drirc = declare_dependency(
+  sources : libanv_drirc_files[1],
+  link_with : libanv_drirc,
+)
+
 libanv_per_hw_ver_libs = []
 anv_per_hw_ver_files = files(
   'genX_blorp_exec.c',
   'genX_cmd_buffer.c',
   'genX_cmd_compute.c',
+  'genX_cmd_dgc.c',
   'genX_cmd_draw.c',
   'genX_cmd_draw_generated_flush.h',
   'genX_cmd_draw_generated_indirect.h',
@@ -124,6 +160,7 @@ foreach _gfx_ver : ['90', '110', '120', '125', '200', '300', '350']
       idep_vulkan_runtime_headers, idep_mesautil,
       idep_intel_dev, idep_intel_driver_ds_headers,
       idep_intel_shaders, idep_intel_blorp,
+      idep_anv_drirc,
     ],
   )
 endforeach
@@ -158,8 +195,11 @@ libanv_files = files(
   'anv_buffer.c',
   'anv_buffer_view.c',
   'anv_cmd_buffer.c',
+  'anv_debug.c',
   'anv_descriptor_set.c',
   'anv_device.c',
+  'anv_dgc_layout.c',
+  'anv_dgc_set.c',
   'anv_embedded_sampler.c',
   'anv_event.c',
   'anv_formats.c',
@@ -178,6 +218,7 @@ libanv_files = files(
   'anv_nir_apply_pipeline_layout.c',
   'anv_nir_clear_shader_analysis.c',
   'anv_nir_compute_push_layout.c',
+  'anv_nir_lower_descriptor_heap.c',
   'anv_nir_lower_driver_values.c',
   'anv_nir_lower_multiview.c',
   'anv_nir_lower_ubo_loads.c',
@@ -185,6 +226,8 @@ libanv_files = files(
   'anv_nir_lower_unaligned_dispatch.c',
   'anv_nir_push_constants_analysis.c',
   'anv_nir_push_descriptor_analysis.c',
+  'anv_nir_realign_cbv.c',
+  'anv_nir_xe2_r11g11b10_atomic_wa.c',
   'anv_perf.c',
   'anv_physical_device.c',
   'anv_pipeline_cache.c',
@@ -204,8 +247,7 @@ libanv_files = files(
   'anv_va.c',
   'anv_video.c',
   'anv_wsi.c',
-  'bvh/anv_bvh.h',
-  'bvh/anv_build_interface.h',
+  'bvh/anv_bvh_defines.h',
 )
 
 anv_deps = [
@@ -220,6 +262,7 @@ anv_deps = [
   idep_intel_shaders,
   idep_intel_blorp,
   idep_mda,
+  idep_anv_drirc,
 ]
 
 if with_platform_x11
@@ -274,7 +317,7 @@ libvulkan_intel = shared_library(
     idep_nir, idep_genxml, idep_vulkan_util, idep_vulkan_wsi,
     idep_vulkan_runtime, idep_mesautil, idep_xmlconfig,
     idep_intel_driver_ds, idep_intel_dev, idep_intel_blorp,
-    idep_intel_compiler_brw, idep_intel_decoder_brw,
+    idep_intel_compiler_brw, idep_intel_decoder_gen,
     idep_intel_compiler_jay,
   ],
   c_args : anv_flags,
@@ -313,7 +356,7 @@ if with_tests
       dep_thread, dep_dl, dep_m, anv_deps,
       idep_nir, idep_vulkan_util, idep_vulkan_wsi, idep_vulkan_runtime,
       idep_mesautil, idep_intel_dev, idep_intel_blorp,
-      idep_intel_compiler_brw, idep_intel_compiler_jay, idep_intel_decoder_brw,
+      idep_intel_compiler_brw, idep_intel_compiler_jay, idep_intel_decoder_gen,
     ],
     c_args : anv_flags,
     gnu_symbol_visibility : 'hidden',

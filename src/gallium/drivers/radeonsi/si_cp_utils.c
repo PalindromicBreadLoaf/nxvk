@@ -4,7 +4,9 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "si_build_pm4.h"
+#include "si_pipe.h"
+#include "gfx/si_gfx.h"
+#include "ac_cmdbuf_cp.h"
 
 void si_cp_release_mem_pws(struct si_context *sctx, struct radeon_cmdbuf *cs,
                            unsigned event_type, unsigned gcr_cntl)
@@ -59,7 +61,7 @@ void si_cp_acquire_mem(struct si_context *sctx, struct radeon_cmdbuf *cs, unsign
       if (!compute_ib)
          sctx->context_roll = true;
 
-      if (engine == V_581B_CP_PFP)
+      if (engine == V_581A_PREFETCH_PARSER)
          si_cp_pfp_sync_me(cs);
    }
 }

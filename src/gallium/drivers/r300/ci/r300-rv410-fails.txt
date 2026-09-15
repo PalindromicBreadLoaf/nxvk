@@ -31,7 +31,6 @@ dEQP-GLES2.functional.fragment_ops.random.77,Fail
 
 dEQP-GLES2.functional.rasterization.primitives.line_loop_wide,Fail
 dEQP-GLES2.functional.rasterization.primitives.line_strip_wide,Fail
-dEQP-GLES2.functional.shaders.builtin_variable.frontfacing,Fail
 dEQP-GLES2.functional.shaders.conversions.vector_combine.vec2_bool_to_ivec3_fragment,Fail
 dEQP-GLES2.functional.shaders.conversions.vector_combine.vec2_bvec2_to_ivec4_fragment,Fail
 dEQP-GLES2.functional.shaders.conversions.vector_combine.vec2_ivec2_to_ivec4_fragment,Fail
@@ -602,9 +601,6 @@ spec@arb_texture_compression_bptc@texwrap formats bordercolor@GL_COMPRESSED_RGB_
 spec@arb_texture_compression_bptc@texwrap formats bordercolor@GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT- border color only,Fail
 spec@arb_texture_compression_bptc@texwrap formats bordercolor@GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM- border color only,Fail
 
-spec@arb_texture_cube_map@copyteximage cube samples=2,Fail
-spec@arb_texture_cube_map@copyteximage cube samples=4,Fail
-spec@arb_texture_cube_map@copyteximage cube samples=6,Fail
 spec@arb_texture_cube_map@cubemap npot,Fail
 
 spec@arb_texture_float@arb_texture_float-get-tex3d,Fail
@@ -622,11 +618,8 @@ spec@arb_texture_float@fbo-alphatest-formats@GL_RGBA32F,Fail
 spec@arb_texture_float@texwrap formats bordercolor,Fail
 spec@arb_texture_float@texwrap formats bordercolor-swizzled,Fail
 spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_ALPHA16F_ARB- swizzled- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_ALPHA32F_ARB- swizzled- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_INTENSITY16F_ARB- swizzled- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_INTENSITY32F_ARB- swizzled- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_LUMINANCE16F_ARB- swizzled- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_LUMINANCE32F_ARB- swizzled- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_LUMINANCE_ALPHA16F_ARB- swizzled- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_LUMINANCE_ALPHA32F_ARB- swizzled- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_RGB16F- swizzled- border color only,Fail
@@ -634,11 +627,8 @@ spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_RGB32F- swizzled-
 spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_RGBA16F- swizzled- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_RGBA32F- swizzled- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor@GL_ALPHA16F_ARB- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor@GL_ALPHA32F_ARB- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor@GL_INTENSITY16F_ARB- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor@GL_INTENSITY32F_ARB- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor@GL_LUMINANCE16F_ARB- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor@GL_LUMINANCE32F_ARB- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor@GL_LUMINANCE_ALPHA16F_ARB- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor@GL_LUMINANCE_ALPHA32F_ARB- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor@GL_RGB16F- border color only,Fail
@@ -647,9 +637,6 @@ spec@arb_texture_float@texwrap formats bordercolor@GL_RGBA16F- border color only
 spec@arb_texture_float@texwrap formats bordercolor@GL_RGBA32F- border color only,Fail
 
 spec@arb_texture_rectangle@1-1-linear-texture,Fail
-spec@arb_texture_rectangle@copyteximage rect samples=2,Fail
-spec@arb_texture_rectangle@copyteximage rect samples=4,Fail
-spec@arb_texture_rectangle@copyteximage rect samples=6,Fail
 spec@arb_texture_rectangle@tex-miplevel-selection gl2:texture\(\) 2drect,Fail
 spec@arb_texture_rectangle@tex-miplevel-selection gl2:texture\(\) 2drectshadow,Fail
 
@@ -664,11 +651,9 @@ spec@arb_texture_rg@fbo-alphatest-formats-float@GL_RG32F,Fail
 spec@arb_texture_rg@texwrap formats-float bordercolor,Fail
 spec@arb_texture_rg@texwrap formats-float bordercolor-swizzled,Fail
 spec@arb_texture_rg@texwrap formats-float bordercolor-swizzled@GL_R16F- swizzled- border color only,Fail
-spec@arb_texture_rg@texwrap formats-float bordercolor-swizzled@GL_R32F- swizzled- border color only,Fail
 spec@arb_texture_rg@texwrap formats-float bordercolor-swizzled@GL_RG16F- swizzled- border color only,Fail
 spec@arb_texture_rg@texwrap formats-float bordercolor-swizzled@GL_RG32F- swizzled- border color only,Fail
 spec@arb_texture_rg@texwrap formats-float bordercolor@GL_R16F- border color only,Fail
-spec@arb_texture_rg@texwrap formats-float bordercolor@GL_R32F- border color only,Fail
 spec@arb_texture_rg@texwrap formats-float bordercolor@GL_RG16F- border color only,Fail
 spec@arb_texture_rg@texwrap formats-float bordercolor@GL_RG32F- border color only,Fail
 
@@ -710,7 +695,6 @@ spec@ext_framebuffer_object@fbo-alphatest-formats@GL_RGB16,Fail
 spec@ext_framebuffer_object@fbo-alphatest-formats@GL_RGBA12,Fail
 spec@ext_framebuffer_object@fbo-alphatest-formats@GL_RGBA16,Fail
 spec@ext_framebuffer_object@fbo-depth-sample-compare,Fail
-spec@ext_framebuffer_object@fbo-fragcoord2,Fail
 spec@ext_framebuffer_object@getteximage-formats init-by-clear-and-render,Fail
 spec@ext_framebuffer_object@getteximage-formats init-by-rendering,Fail
 
@@ -977,11 +961,6 @@ spec@glsl-1.10@execution@derivatives@glsl-derivs-sign,Fail
 spec@glsl-1.10@execution@derivatives@glsl-derivs-swizzle,Fail
 spec@glsl-1.10@execution@derivatives@glsl-derivs-varyings,Fail
 spec@glsl-1.10@execution@discard@glsl-fs-discard-04,Fail
-spec@glsl-1.10@execution@fs-frontfacing-ternary-0.0-neg-1.0,Fail
-spec@glsl-1.10@execution@fs-frontfacing-ternary-1-neg-1,Fail
-spec@glsl-1.10@execution@fs-frontfacing-ternary-1.0-neg-1.0,Fail
-spec@glsl-1.10@execution@fs-frontfacing-ternary-neg-1.0-1.0,Fail
-spec@glsl-1.10@execution@fs-frontfacing-ternary-neg-1.0-1.0-alt,Fail
 spec@glsl-1.10@execution@fs-sign-times-abs,Fail
 spec@glsl-1.10@execution@fs-sign-times-neg,Fail
 spec@glsl-1.10@execution@fs-sign-times-neg-abs,Fail
@@ -994,12 +973,10 @@ spec@glsl-1.10@execution@glsl-vs-vectorize-between-basic-blocks-loop,Fail
 spec@glsl-1.10@execution@loops@glsl-fs-loop-vec4-counter,Fail
 spec@glsl-1.10@execution@loops@glsl-vs-loop-break,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-fs-vec4-indexing-temp-dst-in-nested-loop-combined,Fail
-spec@glsl-1.10@execution@temp-array-indexing@glsl-fs-vec4-indexing-temp-src-in-loop,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-fs-vec4-indexing-temp-src-in-nested-loop-combined,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-fs-vec4-indexing-temp-src-in-nested-loop-inner,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-fs-vec4-indexing-temp-src-in-nested-loop-outer,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-vs-vec4-indexing-temp-dst-in-nested-loop-combined,Fail
-spec@glsl-1.10@execution@temp-array-indexing@glsl-vs-vec4-indexing-temp-src-in-loop,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-vs-vec4-indexing-temp-src-in-nested-loop-combined,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-vs-vec4-indexing-temp-src-in-nested-loop-inner,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-vs-vec4-indexing-temp-src-in-nested-loop-outer,Fail
@@ -1061,6 +1038,9 @@ spec@glsl-1.20@execution@clipping@vs-clip-vertex-primitives,Fail
 
 # We write -nan to output, and don't end with zero
 spec@glsl-1.20@execution@const-builtin@glsl-const-builtin-normalize,Fail
+
+# Loop unrolling regression
+spec@glsl-1.20@execution@fs-function-inout-array-of-structs,Fail
 
 # https://gitlab.freedesktop.org/mesa/mesa/-/issues/8618
 spec@glsl-1.20@execution@fs-nan-builtin-max,Fail
@@ -1187,7 +1167,6 @@ spec@glsl-1.20@execution@built-in-functions@fs-op-sub-mat3x2-float,Fail
 spec@glsl-1.20@execution@built-in-functions@fs-outerproduct-vec4-vec4,Fail
 spec@glsl-1.20@execution@fs-underflow-mul-compare-zero,Fail
 spec@glsl-1.20@execution@fs-vec4-const-array-indirect-access-256-elements,Fail
-spec@glsl-1.20@execution@glsl-fs-frontfacing,Fail
 spec@glsl-1.20@execution@uniform-initializer@fs-mat4-array,Fail
 
 spec@intel_performance_query@intel_performance_query-issue_2235,Fail
@@ -1204,6 +1183,12 @@ spec@glsl-1.10@execution@glsl-fs-texture2d-mipmap-const-bias-04,Fail
 spec@glsl-1.10@execution@glsl-fs-texture2d-mipmap-const-bias-05,Fail
 shaders@glsl-max-varyings,Fail
 spec@!opengl 1.2@tex3d-maxsize,Fail
+spec@arb_texture_cube_map@copyteximage cube samples=2,Fail
+spec@arb_texture_cube_map@copyteximage cube samples=4,Fail
+spec@arb_texture_cube_map@copyteximage cube samples=6,Fail
+spec@arb_texture_rectangle@copyteximage rect samples=2,Fail
+spec@arb_texture_rectangle@copyteximage rect samples=4,Fail
+spec@arb_texture_rectangle@copyteximage rect samples=6,Fail
 
 glx@glx-make-current,Fail
 glx@glx-multi-window-single-context,Fail
@@ -1213,3 +1198,14 @@ glx@glx-visuals-stencil,Fail
 glx@glx_arb_sync_control@waitformsc,Fail
 spec@egl 1.4@largest possible eglcreatepbuffersurface and then glclear,Fail
 spec@egl_mesa_configless_context@basic,Fail
+
+# dEQP-EGL x11
+dEQP-EGL.functional.color_clears.multi_context.gles2.rgba8888_pbuffer,Fail
+dEQP-EGL.functional.color_clears.multi_context.gles2.rgba8888_window,Fail
+dEQP-EGL.functional.color_clears.multi_thread.gles2.rgba8888_pbuffer,Fail
+dEQP-EGL.functional.color_clears.multi_thread.gles2.rgba8888_window,Fail
+dEQP-EGL.functional.create_context.no_config,Fail
+dEQP-EGL.functional.render.multi_context.gles2.rgba8888_pbuffer,Fail
+dEQP-EGL.functional.render.multi_context.gles2.rgba8888_window,Fail
+dEQP-EGL.functional.render.multi_thread.gles2.rgba8888_pbuffer,Fail
+dEQP-EGL.functional.render.multi_thread.gles2.rgba8888_window,Fail

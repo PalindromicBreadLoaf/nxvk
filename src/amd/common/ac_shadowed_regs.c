@@ -735,7 +735,7 @@ void ac_get_reg_ranges(enum amd_gfx_level gfx_level, enum radeon_family family,
 
    switch (type) {
    case SI_REG_RANGE_UCONFIG:
-      if (gfx_level == GFX11 || gfx_level == GFX11_5)
+      if (gfx_level >= GFX11 && gfx_level < GFX12)
          RETURN(Gfx11UserConfigShadowRange);
       else if (gfx_level == GFX10_3)
          RETURN(Gfx103UserConfigShadowRange);
@@ -745,7 +745,7 @@ void ac_get_reg_ranges(enum amd_gfx_level gfx_level, enum radeon_family family,
          RETURN(Gfx9UserConfigShadowRange);
       break;
    case SI_REG_RANGE_CONTEXT:
-      if (gfx_level == GFX11 || gfx_level == GFX11_5)
+      if (gfx_level >= GFX11 && gfx_level < GFX12)
          RETURN(Gfx11ContextShadowRange);
       else if (gfx_level == GFX10_3)
          RETURN(Gfx103ContextShadowRange);
@@ -755,7 +755,7 @@ void ac_get_reg_ranges(enum amd_gfx_level gfx_level, enum radeon_family family,
          RETURN(Gfx9ContextShadowRange);
       break;
    case SI_REG_RANGE_SH:
-      if (gfx_level == GFX11 || gfx_level == GFX11_5)
+      if (gfx_level >= GFX11 && gfx_level < GFX12)
          RETURN(Gfx11ShShadowRange);
       else if (gfx_level == GFX10_3 || gfx_level == GFX10)
          RETURN(Gfx10ShShadowRange);
@@ -765,7 +765,7 @@ void ac_get_reg_ranges(enum amd_gfx_level gfx_level, enum radeon_family family,
          RETURN(Gfx9ShShadowRange);
       break;
    case SI_REG_RANGE_CS_SH:
-      if (gfx_level == GFX11 || gfx_level == GFX11_5)
+      if (gfx_level >= GFX11 && gfx_level < GFX12)
          RETURN(Gfx11CsShShadowRange);
       else if (gfx_level == GFX10_3 || gfx_level == GFX10)
          RETURN(Gfx10CsShShadowRange);

@@ -30,6 +30,7 @@
 #include <math.h>
 #include "util/bitscan.h"
 #include "util/u_math.h"
+#include "util/half_float.h"
 #include "nir.h"
 #include "nir_range_analysis.h"
 #include "nir_search.h"
@@ -355,6 +356,25 @@ is_neg2x_16_bits(UNUSED const nir_search_state *state, const nir_alu_instr *inst
    return is_16_bits_with_scale(instr, src, num_components, swizzle, -2);
 }
 
+/** Is this a float constant that could fit in a half? */
+static inline bool
+is_representable_as_f16(UNUSED const nir_search_state *state,
+                        const nir_alu_instr *instr,
+                        unsigned src, unsigned num_components,
+                        const uint8_t *swizzle)
+{
+   /* only constant srcs: */
+   if (!nir_src_is_const(instr->src[src].src))
+      return false;
+
+   for (unsigned i = 0; i < num_components; i++) {
+      double value = nir_src_comp_as_float(instr->src[src].src, swizzle[i]);
+      if (!_mesa_float_is_half(value))
+         return false;
+   }
+   return true;
+}
+
 static inline bool
 is_not_const(UNUSED const nir_search_state *state, const nir_alu_instr *instr,
              unsigned src, UNUSED unsigned num_components,
@@ -376,7 +396,7 @@ is_not_fmul(const nir_search_state *state, const nir_alu_instr *instr, unsigned 
    if (src_alu->op == nir_op_fneg)
       return is_not_fmul(state, src_alu, 0, 0, NULL);
 
-   return src_alu->op != nir_op_fmul && src_alu->op != nir_op_fmulz;
+   return src_alu->op != nir_op_fmul && src_alu->op != nir_op_fmulz && src_alu->op != nir_op_fmul_rtz;
 }
 
 static inline bool
@@ -392,7 +412,7 @@ is_fmul(const nir_search_state *state, const nir_alu_instr *instr, unsigned src,
    if (src_alu->op == nir_op_fneg)
       return is_fmul(state, src_alu, 0, 0, NULL);
 
-   return src_alu->op == nir_op_fmul || src_alu->op == nir_op_fmulz;
+   return src_alu->op == nir_op_fmul || src_alu->op == nir_op_fmulz || src_alu->op == nir_op_fmul_rtz;
 }
 
 static inline bool
@@ -457,7 +477,7 @@ static inline bool
 is_used_by_non_fsat(const nir_alu_instr *instr)
 {
    nir_foreach_use(src, &instr->def) {
-      const nir_instr *const user_instr = nir_src_parent_instr(src);
+      const nir_instr *const user_instr = nir_src_use_instr(src);
 
       if (user_instr->type != nir_instr_type_alu)
          return true;
@@ -476,7 +496,7 @@ static inline bool
 is_used_by_non_ldc_nv(const nir_alu_instr *instr)
 {
    nir_foreach_use(src, &instr->def) {
-      const nir_instr *const user_instr = nir_src_parent_instr(src);
+      const nir_instr *const user_instr = nir_src_use_instr(src);
 
       if (user_instr->type != nir_instr_type_intrinsic)
          return true;
@@ -494,7 +514,7 @@ static inline bool
 is_only_used_as_float_impl(const nir_alu_instr *instr, bool nsz, unsigned depth)
 {
    nir_foreach_use(src, &instr->def) {
-      const nir_instr *const user_instr = nir_src_parent_instr(src);
+      const nir_instr *const user_instr = nir_src_use_instr(src);
 
       if (user_instr->type != nir_instr_type_alu) {
          if (user_instr->type == nir_instr_type_intrinsic) {
@@ -574,7 +594,7 @@ static inline bool
 is_only_used_by_fadd(const nir_alu_instr *instr)
 {
    nir_foreach_use(src, &instr->def) {
-      const nir_instr *const user_instr = nir_src_parent_instr(src);
+      const nir_instr *const user_instr = nir_src_use_instr(src);
       if (user_instr->type != nir_instr_type_alu)
          return false;
 
@@ -602,7 +622,7 @@ static inline bool
 is_only_used_by_alu_op(const nir_alu_instr *instr, nir_op op)
 {
    nir_foreach_use(src, &instr->def) {
-      const nir_instr *const user_instr = nir_src_parent_instr(src);
+      const nir_instr *const user_instr = nir_src_use_instr(src);
       if (user_instr->type != nir_instr_type_alu)
          return false;
 
@@ -637,13 +657,21 @@ is_only_used_by_ior(const nir_alu_instr *instr)
 static inline bool
 only_lower_8_bits_used(const nir_alu_instr *instr)
 {
-   return (nir_def_bits_used(&instr->def) & ~0xffull) == 0;
+   if (instr->def.num_components > 1)
+      return false;
+
+   return (nir_def_bits_used(nir_get_scalar((nir_def*)&instr->def, 0)) &
+           ~0xffull) == 0;
 }
 
 static inline bool
 only_lower_16_bits_used(const nir_alu_instr *instr)
 {
-   return (nir_def_bits_used(&instr->def) & ~0xffffull) == 0;
+   if (instr->def.num_components > 1)
+      return false;
+
+   return (nir_def_bits_used(nir_get_scalar((nir_def*)&instr->def, 0)) &
+           ~0xffffull) == 0;
 }
 
 /**
@@ -891,6 +919,7 @@ RELATION_AND_NUM(lt_zero, FP_CLASS_ANY_POS | FP_CLASS_ANY_ZERO)
 RELATION_AND_NUM(not_positive, FP_CLASS_ANY_POS)
 RELATION_AND_NUM(gt_zero, FP_CLASS_ANY_NEG | FP_CLASS_ANY_ZERO)
 RELATION_AND_NUM(not_negative, FP_CLASS_ANY_NEG)
+RELATION_AND_NUM(not_negative_or_negative_zero, FP_CLASS_ANY_NEG | FP_CLASS_NEG_ZERO)
 RELATION_AND_NUM(not_zero, FP_CLASS_ANY_ZERO)
 RELATION_AND_NUM(zero_to_one, FP_CLASS_ANY_NEG | FP_CLASS_GT_POS_ONE | FP_CLASS_POS_INF)
 RELATION_AND_NUM(le_pos_one, FP_CLASS_GT_POS_ONE | FP_CLASS_POS_INF)
@@ -900,6 +929,7 @@ RELATION(a_number, FP_CLASS_NAN)
 RELATION(finite, FP_CLASS_ANY_INF | FP_CLASS_NAN)
 RELATION(finite_not_zero, FP_CLASS_ANY_INF | FP_CLASS_NAN | FP_CLASS_ANY_ZERO)
 RELATION(integral, FP_CLASS_NON_INTEGRAL)
+RELATION(integral_not_negative, FP_CLASS_ANY_NEG | FP_CLASS_NON_INTEGRAL)
 
 static inline bool
 compare_component(const nir_alu_instr *instr, unsigned src, unsigned component,

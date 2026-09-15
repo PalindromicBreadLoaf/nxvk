@@ -4,8 +4,8 @@
 # source file, output name, defines
 bvh_shaders = [
   [
-    'copy_blas_addrs_gfx12.comp',
-    'copy_blas_addrs_gfx12',
+    'copy_addrs.comp',
+    'copy_addrs',
   ],
   [
     'copy.comp',
@@ -44,13 +44,12 @@ bvh_include_dir = dir_source_root + '/src/amd/vulkan/bvh'
 vk_bvh_include_dir = dir_source_root + '/src/vulkan/runtime/bvh'
 
 bvh_includes = files(
-  'build_helpers.h',
-  'build_interface.h',
-  'bvh.h',
+  'bvh_helpers.h',
+  'bvh_defines.h',
   'encode.h',
   'update.h',
-  vk_bvh_include_dir + '/vk_build_helpers.h',
-  vk_bvh_include_dir + '/vk_bvh.h',
+  vk_bvh_include_dir + '/vk_bvh_helpers.h',
+  vk_bvh_include_dir + '/vk_bvh_defines.h',
 )
 
 bvh_spv = []
@@ -58,7 +57,7 @@ foreach s : bvh_shaders
   command = [
     prog_glslang, '-V', '-I' + bvh_include_dir, '-I' + vk_bvh_include_dir, '-I' + spirv_include_dir, '--target-env', 'spirv1.5',
     '-x', '-o', '@OUTPUT@', '@INPUT@', glslang_depfile, glslang_quiet,
-  ]
+  ] + (with_mesa_debug ? ['-g'] : [])
   command += vk_glsl_shader_preamble
 
   _bvh_name = '@0@.spv.h'.format(s[1])

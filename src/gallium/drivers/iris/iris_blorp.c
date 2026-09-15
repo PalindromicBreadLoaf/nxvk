@@ -321,8 +321,13 @@ iris_blorp_exec_render(struct blorp_batch *blorp_batch,
    }
 
    if (params->depth.enabled &&
-       !(blorp_batch->flags & BLORP_BATCH_NO_EMIT_DEPTH_STENCIL))
-      genX(emit_depth_state_workarounds)(ice, batch, &params->depth.surf);
+       !(blorp_batch->flags & BLORP_BATCH_NO_EMIT_DEPTH_STENCIL)) {
+      if (INTEL_NEEDS_WA_1808121037 && params->num_samples == 1 &&
+          params->depth.surf.format == ISL_FORMAT_R16_UNORM) {
+         /* Disable HiZ planes on D16 1x MSAA to avoid sporadic corruption. */
+         genX(batch_disable_hiz_planes)(batch);
+      }
+   }
 
    iris_require_command_space(batch, 1400);
 
@@ -446,14 +451,12 @@ iris_blorp_exec_blitter(struct blorp_batch *blorp_batch,
    iris_bo_bump_seqno(params->dst.addr.buffer, batch->next_seqno,
                       IRIS_DOMAIN_OTHER_WRITE);
 
-   /*
-    * TDOD: Add INTEL_NEEDS_WA_14025112257 check once HSD is propogated for all
-    * other impacted platforms.
-    */
-   if (batch->screen->devinfo->ver >= 20 && batch->name == IRIS_BATCH_COMPUTE) {
+#if INTEL_NEEDS_WA_14025112257
+   if (batch->name == IRIS_BATCH_COMPUTE) {
       iris_emit_pipe_control_flush(batch, "WA_14025112257",
                                    PIPE_CONTROL_STATE_CACHE_INVALIDATE);
    }
+#endif
 }
 
 static void
@@ -513,6 +516,7 @@ genX(init_blorp)(struct iris_context *ice)
 #endif
    ice->blorp.lookup_shader = iris_blorp_lookup_shader;
    ice->blorp.upload_shader = iris_blorp_upload_shader;
+   ice->blorp.get_surface_address = blorp_get_surface_address;
    ice->blorp.exec = iris_blorp_exec;
    ice->blorp.enable_tbimr = screen->driconf.enable_tbimr;
 }
@@ -534,4 +538,11 @@ blorp_emit_post_draw(struct blorp_batch *blorp_batch, const struct blorp_params 
    genX(emit_3dprimitive_was)(batch, NULL, MESA_PRIM_QUAD_STRIP, 3);
    genX(maybe_emit_breakpoint)(batch, false);
    blorp_measure_end(blorp_batch, params);
+}
+
+static bool *
+blorp_get_write_fencing_status(struct blorp_batch *blorp_batch)
+{
+   struct iris_batch *batch = blorp_batch->driver_batch;
+   return &batch->write_fence_status;
 }

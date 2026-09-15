@@ -25,31 +25,6 @@ enum panvk_meta_object_key_type {
 };
 
 static inline VkFormat
-panvk_meta_get_uint_format_for_blk_size(unsigned blk_sz)
-{
-   switch (blk_sz) {
-   case 1:
-      return VK_FORMAT_R8_UINT;
-   case 2:
-      return VK_FORMAT_R8G8_UINT;
-   case 3:
-      return VK_FORMAT_R8G8B8_UINT;
-   case 4:
-      return VK_FORMAT_R8G8B8A8_UINT;
-   case 6:
-      return VK_FORMAT_R16G16B16_UINT;
-   case 8:
-      return VK_FORMAT_R32G32_UINT;
-   case 12:
-      return VK_FORMAT_R32G32B32_UINT;
-   case 16:
-      return VK_FORMAT_R32G32B32A32_UINT;
-   default:
-      return VK_FORMAT_UNDEFINED;
-   }
-}
-
-static inline VkFormat
 panvk_meta_get_blendable_format_for_blk_size(unsigned blk_sz)
 {
    /* We expect _UINT formats to be used if the blocksize is greater than
@@ -123,8 +98,14 @@ panvk_meta_copy_get_image_properties(struct panvk_image *img,
          }
          break;
       case VK_FORMAT_X8_D24_UNORM_PACK32:
-         props.depth.view_format =
-            prefer_blendable ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_UINT;
+         if (img->planes[0].image.props.format == PIPE_FORMAT_Z24_UNORM_PACKED) {
+            props.depth.view_format = prefer_blendable ? VK_FORMAT_R8G8B8_UNORM
+                                                       : VK_FORMAT_R8G8B8_UINT;
+         } else {
+            props.depth.view_format = prefer_blendable
+                                         ? VK_FORMAT_R8G8B8A8_UNORM
+                                         : VK_FORMAT_R8G8B8A8_UINT;
+         }
          props.depth.component_mask = BITFIELD_MASK(3);
          break;
       case VK_FORMAT_D32_SFLOAT_S8_UINT:
@@ -161,7 +142,7 @@ panvk_meta_copy_get_image_properties(struct panvk_image *img,
             /* there are no blendable formats with blk_sz > 4 */
                (prefer_blendable && blk_sz <= 4) ?
                panvk_meta_get_blendable_format_for_blk_size(blk_sz) :
-               panvk_meta_get_uint_format_for_blk_size(blk_sz);
+               vk_meta_get_uint_format_for_blk_size(blk_sz);
          }
       }
    } else {
@@ -174,7 +155,7 @@ panvk_meta_copy_get_image_properties(struct panvk_image *img,
             /* there are no blendable formats with blk_sz > 4 */
             (prefer_blendable && blk_sz <= 4) ?
             panvk_meta_get_blendable_format_for_blk_size(blk_sz) :
-            panvk_meta_get_uint_format_for_blk_size(blk_sz);
+            vk_meta_get_uint_format_for_blk_size(blk_sz);
       }
    }
 
@@ -198,21 +179,14 @@ panvk_meta_copy_get_image_properties(struct panvk_image *img,
 struct panvk_cmd_buffer;
 struct panvk_descriptor_state;
 struct panvk_device;
-struct panvk_shader_variant;
+struct panvk_shader_desc_info;
 struct panvk_shader_desc_state;
 
 VkResult panvk_per_arch(meta_get_copy_desc_job)(
-   struct panvk_cmd_buffer *cmdbuf, const struct panvk_shader_variant *shader,
+   struct panvk_cmd_buffer *cmdbuf,
+   const struct panvk_shader_desc_info *desc_info,
    const struct panvk_descriptor_state *desc_state,
    const struct panvk_shader_desc_state *shader_desc_state,
    uint32_t attrib_buf_idx_offset, struct pan_ptr *job_desc);
 #endif
-
-void panvk_per_arch(transition_image_layout_sync_scope)(
-   const VkImageMemoryBarrier2 *barrier,
-   VkPipelineStageFlags2 *out_stages, VkAccessFlags2 *out_access);
-void panvk_per_arch(cmd_transition_image_layout)(
-   VkCommandBuffer _cmdbuf,
-   const VkImageMemoryBarrier2 *barrier);
-
 #endif

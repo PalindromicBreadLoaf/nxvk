@@ -7,6 +7,7 @@
 #include "nvk_entrypoints.h"
 #include "nvk_device.h"
 #include "nvk_device_memory.h"
+#include "nvk_instance.h"
 #include "nvk_physical_device.h"
 #include "nvk_queue.h"
 #include "nvkmd/nvkmd.h"
@@ -20,13 +21,14 @@ nvk_get_buffer_alignment(const struct nvk_physical_device *pdev,
                          VkBufferUsageFlags2KHR usage_flags,
                          VkBufferCreateFlags create_flags)
 {
+   const struct nvk_instance *instance = nvk_physical_device_instance(pdev);
    uint32_t alignment = 16;
 
    if (usage_flags & VK_BUFFER_USAGE_2_UNIFORM_BUFFER_BIT_KHR)
       alignment = MAX2(alignment, nvk_min_cbuf_alignment(&pdev->info));
 
    if (usage_flags & VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT_KHR)
-      alignment = MAX2(alignment, NVK_MIN_SSBO_ALIGNMENT);
+      alignment = MAX2(alignment, nvk_min_ssbo_alignment(instance));
 
    if (usage_flags & (VK_BUFFER_USAGE_2_UNIFORM_TEXEL_BUFFER_BIT_KHR |
                       VK_BUFFER_USAGE_2_STORAGE_TEXEL_BUFFER_BIT_KHR))

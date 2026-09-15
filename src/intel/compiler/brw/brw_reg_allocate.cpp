@@ -11,6 +11,10 @@
 #include "util/set.h"
 #include "util/register_allocate.h"
 
+#include <algorithm>
+#include <tuple>
+#include <vector>
+
 static void
 assign_reg(const struct intel_device_info *devinfo,
            unsigned *reg_hw_locations, brw_reg *reg)
@@ -258,6 +262,11 @@ public:
       spill_vgrf_ip_alloc = 0;
       spill_node_count = 0;
 
+      /* Manually managed scratch space (e.g. NIR scratch) is not used for
+       * spilling.
+       */
+      spill_scratch_base = fs->last_scratch;
+      fs->last_logical_scratch = spill_scratch_base;
       eot_reg = -1;
    }
 
@@ -281,14 +290,29 @@ private:
    brw_reg build_legacy_scratch_header(const brw_builder &bld,
                                        uint32_t spill_offset, int ip);
 
+   struct spill_scratch_slot {
+      unsigned offset;
+      unsigned logical_offset;
+   };
+
+   static spill_scratch_slot
+   offset_spill_slot(spill_scratch_slot slot, unsigned offset)
+   {
+      return { slot.offset + offset, slot.logical_offset + offset };
+   }
+
    void emit_unspill(const brw_builder &bld, struct brw_shader_stats *stats,
-                     brw_reg dst, uint32_t spill_offset, unsigned count, int ip);
+                     brw_reg dst, spill_scratch_slot slot, unsigned count,
+                     int ip);
    void emit_spill(const brw_builder &bld, struct brw_shader_stats *stats,
-                   brw_reg src, uint32_t spill_offset, unsigned count, int ip);
+                   brw_reg src, spill_scratch_slot slot, unsigned count,
+                   int ip);
 
    void set_spill_costs();
    int choose_spill_reg();
    brw_reg alloc_spill_reg(unsigned size, int ip);
+   void record_spill_slot(unsigned spill_reg, unsigned offset, unsigned size);
+   spill_scratch_slot alloc_spill_scratch(unsigned spill_reg);
    void spill_reg(unsigned spill_reg);
 
    void *mem_ctx;
@@ -318,6 +342,16 @@ private:
    int *spill_vgrf_ip;
    int spill_vgrf_ip_alloc;
    int spill_node_count;
+
+   /* Scratch byte ranges assigned to spilled VGRFs. */
+   struct spill_scratch_assignment {
+      unsigned vgrf;
+      unsigned offset;
+      unsigned size;
+   };
+
+   unsigned spill_scratch_base;
+   std::vector<spill_scratch_assignment> spill_scratch;
 };
 
 namespace {
@@ -846,7 +880,8 @@ void
 brw_reg_alloc::emit_unspill(const brw_builder &bld,
                            struct brw_shader_stats *stats,
                            brw_reg dst,
-                           uint32_t spill_offset, unsigned count, int ip)
+                           spill_scratch_slot slot,
+                           unsigned count, int ip)
 {
    const intel_device_info *devinfo = bld.shader->devinfo;
    const unsigned reg_size = dst.component_size(bld.dispatch_width()) /
@@ -865,9 +900,9 @@ brw_reg_alloc::emit_unspill(const brw_builder &bld,
          const brw_builder ubld = use_transpose ? bld.uniform() : bld;
          brw_reg offset;
          if (use_transpose) {
-            offset = build_single_offset(ubld, spill_offset, ip);
+            offset = build_single_offset(ubld, slot.offset, ip);
          } else {
-            offset = build_lane_offsets(ubld, spill_offset, ip);
+            offset = build_lane_offsets(ubld, slot.offset, ip);
          }
 
          const bool exec_all = use_transpose || bld.has_writemask_all();
@@ -876,18 +911,19 @@ brw_reg_alloc::emit_unspill(const brw_builder &bld,
 
          unspill_inst->src[FILL_SRC_PAYLOAD1] = offset;
 
-         unspill_inst->offset = spill_offset;
+         unspill_inst->offset = slot.offset;
+         unspill_inst->logical_offset = slot.logical_offset;
          unspill_inst->use_transpose = use_transpose;
          unspill_inst->size_written =
-            lsc_msg_dest_len(devinfo, LSC_DATA_SIZE_D32, bld.dispatch_width()) * REG_SIZE;
+            brw_lsc_msg_dest_len(devinfo, LSC_DATA_SIZE_D32, bld.dispatch_width()) * REG_SIZE;
          assert(unspill_inst->size_written == (reg_size * REG_SIZE));
 
          _mesa_set_add(spill_insts, unspill_inst);
          assert(unspill_inst->force_writemask_all || count % reg_size == 0);
       } else {
-         brw_reg header = build_legacy_scratch_header(bld, spill_offset, ip);
+         brw_reg header = build_legacy_scratch_header(bld, slot.offset, ip);
 
-         const unsigned bti = GFX8_BTI_STATELESS_NON_COHERENT;
+         const unsigned bti = GEN_BTI_STATELESS_NON_COHERENT;
 
          brw_send_inst *unspill_inst = bld.SEND();
          unspill_inst->dst = dst;
@@ -902,7 +938,7 @@ brw_reg_alloc::emit_unspill(const brw_builder &bld,
          unspill_inst->size_written = reg_size * REG_SIZE;
          unspill_inst->has_side_effects = false;
          unspill_inst->is_volatile = true;
-         unspill_inst->sfid = BRW_SFID_HDC0;
+         unspill_inst->sfid = GEN_SFID_HDC0;
 
          unspill_inst->src[0] = brw_imm_ud(
             brw_dp_desc(devinfo, bti,
@@ -918,7 +954,8 @@ brw_reg_alloc::emit_unspill(const brw_builder &bld,
       }
 
       dst.offset += reg_size * REG_SIZE;
-      spill_offset += reg_size * REG_SIZE;
+      slot.offset += reg_size * REG_SIZE;
+      slot.logical_offset += reg_size * REG_SIZE;
    }
 }
 
@@ -926,7 +963,8 @@ void
 brw_reg_alloc::emit_spill(const brw_builder &bld,
                          struct brw_shader_stats *stats,
                          brw_reg src,
-                         uint32_t spill_offset, unsigned count, int ip)
+                         spill_scratch_slot slot,
+                         unsigned count, int ip)
 {
    const intel_device_info *devinfo = bld.shader->devinfo;
    const unsigned reg_size = src.component_size(bld.dispatch_width()) /
@@ -936,7 +974,7 @@ brw_reg_alloc::emit_spill(const brw_builder &bld,
       ++stats->spill_count;
 
       if (devinfo->verx10 >= 125) {
-         brw_reg offset = build_lane_offsets(bld, spill_offset, ip);
+         brw_reg offset = build_lane_offsets(bld, slot.offset, ip);
 
          brw_scratch_inst *spill_inst = bld.SPILL();
          spill_inst->dst = bld.null_reg_f();
@@ -944,15 +982,16 @@ brw_reg_alloc::emit_spill(const brw_builder &bld,
          spill_inst->src[SPILL_SRC_PAYLOAD1] = offset;
          spill_inst->src[SPILL_SRC_PAYLOAD2] = src;
 
-         spill_inst->offset = spill_offset;
+         spill_inst->offset = slot.offset;
+         spill_inst->logical_offset = slot.logical_offset;
          spill_inst->use_transpose = false;
 
          _mesa_set_add(spill_insts, spill_inst);
          assert(spill_inst->force_writemask_all || count % reg_size == 0);
       } else {
-         brw_reg header = build_legacy_scratch_header(bld, spill_offset, ip);
+         brw_reg header = build_legacy_scratch_header(bld, slot.offset, ip);
 
-         const unsigned bti = GFX8_BTI_STATELESS_NON_COHERENT;
+         const unsigned bti = GEN_BTI_STATELESS_NON_COHERENT;
 
          brw_send_inst *spill_inst = bld.SEND();
          spill_inst->dst = bld.null_reg_f();
@@ -968,7 +1007,7 @@ brw_reg_alloc::emit_spill(const brw_builder &bld,
          spill_inst->header_size = 1;
          spill_inst->has_side_effects = true;
          spill_inst->is_volatile = false;
-         spill_inst->sfid = BRW_SFID_HDC0;
+         spill_inst->sfid = GEN_SFID_HDC0;
 
          spill_inst->src[0] = brw_imm_ud(
             brw_dp_desc(devinfo, bti,
@@ -986,7 +1025,8 @@ brw_reg_alloc::emit_spill(const brw_builder &bld,
       }
 
       src.offset += reg_size * REG_SIZE;
-      spill_offset += reg_size * REG_SIZE;
+      slot.offset += reg_size * REG_SIZE;
+      slot.logical_offset += reg_size * REG_SIZE;
    }
 }
 
@@ -1121,15 +1161,85 @@ brw_reg_alloc::alloc_spill_reg(unsigned size, int ip)
 }
 
 void
+brw_reg_alloc::record_spill_slot(unsigned spill_reg, unsigned offset,
+                                 unsigned size)
+{
+   ASSERTED const unsigned align_B = REG_SIZE * reg_unit(devinfo);
+   assert(align(offset, 16) == offset); /* oword read/write req. */
+   assert(offset >= spill_scratch_base);
+   assert((offset - spill_scratch_base) % align_B == 0);
+   assert(size % align_B == 0);
+
+   const spill_scratch_assignment assignment = { spill_reg, offset, size };
+   const auto insert = std::lower_bound(spill_scratch.begin(),
+                                        spill_scratch.end(),
+                                        assignment,
+                                        [](const auto &a, const auto &b) {
+      return std::tie(a.offset, a.size, a.vgrf) <
+             std::tie(b.offset, b.size, b.vgrf);
+   });
+
+   spill_scratch.insert(insert, assignment);
+}
+
+/* Pick the scratch byte range for a spilled VGRF.  A spill slot only needs
+ * to hold a VGRF while that VGRF is live, so spilled VGRFs with disjoint live
+ * ranges can share storage.
+ *
+ * Keep assignments sorted by offset and scan them in order to find the first
+ * gap among assignments whose VGRFs interfere with this VGRF.
+ */
+brw_reg_alloc::spill_scratch_slot
+brw_reg_alloc::alloc_spill_scratch(unsigned spill_reg)
+{
+   const unsigned size = align(fs->alloc.sizes[spill_reg] * REG_SIZE,
+                               REG_SIZE * reg_unit(devinfo));
+   ASSERTED const unsigned align_B = REG_SIZE * reg_unit(devinfo);
+
+   /* Spill/fill temporaries are not chosen for spilling. */
+   assert(spill_reg < (unsigned)live.num_vgrfs);
+
+   /* Find the first offset where the new slot does not overlap any
+    * interfering assignment.  The array is sorted by offset.
+    */
+   unsigned offset = spill_scratch_base;
+   assert(align(offset, 16) == offset); /* oword read/write req. */
+   for (const spill_scratch_assignment &a : spill_scratch) {
+      if (offset + size <= a.offset)
+         break;
+
+      if (a.offset + a.size <= offset)
+         continue;
+
+      if (!live.vgrfs_interfere(spill_reg, a.vgrf))
+         continue;
+
+      offset = a.offset + a.size;
+   }
+
+   assert(align(offset, 16) == offset); /* oword read/write req. */
+   assert(offset >= spill_scratch_base);
+   assert((offset - spill_scratch_base) % align_B == 0);
+   fs->last_scratch = MAX2(fs->last_scratch, offset + size);
+
+   const unsigned logical_offset = fs->last_logical_scratch;
+   assert(logical_offset % REG_SIZE == 0);
+   assert(logical_offset >= spill_scratch_base);
+   assert((logical_offset - spill_scratch_base) % align_B == 0);
+   fs->last_logical_scratch = logical_offset + size;
+
+   record_spill_slot(spill_reg, offset, size);
+   return { offset, logical_offset };
+}
+
+void
 brw_reg_alloc::spill_reg(unsigned spill_reg)
 {
-   int size = fs->alloc.sizes[spill_reg];
-   unsigned int spill_offset = fs->last_scratch;
-   assert(align(spill_offset, 16) == spill_offset); /* oword read/write req. */
+   const spill_scratch_slot spill_slot = alloc_spill_scratch(spill_reg);
+   /* oword read/write req. */
+   assert(align(spill_slot.offset, 16) == spill_slot.offset);
 
    fs->spilled_any_registers = true;
-
-   fs->last_scratch += align(size * REG_SIZE, REG_SIZE * reg_unit(devinfo));
 
    /* We're about to replace all uses of this register.  It no longer
     * conflicts with anything so we can get rid of its interference.
@@ -1154,8 +1264,10 @@ brw_reg_alloc::spill_reg(unsigned spill_reg)
             /* Count registers needed in units of physical registers */
             int count = align(regs_read(devinfo, inst, i), reg_unit(devinfo));
             /* Align the spilling offset the physical register size */
-            int subset_spill_offset = spill_offset +
+            const unsigned aligned_offset =
                ROUND_DOWN_TO(inst->src[i].offset, REG_SIZE * reg_unit(devinfo));
+            const spill_scratch_slot subset_slot =
+               offset_spill_slot(spill_slot, aligned_offset);
             brw_reg unspill_dst = alloc_spill_reg(count, ip);
 
             inst->src[i].nr = unspill_dst.nr;
@@ -1184,7 +1296,7 @@ brw_reg_alloc::spill_reg(unsigned spill_reg)
              * lsc_spill is not.
              */
             emit_unspill(ibld.exec_all().group(width, 0), &fs->shader_stats,
-                         unspill_dst, subset_spill_offset, count, ip);
+                         unspill_dst, subset_slot, count, ip);
 	 }
       }
 
@@ -1194,8 +1306,10 @@ brw_reg_alloc::spill_reg(unsigned spill_reg)
          /* Count registers needed in units of physical registers */
          int count = align(regs_written(inst), reg_unit(devinfo));
          /* Align the spilling offset the physical register size */
-         int subset_spill_offset = spill_offset +
+         const unsigned aligned_offset =
             ROUND_DOWN_TO(inst->dst.offset, reg_unit(devinfo) * REG_SIZE);
+         const spill_scratch_slot subset_slot =
+            offset_spill_slot(spill_slot, aligned_offset);
          brw_reg spill_src = alloc_spill_reg(count, ip);
 
          inst->dst.nr = spill_src.nr;
@@ -1238,11 +1352,11 @@ brw_reg_alloc::spill_reg(unsigned spill_reg)
 	  */
          if (inst->is_partial_write(reg_unit(devinfo) * REG_SIZE) ||
              (!inst->force_writemask_all && !per_channel))
-            emit_unspill(ubld, &fs->shader_stats, spill_src,
-                         subset_spill_offset, regs_written(inst), ip);
+            emit_unspill(ubld, &fs->shader_stats, spill_src, subset_slot,
+                         regs_written(inst), ip);
 
          emit_spill(ubld.after(inst), &fs->shader_stats, spill_src,
-                    subset_spill_offset, regs_written(inst), ip);
+                    subset_slot, regs_written(inst), ip);
       }
 
       for (brw_inst *inst = (brw_inst *)before->next;

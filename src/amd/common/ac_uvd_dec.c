@@ -12,7 +12,7 @@
 #include "ac_cmdbuf.h"
 #include "util/os_time.h"
 #include "util/detect_os.h"
-#include "util/bitpack_helpers.h"
+#include "util/u_math.h"
 #include "util/u_memory.h"
 
 #if DETECT_OS_POSIX
@@ -190,7 +190,7 @@ uvd_build_create_cmd(struct ac_video_dec *decoder, struct ac_video_dec_create_cm
       }
    };
 
-   if (cmd->session_va)
+   if (dec->sw_ctx_size)
       send_cmd(&cmd_buf, RUVD_CMD_SESSION_CONTEXT_BUFFER, cmd->session_va);
    send_cmd(&cmd_buf, RUVD_CMD_MSG_BUFFER, cmd->embedded_va);
 
@@ -557,7 +557,7 @@ uvd_build_decode_cmd(struct ac_video_dec *decoder, struct ac_video_dec_decode_cm
       break;
    }
 
-   if (cmd->session_va)
+   if (dec->sw_ctx_size)
       send_cmd(&cmd_buf, RUVD_CMD_SESSION_CONTEXT_BUFFER, cmd->session_va);
    send_cmd(&cmd_buf, RUVD_CMD_MSG_BUFFER, cmd->embedded_va);
    if (cmd->ref_surfaces[0].planes[0].va)

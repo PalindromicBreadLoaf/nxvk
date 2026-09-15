@@ -27,19 +27,14 @@ lower_non_tied_default(jay_builder *b, jay_inst *I, jay_def default_)
       jay_remove_instruction(I);
    } else {
       jay_foreach_comp(I->dst, c) {
-         jay_def dst = jay_extract_post_ra(I->dst, c);
-         jay_def src = jay_extract_post_ra(default_, c);
+         jay_def dst = jay_bare_reg(I->dst.file, I->dst.reg + c);
+         jay_def src = jay_bare_reg(default_.file, default_.reg + c);
 
-         jay_add_predicate(b, jay_MOV(b, dst, src), not_pred);
+         jay_inst *mov = jay_MOV(b, dst, src);
+         mov->type = I->type;
+         jay_add_predicate(b, mov, not_pred);
       }
    }
-}
-
-static inline jay_def
-hi(jay_def x)
-{
-   x.hi = true;
-   return x;
 }
 
 static bool
@@ -48,9 +43,9 @@ lower(jay_builder *b, jay_inst *I)
    switch (I->op) {
    case JAY_OPCODE_PRELOAD:
    case JAY_OPCODE_PHI_DST:
-   case JAY_OPCODE_INDETERMINATE:
+   case JAY_OPCODE_UNDEF:
       /* Delete instructions that only exist for RA. Uninitialized register
-       * contents is a perfectly cromulent indeterminate value.
+       * contents is a perfectly cromulent undefined value.
        */
       return true;
 
@@ -60,33 +55,9 @@ lower(jay_builder *b, jay_inst *I)
          return true;
 
       if (I->dst.file == GPR && I->src[0].file == GPR) {
-         jay_def dst = I->dst, src = I->src[0], tmp4 = jay_bare_reg(GPR, 0);
+         jay_def dst = I->dst, src = I->src[0];
          enum jay_stride dst_stride = jay_def_stride(b->shader, dst);
          enum jay_stride src_stride = jay_def_stride(b->shader, src);
-         assert(jay_def_stride(b->shader, tmp4) == JAY_STRIDE_4 && "ABI");
-
-         if (dst_stride == JAY_STRIDE_8 && src_stride == JAY_STRIDE_2) {
-            jay_MOV(b, dst, tmp4);
-            jay_MOV(b, tmp4, src)->type = JAY_TYPE_U16;
-            jay_MOV(b, hi(tmp4), hi(src))->type = JAY_TYPE_U16;
-
-            jay_XOR(b, JAY_TYPE_U32, dst, dst, tmp4);
-            jay_XOR(b, JAY_TYPE_U32, tmp4, dst, tmp4);
-            jay_XOR(b, JAY_TYPE_U32, dst, dst, tmp4);
-            return true;
-         } else if (dst_stride == JAY_STRIDE_2 && src_stride == JAY_STRIDE_8) {
-            jay_MOV(b, dst, tmp4)->type = JAY_TYPE_U16;
-            jay_MOV(b, hi(dst), hi(tmp4))->type = JAY_TYPE_U16;
-            jay_MOV(b, tmp4, src);
-
-            for (unsigned i = 0; i < 3; ++i) {
-               jay_XOR(b, JAY_TYPE_U16, i == 1 ? tmp4 : dst, dst, tmp4);
-               jay_XOR(b, JAY_TYPE_U16, i == 1 ? hi(tmp4) : hi(dst), hi(dst),
-                       hi(tmp4));
-            }
-
-            return true;
-         }
 
          /* Lower 4B<-->2B copies. To pack the register file, RA
           * sometimes inserts 32-bit copies involving 16-bit strided sources like
@@ -100,77 +71,89 @@ lower(jay_builder *b, jay_inst *I)
          if (stride_sz < type_sz) {
             assert(stride_sz == 16 && type_sz == 32 && "no other case hit");
             I->type = JAY_TYPE_U16;
-            jay_MOV(b, hi(dst), hi(src))->type = JAY_TYPE_U16;
+
+            dst.hi = true;
+            src.hi = true;
+            jay_MOV(b, dst, src)->type = JAY_TYPE_U16;
          }
+      }
+
+      /* Do moves on the float point to promote accumulator usage */
+      if (I->type == JAY_TYPE_U32 &&
+          I->dst.file == GPR &&
+          jay_def_stride(b->shader, I->dst) == JAY_STRIDE_4 &&
+          ((I->src[0].file == GPR &&
+            jay_def_stride(b->shader, I->src[0]) == JAY_STRIDE_4) ||
+           I->src[0].file == UGPR ||
+           jay_is_imm(I->src[0]))) {
+
+         I->type = JAY_TYPE_F32;
       }
 
       return false;
    }
 
-   case JAY_OPCODE_SWAP: {
-      jay_def x = I->src[0], y = I->src[1];
-      /* TODO: Need stride-aware lowering here too like MOV. Same ideas. */
-      if (jay_def_stride(b->shader, x) != jay_def_stride(b->shader, y))
-         UNREACHABLE("todo");
-
-      jay_XOR(b, JAY_TYPE_U32, x, y, x);
-      jay_XOR(b, JAY_TYPE_U32, y, x, y);
-      jay_XOR(b, JAY_TYPE_U32, x, y, x);
+   case JAY_OPCODE_LOOP_ONCE:
+      jay_BREAK(b);
+      jay_WHILE(b);
       return true;
-   }
 
-   case JAY_OPCODE_ZERO_FLAG: {
-      jay_MOV(b, jay_bare_reg(FLAG, jay_zero_flag_reg(I)), 0)->type =
-         JAY_TYPE_U32;
+   case JAY_OPCODE_LOOP_ONCE_HALT:
+      jay_HALT(b, false);
+      jay_WHILE(b);
       return true;
-   }
-
-   case JAY_OPCODE_DESWIZZLE: {
-      unsigned size = jay_deswizzle_size(I);
-
-      /* Odd: copy both halves to contiguous pair after payload */
-      for (unsigned i = 0; i < (size / 2); ++i) {
-         jay_DESWIZZLE_ODD(b, jay_bare_reg(GPR, size + i), jay_bare_reg(GPR, i),
-                           jay_bare_reg(GPR, i + ((size + 1) / 2)),
-                           !(size & 1));
-      }
-
-      /* Even: leave the bottom half in place, copy top half. If size=1 (rare
-       * but possible), this would be a no-op move so skip it.
-       */
-      if (size > 1) {
-         for (unsigned i = 0; i < DIV_ROUND_UP(size, 2); ++i) {
-            jay_DESWIZZLE_EVEN(b, jay_bare_reg(GPR, i),
-                               jay_bare_reg(GPR, (size / 2) + i), size & 1);
-         }
-      }
-
-      return true;
-   }
 
    default:
       return false;
    }
 }
 
-void
-jay_lower_post_ra(jay_shader *s)
+static void
+pass(jay_function *func)
 {
-   jay_foreach_inst_in_shader_safe(s, func, I) {
-      jay_builder b = jay_init_builder(func, jay_before_inst(I));
+   jay_foreach_block(func, block) {
+      BITSET_DECLARE(inactive_are_0, JAY_MAX_FLAGS) = { 0 };
 
-      if (jay_inst_has_default(I)) {
-         if (!jay_regs_equal(I->dst, *jay_inst_get_default(I))) {
-            lower_non_tied_default(&b, I, *jay_inst_get_default(I));
+      jay_foreach_inst_in_block_safe(block, I) {
+         jay_builder b = jay_init_builder(func, jay_before_inst(I));
+
+         if (jay_inst_has_default(I)) {
+            if (!jay_regs_equal(jay_is_null(I->dst) ? I->cond_flag : I->dst,
+                                *jay_inst_get_default(I))) {
+               lower_non_tied_default(&b, I, *jay_inst_get_default(I));
+            }
+
+            /* Now just drop the default source */
+            jay_shrink_sources(I, I->num_srcs - 1);
+            I->predication = JAY_PREDICATED;
          }
 
-         /* Now just drop the default source */
-         jay_shrink_sources(I, I->num_srcs - 1);
-         I->predication = JAY_PREDICATED;
-      }
+         if (I->zero_inactive) {
+            if (!BITSET_TEST(inactive_are_0, I->cond_flag.reg)) {
+               jay_MOV(&b, I->cond_flag, 0)->type =
+                  JAY_TYPE_U | func->shader->dispatch_width;
+               BITSET_SET(inactive_are_0, I->cond_flag.reg);
+            }
 
-      if (lower(&b, I)) {
-         jay_remove_instruction(I);
+            jay_foreach_src(I, s) {
+               assert(!jay_regs_equal(I->src[s], I->cond_flag));
+            }
+         } else {
+            if (I->dst.file == FLAG) {
+               BITSET_CLEAR(inactive_are_0, I->dst.reg);
+            }
+
+            /* Lane 0 might be inactive */
+            if (!jay_is_null(I->cond_flag) && I->uniform) {
+               BITSET_CLEAR(inactive_are_0, I->cond_flag.reg);
+            }
+
+            if (lower(&b, I)) {
+               jay_remove_instruction(I);
+            }
+         }
       }
    }
 }
+
+JAY_DEFINE_FUNCTION_PASS(jay_lower_post_ra, pass)

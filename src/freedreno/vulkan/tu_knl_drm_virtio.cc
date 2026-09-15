@@ -443,7 +443,7 @@ out:
    return VK_ERROR_UNKNOWN;
 }
 
-VkResult
+static VkResult
 virtio_queue_wait_fence(struct tu_queue *queue, uint32_t fence,
                         uint64_t timeout_ns)
 {
@@ -737,7 +737,7 @@ virtio_bo_init(struct tu_device *dev,
    req.blob_id = p_atomic_inc_return(&vdev->next_blob_id);;
 
    uint32_t handle =
-      vdrm_bo_create(vdev->vdrm, size, blob_flags, req.blob_id, &req.hdr);
+      vdrm_bo_create(vdev->vdrm, size, blob_flags, req.blob_id, 0, &req.hdr);
 
    if (!handle) {
       result = VK_ERROR_OUT_OF_DEVICE_MEMORY;

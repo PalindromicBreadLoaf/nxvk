@@ -28,7 +28,7 @@
 struct kk_query_pool;
 
 struct kk_root_descriptor_table {
-   struct kk_bo *root_buffer;
+   uint64_t addr;
 
    union {
       struct {
@@ -36,8 +36,9 @@ struct kk_root_descriptor_table {
          uint32_t buffer_strides[KK_MAX_VBUFS];
          uint64_t attrib_base[KK_MAX_ATTRIBS];
          uint32_t attrib_clamps[KK_MAX_ATTRIBS];
+
          float blend_constant[4];
-         uint32_t draw_id;
+         float clip_z_coeff;
       } draw;
       struct {
          uint32_t base_group[3];
@@ -68,16 +69,33 @@ struct kk_descriptor_state {
    struct kk_push_descriptor_set *push[KK_MAX_SETS];
 };
 
+struct kk_per_draw_data {
+   uint32_t draw_id;
+   uint32_t index_size;
+   /* Mask of outputs flowing VS->TCS, VS->GS, or TES->GS . */
+   uint64_t vertex_outputs;
+
+   /* Address of vertex param buffer if geom/tess is used, else 0 */
+   uint64_t vertex_params;
+
+   /* Address of tessellation param buffer if tessellation used, else 0 */
+   uint64_t tess_params;
+
+   uint64_t base_vertex_addr;
+   uint64_t base_instance_addr;
+};
+
 struct kk_attachment {
+   VkRenderingAttachmentFlagsKHR flags;
    VkFormat vk_format;
    struct kk_image_view *iview;
 
    VkResolveModeFlagBits resolve_mode;
    struct kk_image_view *resolve_iview;
 
-   /* Needed to track the value of storeOp in case we need to copy images for
-    * the DRM_FORMAT_MOD_LINEAR case */
+   VkAttachmentLoadOp load_op;
    VkAttachmentStoreOp store_op;
+   VkClearValue clear_value;
 };
 
 struct kk_rendering_state {
@@ -90,9 +108,15 @@ struct kk_rendering_state {
 
    uint32_t color_att_count;
    struct kk_attachment color_att[KK_MAX_RTS];
+   uint8_t color_map[KK_MAX_RTS];
    struct kk_attachment depth_att;
    struct kk_attachment stencil_att;
    struct kk_attachment fsr_att;
+
+   bool ms_bresenham_lines;
+   bool sample_locations_enable;
+   uint32_t sample_locations_count;
+   VkSampleLocationEXT sample_locations[KK_MAX_SAMPLES];
 };
 
 /* Dirty tracking bits for state not tracked by vk_dynamic_graphics_state or
@@ -106,6 +130,7 @@ enum kk_dirty {
 struct kk_graphics_state {
    struct kk_rendering_state render;
    struct kk_descriptor_state descriptors;
+   struct kk_per_draw_data per_draw_data;
 
    mtl_depth_stencil_state *depth_stencil_state;
    mtl_render_pass_descriptor *render_pass_descriptor;
@@ -114,7 +139,7 @@ struct kk_graphics_state {
    bool need_to_start_render_pass;
 
    enum kk_dirty dirty;
-   uint32_t sample_count;
+   uint32_t pipeline_sample_count;
 
    struct {
       enum mtl_visibility_result_mode mode;
@@ -127,21 +152,24 @@ struct kk_graphics_state {
 
    /* Index buffer */
    struct {
-      mtl_buffer *handle;
-      uint32_t size;
-      uint32_t offset;
-      uint32_t restart;
+      struct kk_addr_range gpu;
       uint8_t bytes_per_index;
+      uint64_t null_addr;
    } index;
 
    /* Vertex buffers */
    struct {
       struct kk_addr_range addr_range[KK_MAX_VBUFS];
-      mtl_buffer *handles[KK_MAX_VBUFS];
-      /* Required to understand maximum size of index buffer if primitive is
-       * triangle fans */
-      uint32_t max_vertices;
    } vb;
+
+   /* Tessellation state */
+   struct {
+      /* Grid buffer for when the draw is indirect */
+      struct kk_ptr indirect_ptr;
+      uint64_t out_draws_addr;
+      struct kk_tess_info info;
+      enum mesa_prim prim;
+   } tess;
 
    /* Needed by vk_command_buffer::dynamic_graphics_state */
    struct vk_vertex_input_state _dynamic_vi;
@@ -152,24 +180,79 @@ struct kk_compute_state {
    struct kk_descriptor_state descriptors;
 };
 
+struct kk_conditional_rendering_state {
+   uint64_t address;
+   bool inverted;
+   bool enabled;
+};
+
 struct kk_encoder;
+
+struct kk_uploader {
+   /** List of kk_cmd_bo */
+   struct list_head bos;
+
+   /* Current addresses */
+   struct kk_bo *bo;
+   uint32_t offset;
+};
+
+/* A pending resolve of one timestamp counter-heap entry into a query pool BO.
+ * Recorded by vkCmdWriteTimestamp2 and flushed on the GPU timeline at cs_end. */
+struct kk_ts_resolve {
+   mtl_counter_heap *heap;
+   uint32_t index;
+   uint64_t dst_addr;
+};
+
+struct kk_encoder_state {
+   /* either a mtl_compute_encoder or a mtl_render_encoder */
+   mtl_command_encoder *encoder;
+   mtl_command_allocator *allocator;
+   mtl_command_buffer *cmd_buf;
+   /* Pending timestamp resolves (struct kk_ts_resolve), flushed at cs_end. */
+   struct util_dynarray ts_resolves;
+};
 
 struct kk_cmd_buffer {
    struct vk_command_buffer vk;
 
-   struct kk_encoder *encoder;
+   struct kk_encoder_state gfx;
+   /* pre and post gfx encoder states swap after every gfx encoder is committed */
+   struct kk_encoder_state cmp[2];
+   struct kk_encoder_state *pre_gfx;
+   struct kk_encoder_state *post_gfx;
+
    void *drawable;
+   mtl_argument_table *argument_table;
 
    struct {
       struct kk_graphics_state gfx;
       struct kk_compute_state cs;
+      struct kk_conditional_rendering_state cond_render;
       struct kk_shader *shaders[MESA_SHADER_STAGES];
+      /* Address of the binding 0 for when compute dispatches modify it.
+       * We are trying to be nice to ourselves. */
+      uint64_t root_addr;
       /* Only tracks graphics shaders since compute is always bound for now. */
       uint32_t dirty_shaders;
    } state;
 
+   struct kk_uploader uploader;
+
+   struct util_dynarray submit_cmd_bufs;
+
    /* Owned large BOs */
    struct util_dynarray large_bos;
+
+   /* Does the command buffer use the geometry heap? */
+   bool uses_heap;
+   /* Set at vkBeginCommandBuffer. One-time-submit buffers skip command
+    * enqueueing in the trampolines since they can never be replayed. */
+   bool one_time_submit;
+   /* Metal command buffers are single-shot: a resubmission must re-record
+    * by replaying the enqueued commands (see rerecord_cmd_buffer). */
+   bool submitted;
 };
 
 VK_DEFINE_HANDLE_CASTS(kk_cmd_buffer, vk.base, VkCommandBuffer,
@@ -203,7 +286,13 @@ kk_get_descriptors_state(struct kk_cmd_buffer *cmd,
    }
 };
 
-void kk_cmd_release_resources(struct kk_device *dev, struct kk_cmd_buffer *cmd);
+void kk_reset_cmd_buffer_internal(struct kk_cmd_buffer *cmd);
+void cs_start_render(struct kk_cmd_buffer *cmd);
+mtl_render_encoder *cs_get_render(struct kk_cmd_buffer *cmd);
+mtl_compute_encoder *cs_get_compute(struct kk_cmd_buffer *cmd, bool pre_gfx);
+void cs_end(struct kk_cmd_buffer *cmd);
+void kk_cmd_bind_root_to_argument_table(struct kk_cmd_buffer *cmd,
+                                        uint64_t addr);
 
 static void
 kk_cmd_buffer_dirty_all_gfx(struct kk_cmd_buffer *cmd)
@@ -213,6 +302,11 @@ kk_cmd_buffer_dirty_all_gfx(struct kk_cmd_buffer *cmd)
    cmd->state.dirty_shaders = ~0u;
    cmd->state.gfx.dirty = ~0u;
    cmd->state.gfx.descriptors.root_dirty = true;
+
+   /* We just flushed out the heap use. If we want to use it again, we'll need
+    * to queue a free for it again.
+    */
+   cmd->uses_heap = false;
 }
 
 void kk_cmd_release_dynamic_ds_state(struct kk_cmd_buffer *cmd);
@@ -225,22 +319,11 @@ kk_compile_depth_stencil_state(struct kk_device *device,
 void kk_meta_resolve_rendering(struct kk_cmd_buffer *cmd,
                                const VkRenderingInfo *pRenderingInfo);
 
-void kk_cmd_buffer_write_descriptor_buffer(struct kk_cmd_buffer *cmd,
-                                           struct kk_descriptor_state *desc,
-                                           size_t size, size_t offset);
+struct kk_ptr kk_pool_alloc(struct kk_cmd_buffer *cmd, uint32_t size,
+                            uint32_t alignment);
 
-/* Allocates temporary buffer that will be released once the command buffer has
- * completed */
-struct kk_bo *kk_cmd_allocate_buffer(struct kk_cmd_buffer *cmd, size_t size_B,
-                                     size_t alignment_B);
-
-struct kk_pool {
-   mtl_buffer *handle;
-   uint64_t gpu;
-   void *cpu;
-};
-struct kk_pool kk_pool_upload(struct kk_cmd_buffer *cmd, void *data,
-                              size_t size_B, size_t alignment_B);
+struct kk_ptr kk_pool_upload(struct kk_cmd_buffer *cmd, const void *data,
+                             uint32_t size, uint32_t alignment);
 
 uint64_t kk_upload_descriptor_root(struct kk_cmd_buffer *cmd,
                                    VkPipelineBindPoint bind_point);
@@ -248,7 +331,55 @@ uint64_t kk_upload_descriptor_root(struct kk_cmd_buffer *cmd,
 void kk_cmd_buffer_flush_push_descriptors(struct kk_cmd_buffer *cmd,
                                           struct kk_descriptor_state *desc);
 
-void kk_dispatch_precomp(struct kk_cmd_buffer *cmd, struct mtl_size grid,
+enum kk_grid_mode {
+   KK_GRID_DIRECT = 0u,
+   KK_GRID_INDIRECT,
+};
+struct kk_grid {
+   enum kk_grid_mode mode;
+   union {
+      struct mtl_size size;
+      uint64_t addr;
+   };
+};
+
+static struct kk_grid
+kk_grid_3d(uint32_t x, uint32_t y, uint32_t z)
+{
+   return (struct kk_grid){
+      .mode = KK_GRID_DIRECT,
+      .size = {x, y, z},
+   };
+}
+
+static struct kk_grid
+kk_grid_2d(uint32_t x, uint32_t y)
+{
+   return kk_grid_3d(x, y, 1u);
+}
+
+static struct kk_grid
+kk_grid_1d(uint32_t x)
+{
+   return kk_grid_3d(x, 1u, 1u);
+}
+
+static struct kk_grid
+kk_grid_indirect(uint64_t addr)
+{
+   return (struct kk_grid){
+      .mode = KK_GRID_INDIRECT,
+      .addr = addr,
+   };
+}
+
+static bool
+kk_grid_is_indirect(struct kk_grid grid)
+{
+   return grid.mode == KK_GRID_INDIRECT;
+}
+
+void kk_dispatch_precomp(struct kk_cmd_buffer *cmd, struct kk_grid grid,
                          bool pre_gfx, enum libkk_program idx, void *data,
                          size_t data_size);
 

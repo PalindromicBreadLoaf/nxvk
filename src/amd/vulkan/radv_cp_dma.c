@@ -9,11 +9,12 @@
  */
 
 #include "radv_cp_dma.h"
+#include "tools/radv_debug_hang.h"
+#include "tools/radv_sqtt.h"
 #include "radv_buffer.h"
 #include "radv_cs.h"
-#include "radv_debug.h"
 #include "radv_shader.h"
-#include "radv_sqtt.h"
+#include "radv_tracepoints.h"
 #include "sid.h"
 
 /* Set this if you want the 3D engine to wait until CP DMA is done.
@@ -105,10 +106,10 @@ static void
 radv_emit_cp_dma(struct radv_cmd_buffer *cmd_buffer, uint64_t dst_va, uint64_t src_va, unsigned size, unsigned flags)
 {
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   const struct radv_cond_render_state *cond_render = &cmd_buffer->state.cond_render;
    struct radv_cmd_stream *cs = cmd_buffer->cs;
-   bool predicating = cmd_buffer->state.predicating;
 
-   radv_cs_emit_cp_dma(device, cs, predicating, dst_va, src_va, size, flags);
+   radv_cs_emit_cp_dma(device, cs, cond_render->enabled, dst_va, src_va, size, flags);
 
    /* CP DMA is executed in ME, but index buffers are read by PFP.
     * This ensures that ME (CP DMA) is idle before PFP starts fetching
@@ -117,7 +118,7 @@ radv_emit_cp_dma(struct radv_cmd_buffer *cmd_buffer, uint64_t dst_va, uint64_t s
     */
    if (flags & CP_DMA_SYNC) {
       if (cmd_buffer->qf == RADV_QUEUE_GENERAL) {
-         ac_emit_cp_pfp_sync_me(cs->b, cmd_buffer->state.predicating);
+         ac_emit_cp_pfp_sync_me(cs->b, cond_render->enabled);
       }
 
       /* CP will see the sync flag and wait for all DMAs to complete. */
@@ -190,8 +191,9 @@ void
 radv_cp_dma_prefetch(struct radv_cmd_buffer *cmd_buffer, uint64_t va, unsigned size)
 {
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   const struct radv_cond_render_state *cond_render = &cmd_buffer->state.cond_render;
 
-   radv_cs_cp_dma_prefetch(device, cmd_buffer->cs, va, size, cmd_buffer->state.predicating);
+   radv_cs_cp_dma_prefetch(device, cmd_buffer->cs, va, size, cond_render->enabled);
 
    if (radv_device_fault_detection_enabled(device))
       radv_cmd_buffer_trace_emit(cmd_buffer);
@@ -223,11 +225,10 @@ radv_cp_dma_realign_engine(struct radv_cmd_buffer *cmd_buffer, unsigned size)
    uint32_t offset;
    unsigned dma_flags = 0;
    unsigned buf_size = SI_CPDMA_ALIGNMENT * 2;
-   void *ptr;
 
    assert(size < SI_CPDMA_ALIGNMENT);
 
-   radv_cmd_buffer_upload_alloc(cmd_buffer, buf_size, &offset, &ptr);
+   radv_cmd_buffer_upload_alloc(cmd_buffer, buf_size, &offset, NULL);
 
    va = radv_buffer_get_va(cmd_buffer->upload.upload_bo);
    va += offset;
@@ -276,6 +277,8 @@ radv_cp_dma_copy_memory(struct radv_cmd_buffer *cmd_buffer, uint64_t src_va, uin
    main_src_va = src_va + skipped_size;
    main_dest_va = dest_va + skipped_size;
 
+   radv_utrace_begin_cp_dma_copy_memory(cmd_buffer, size);
+
    while (size) {
       unsigned dma_flags = 0;
       unsigned byte_count = MIN2(size, cp_dma_max_byte_count(gfx_level));
@@ -315,6 +318,8 @@ radv_cp_dma_copy_memory(struct radv_cmd_buffer *cmd_buffer, uint64_t src_va, uin
    }
    if (realign_size)
       radv_cp_dma_realign_engine(cmd_buffer, realign_size);
+
+   radv_utrace_end_cp_dma_copy_memory(cmd_buffer);
 }
 
 void

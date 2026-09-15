@@ -223,89 +223,13 @@ KHR-GLES3.framebuffer_blit.multisampled_to_singlesampled_blit_depth_config_test,
 
 # GL tests above, Vulkan tests below
 
-# New fails in 1.4.3.3
-dEQP-VK.memory.concurrent_access.shader_and_host,Fail
-dEQP-VK.transform_feedback.simple.draw_indirect_counter_offset_16,Fail
-dEQP-VK.transform_feedback.simple.draw_indirect_counter_offset_244,Fail
-dEQP-VK.transform_feedback.simple.draw_indirect_counter_offset_508,Fail
-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_16,Fail
-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_244,Fail
-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_508,Fail
-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_16,Fail
-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_244,Fail
-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_508,Fail
-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_multiview_counter_offset_16,Fail
-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_multiview_counter_offset_244,Fail
-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_multiview_counter_offset_508,Fail
-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_counter_offset_16,Fail
-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_counter_offset_244,Fail
-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_counter_offset_508,Fail
-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_multiview_counter_offset_16,Fail
-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_multiview_counter_offset_244,Fail
-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_multiview_counter_offset_508,Fail
-android-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_244,Fail
-asan-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_244,Fail
-gmem-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_16,Fail
-gmem-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_multiview_counter_offset_16,Fail
-nobin-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_16,Fail
-nobin-dEQP-VK.transform_feedback.simple.draw_indirect_counter_offset_244,Fail
-nobin-dEQP-VK.transform_feedback.simple.draw_indirect_counter_offset_508,Fail
-nobin-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_244,Fail
-nobin-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_16,Fail
-nobin-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_multiview_counter_offset_16,Fail
-nobin-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_multiview_counter_offset_244,Fail
-nobin-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_multiview_counter_offset_508,Fail
-nobin-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_counter_offset_16,Fail
-nobin-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_counter_offset_244,Fail
-nobin-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_counter_offset_508,Fail
-nobin-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_multiview_counter_offset_16,Fail
-nobin-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_multiview_counter_offset_244,Fail
-
 # New failures with VKCTS 1.4.4.0
-dEQP-VK.pipeline.monolithic.misc.identically_defined_layout,Fail
 dEQP-VK.tessellation.misc_draw.tess_factor_barrier_bug,Crash
-gmem-dEQP-VK.transform_feedback.simple.draw_indirect_counter_offset_16,Fail
-gmem-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_508,Fail
-gmem-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_244,Fail
-gmem-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_508,Fail
-gmem-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_multiview_counter_offset_508,Fail
-nobin-dEQP-VK.transform_feedback.simple.draw_indirect_counter_offset_16,Fail
-nobin-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_508,Fail
-nobin-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_244,Fail
-nobin-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_508,Fail
-nobin-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_multiview_counter_offset_508,Fail
-
-dEQP-VK.wsi.direct_drm.incremental_present.scale_none.fifo.identity.opaque.incremental_present,Fail
-dEQP-VK.wsi.direct_drm.incremental_present.scale_none.fifo.identity.opaque.reference,Fail
-dEQP-VK.wsi.direct_drm.maintenance1.deferred_alloc.fifo.basic,Fail
-dEQP-VK.wsi.direct_drm.maintenance1.deferred_alloc.fifo.bind_image_multi_swapchain,Fail
-dEQP-VK.wsi.direct_drm.maintenance1.deferred_alloc.fifo.bind_image,Fail
-dEQP-VK.wsi.direct_drm.maintenance1.present_fence.fifo.basic,Fail
-dEQP-VK.wsi.direct_drm.maintenance1.present_fence.fifo.mult_swapchain_ordering,Fail
-dEQP-VK.wsi.direct_drm.maintenance1.present_fence.fifo.multi_swapchain,Fail
-dEQP-VK.wsi.direct_drm.maintenance1.present_fence.fifo.null_handles,Fail
-dEQP-VK.wsi.direct_drm.maintenance1.present_fence.fifo.ordering,Fail
-dEQP-VK.wsi.direct_drm.maintenance1.present_modes.fifo.change_modes_multi_swapchain,Fail
-dEQP-VK.wsi.direct_drm.maintenance1.present_modes.fifo.change_modes_with_deferred_alloc,Fail
-dEQP-VK.wsi.direct_drm.maintenance1.present_modes.fifo.change_modes,Fail
-dEQP-VK.wsi.direct_drm.maintenance1.release_images.fifo.no_scaling.basic,Fail
-dEQP-VK.wsi.direct_drm.maintenance1.release_images.fifo.no_scaling.release_before_present,Fail
-dEQP-VK.wsi.direct_drm.maintenance1.release_images.fifo.no_scaling.resize_window_after_acquire_release_before_retire,Fail
-dEQP-VK.wsi.direct_drm.maintenance1.release_images.fifo.no_scaling.resize_window_after_acquire,Fail
-dEQP-VK.wsi.direct_drm.maintenance1.release_images.fifo.no_scaling.resize_window,Fail
 
 # OpenCL tests below
 #
 ## rusticl-core issues:
 #
-#Unexpected CL error: CL_BUILD_PROGRAM_FAILURE -11
-#Expected CL error: CL_INVALID_BUILD_OPTIONS -43
-api@clbuildprogram,Fail
-
-#Unexpected CL error: CL_COMPILE_PROGRAM_FAILURE -15
-#Expected CL error: CL_INVALID_COMPILER_OPTIONS -66
-api@clcompileprogram,Fail
-
 #Unexpected CL error: CL_SUCCESS 0
 #Expected CL error: CL_KERNEL_ARG_INFO_NOT_AVAILABLE -19
 api@clgetkernelarginfo,Fail
@@ -319,9 +243,6 @@ api@clgetkernelarginfo,Fail
 #Unexpected CL error: CL_SUCCESS 0
 #Expected CL error: CL_LINK_PROGRAM_FAILURE -17
 api@cllinkprogram,Fail
-
-# can be resolved by RUSTICL_FEATURES=fp16,fp64
-program@build@vector-data-types,Fail
 
 # https://gitlab.freedesktop.org/mesa/mesa/-/issues/8408
 program@execute@global-offset,Fail
@@ -359,8 +280,9 @@ program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float8,F
 # (file=input,line=0,column=0,index=0): Unresolved external reference to "_Z21convert_char4_sat_rteDv4_i".
 program@execute@vector-conversion,Fail
 
-# Piglit doesn't check subbuffer alignment requirements
-api@clgetmemobjectinfo,Fail
+# Piglit checks the pre 3.1 behavior
+api@clsetkernelarg,Fail
+api@clsetkernelarg@Input checks,Fail
 
 # piles of new fails since updating skqp; to be re-evaluated with new upstream
 gl_all_bitmap_configs,Fail
@@ -497,11 +419,6 @@ vk_xfermodes3,Fail
 # Initial ANGLE failures
 angle-dEQP-GLES2.functional.shaders.algorithm.rgb_to_hsl_vertex,Fail
 
-# Android failures
-# ../src/freedreno/vulkan/tu_image.cc:512: VkResult tu_image_update_layout(struct tu_device *, struct tu_image *, uint64_t, const VkSubresourceLayout *) [CHIP = A6XX]: assertion "!image->force_linear_tile" failed
-ahb-dEQP-VK.api.external.memory.android_hardware_buffer.ahb_format_properties.image_formats.r8g8b8a8_unorm,Crash
-ahb-dEQP-VK.api.external.memory.android_hardware_buffer.ahb_format_properties_2.image_formats.r8g8b8a8_unorm,Crash
-
 # Early-fragment multisample autotune regressions
 dEQP-VK.fragment_operations.early_fragment.sample_count_early_fragment_tests_depth_alpha_to_coverage_samples_2_maintenance5,Fail
 dEQP-VK.fragment_operations.early_fragment.sample_count_early_fragment_tests_depth_alpha_to_coverage_samples_4_maintenance5,Fail
@@ -514,3 +431,6 @@ dEQP-VK.fragment_operations.early_fragment.sample_count_early_fragment_tests_dep
 angle-dEQP-GLES3.functional.fbo.msaa.2_samples.rg8,Fail
 angle-dEQP-GLES3.functional.fbo.msaa.4_samples.rg8,Fail
 
+# uprev Piglit in Mesa
+spec@!opengl 1.1@large-tex,Fail
+spec@!opengl 1.1@large-tex@test_image_load_store,Fail

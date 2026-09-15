@@ -88,11 +88,11 @@ fixup_cast_deref_mode(nir_deref_instr *deref)
       deref->modes ^= nir_var_function_temp;
 
       nir_foreach_use(use, &deref->def) {
-         if (nir_src_parent_instr(use)->type != nir_instr_type_deref)
+         if (nir_src_use_instr(use)->type != nir_instr_type_deref)
             continue;
 
          /* Recurse into children */
-         fixup_cast_deref_mode(nir_instr_as_deref(nir_src_parent_instr(use)));
+         fixup_cast_deref_mode(nir_instr_as_deref(nir_src_use_instr(use)));
       }
    }
 }
@@ -557,15 +557,34 @@ nir_cleanup_functions(nir_shader *nir)
 
    struct set *used_funcs = _mesa_set_create(NULL, _mesa_hash_pointer,
                                              _mesa_key_pointer_equal);
-   foreach_list_typed_safe(nir_function, func, node, &nir->functions) {
-      if (func->is_entrypoint) {
-         _mesa_set_add(used_funcs, func);
-         nir_mark_used_functions(func, used_funcs);
-      }
+   nir_foreach_entrypoint(func, nir) {
+      _mesa_set_add(used_funcs, func);
+      nir_mark_used_functions(func, used_funcs);
    }
-   foreach_list_typed_safe(nir_function, func, node, &nir->functions) {
+   nir_foreach_function_safe(func, nir) {
       if (!_mesa_set_search(used_funcs, func))
          exec_node_remove(&func->node);
    }
    _mesa_set_destroy(used_funcs, NULL);
+}
+
+bool
+nir_shader_fully_linked(const nir_shader *nir)
+{
+   bool res = true;
+   struct set *used_funcs = _mesa_set_create(NULL, _mesa_hash_pointer,
+                                             _mesa_key_pointer_equal);
+   nir_foreach_entrypoint(func, nir) {
+      _mesa_set_add(used_funcs, func);
+      nir_mark_used_functions(func, used_funcs);
+   }
+   set_foreach(used_funcs, entry) {
+      nir_function *func = (nir_function *)entry->key;
+      if (!func->impl) {
+         res = false;
+         break;
+      }
+   }
+   _mesa_set_destroy(used_funcs, NULL);
+   return res;
 }

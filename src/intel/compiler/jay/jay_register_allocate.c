@@ -4,7 +4,6 @@
  */
 
 #include <assert.h>
-#include "util/bitscan.h"
 #include "util/bitset.h"
 #include "util/macros.h"
 #include "util/ralloc.h"
@@ -15,7 +14,6 @@
 #include "jay_ir.h"
 #include "jay_opcodes.h"
 #include "jay_private.h"
-#include "shader_enums.h"
 
 /**
  * Register allocation for Jay shaders.
@@ -39,136 +37,9 @@
  * Finally, we deconstruct SSA.
  */
 
-static inline bool
-is_ra_src(jay_def d)
-{
-   return d.file < JAY_NUM_RA_FILES;
-}
-
-#define jay_foreach_ra_file(file)                                              \
-   for (enum jay_file file = 0; file < JAY_NUM_RA_FILES; ++file)
-
 #define jay_foreach_ra_src(I, s)                                               \
    jay_foreach_src(I, s)                                                       \
-      if (is_ra_src(I->src[s]) && !jay_is_null(I->src[s]))
-
-static enum jay_stride
-jay_min_stride_for_type(enum jay_type T)
-{
-   unsigned bits = jay_type_size_bits(T);
-
-   /* We need at least enough contiguous bits per-lane to store a scalar */
-   if (bits == 64)
-      return JAY_STRIDE_8;
-   else if (bits == 32)
-      return JAY_STRIDE_4;
-   else
-      return JAY_STRIDE_2;
-}
-
-static enum jay_stride
-jay_max_stride_for_type(enum jay_type T)
-{
-   /* Horizontal stride can be at most 4 */
-   return (jay_type_size_bits(T) >= 16) ? JAY_STRIDE_8 : JAY_STRIDE_4;
-}
-
-static bool
-jay_restrict_mixed_strides(jay_inst *I, unsigned s)
-{
-   /* From the hardware spec section "Register Region Restrictions":
-    *
-    * "In case of all floating point data types used in destination:" and
-    *
-    * "In case where source or destination datatype is 64b or operation is
-    *  integer DWord multiply:" and
-    *
-    *  "Src2 Restrictions"
-    *
-    *      Register Regioning patterns where register data bit location
-    *      of the LSB of the channels are changed between source and
-    *      destination are not supported on Src0 and Src1 except for
-    *      broadcast of a scalar.
-    *
-    * Therefore, ban mixed-strides in these cases.
-    *
-    * Similarly, SENDs cannot do any regioning so restrict that too.
-    */
-   return jay_type_is_any_float(I->type) ||
-          jay_type_size_bits(I->type) == 64 ||
-          jay_is_send_like(I) ||
-          I->op == JAY_OPCODE_MUL_32X16 ||
-          I->op == JAY_OPCODE_MUL_32 ||
-          s == 2;
-}
-
-static enum jay_stride
-jay_dst_stride_minmax(jay_inst *I, bool do_max)
-{
-   enum jay_stride min = jay_min_stride_for_type(I->type);
-   enum jay_stride max = jay_max_stride_for_type(I->type);
-
-   /* Destination stride must be equal to the ratio of the sizes of the
-    * execution data type to the destination type
-    */
-   if (I->op == JAY_OPCODE_CVT) {
-      min = MAX2(min, jay_min_stride_for_type(jay_src_type(I, 0)));
-   }
-
-   /* V/UV types are restricted */
-   if (I->op == JAY_OPCODE_SHR_ODD_SUBSPANS_BY_4) {
-      return JAY_STRIDE_2;
-   }
-
-   /* The src2 restriction quoted above effectively implies we should not stride
-    * destinations of 3-source instructions either.
-    */
-   if (jay_num_isa_srcs(I) >= 3) {
-      return min;
-   }
-
-   return (do_max && !jay_restrict_mixed_strides(I, 0)) ? max : min;
-}
-
-static enum jay_stride
-jay_src_stride_minmax(jay_inst *I, unsigned s, bool do_max)
-{
-   enum jay_stride min = jay_min_stride_for_type(jay_src_type(I, s));
-   enum jay_stride max = jay_max_stride_for_type(jay_src_type(I, s));
-
-   /* SENDs cannot do any regioning so force exactly the types of the sources
-    * regardless of the type of the destination.
-    *
-    * Shuffles could theoretically support regioning but it would be nontrivial
-    * and probably pointless most of the time.
-    */
-   if (jay_is_send_like(I) || jay_is_shuffle_like(I)) {
-      return min;
-   }
-
-   /* While "add.u16 r0<2>, r1<4>" is legal, "add.u16 r0, r1<4>" is not.
-    * Conservatively assume the destination is packed and restrict the source
-    * stride accordingly. This satisfies the special restrictions.
-    */
-   if (jay_type_size_bits(I->type) <= 16) {
-      max = JAY_STRIDE_4;
-   }
-
-   /* "add.u16 r0.8, g1<2>" is not legal. We don't generate this normally yet
-    * (preferring to burn the upper bits) but it is used internally.
-    */
-   if (I->op == JAY_OPCODE_LANE_ID_EXPAND) {
-      max = JAY_STRIDE_2;
-   }
-
-   if (jay_restrict_mixed_strides(I, s) &&
-       jay_type_size_bits(jay_src_type(I, s)) < jay_type_size_bits(I->type)) {
-
-      return jay_dst_stride_minmax(I, do_max);
-   }
-
-   return (do_max && !jay_restrict_mixed_strides(I, s)) ? max : min;
-}
+      if (I->src[s].file < JAY_NUM_RA_FILES && !jay_is_null(I->src[s]))
 
 struct affinity {
    /**
@@ -180,18 +51,23 @@ struct affinity {
    /** If the representative: offset in registers from the base.
     *
     * If not the representative: offset in registers from the representative. */
-   signed offset:4;
+   signed offset:7;
 
    /**
-    * If true, this value is used in an end-of-thread SEND and requires high
-    * registers.
+    * If true, this value is used in an early end-of-thread SEND and requires
+    * high registers.
     */
    bool eot:1;
 
-   /** If true, this UGPR needs full GRF alignment */
-   unsigned align     :5;
-   unsigned align_offs:4;
-   unsigned padding   :18;
+   /**
+    * If align is nonzero, this SSA def should be assigned to a register of the
+    * form (k * align) + align_offs for some integer k. In other words, align is
+    * the alignment of the whole vector and align_offs is this def's channel.
+    */
+   unsigned align     :7;
+   unsigned align_offs:7;
+   unsigned nr        :4;
+   unsigned padding   :6;
 };
 static_assert(sizeof(struct affinity) == 8, "packed");
 
@@ -284,15 +160,16 @@ def_from_reg(jay_reg r)
    return jay_bare_reg(r_file(r), r_reg(r));
 }
 
+struct jay_roundrobin {
+   unsigned block, gpr;
+};
+
 typedef struct jay_ra_state {
    /** Size of each register file */
    unsigned num_regs[JAY_NUM_RA_FILES];
 
-   /** Counter for roundrobin register allocation */
-   unsigned roundrobin[JAY_NUM_RA_FILES];
-
-   /** First GPR that may be used for EOT sends */
-   unsigned eot_offs;
+   /** Partition-aware counters for roundrobin register allocation */
+   struct jay_roundrobin roundrobin[JAY_NUM_RA_FILES][JAY_NUM_STRIDES];
 
    /** Phi coalescing data structure */
    struct phi_web_node *phi_web;
@@ -311,7 +188,7 @@ typedef struct jay_ra_state {
    jay_block *block;
 
    /** Builder for inserting shuffle code */
-   jay_builder bld;
+   jay_builder b;
 
    /** Local SSA index -> jay_reg map. Only defined for live indices. */
    jay_reg *reg_for_index;
@@ -326,24 +203,33 @@ typedef struct jay_ra_state {
    BITSET_WORD *available_regs[JAY_NUM_RA_FILES];
 
    /**
-    * Within assign_regs_for_inst, the set of registers that have been
-    * assigned and are therefore pinned.
+    * Within assign_regs_for_inst, the set of registers that are respectively
+    * 1. assigned and therefore pinned; 2. the base of a killed source; 3. used
+    * as sources not yet processed.
     *
     * Invariant: zeroed on entry to assign_regs_for_inst.
     */
-   BITSET_WORD *pinned[JAY_NUM_RA_FILES];
+   BITSET_WORD *pinned[JAY_NUM_RA_FILES], *killed[JAY_NUM_RA_FILES],
+      *sources[JAY_NUM_RA_FILES];
 
    /** Vector affinities for each def. */
    struct affinity *affinities;
 } jay_ra_state;
 
+static bool
+reg_is_available(const jay_ra_state *ra, jay_reg reg)
+{
+   assert(reg != NO_REG);
+   return BITSET_TEST(ra->available_regs[r_file(reg)], r_reg(reg));
+}
+
 static inline jay_reg
 current_reg(const jay_ra_state *ra, uint32_t index)
 {
-   assert(index > 0 && index < ra->bld.func->ssa_alloc);
+   assert(index > 0 && index < ra->b.func->ssa_alloc);
    jay_reg reg = ra->reg_for_index[index];
 
-   assert(reg != NO_REG);
+   assert(!reg_is_available(ra, reg));
    assert(ra->index_for_reg[r_file(reg)][r_reg(reg)] == index);
    return reg;
 }
@@ -363,24 +249,48 @@ add_copy(struct util_dynarray *copies, jay_reg dst, jay_reg src)
 }
 
 static jay_def
-push_temp(jay_builder *b, jay_reg reg, bool stride4)
+push_temp(jay_builder *b,
+          struct jay_temp_regs t,
+          enum jay_file file,
+          bool outer,
+          jay_def *backing,
+          jay_def avoid1,
+          jay_def avoid2)
 {
-   jay_def tmp = def_from_reg(reg);
+   assert(file == GPR || file == UGPR);
+   jay_reg reg = file == GPR ? t.gpr : t.ugpr;
+   jay_def tmp = reg == NO_REG ? jay_null() : def_from_reg(reg);
 
-   if (stride4 && jay_def_stride(b->shader, tmp) != JAY_STRIDE_4) {
-      jay_def new = def_from_reg(0);
-      jay_MOV(b, tmp, new);
-      tmp = new;
+   if (!jay_is_null(tmp)) {
+      return tmp;
    }
 
-   return tmp;
+   /* Find a register that does not conflict with the inputs */
+   bool avoid_regs[2] = { false, false };
+   if (!jay_is_null(avoid1) && avoid1.file == file && avoid1.reg < 2) {
+      avoid_regs[avoid1.reg] = true;
+   }
+   if (!jay_is_null(avoid2) && avoid2.file == file && avoid2.reg < 2) {
+      avoid_regs[avoid2.reg] = true;
+   }
+
+   unsigned r = avoid_regs[0] ? (avoid_regs[1] ? 2 : 1) : 0;
+
+   file = file == UGPR ? UACCUM : ACCUM;
+   *backing = jay_bare_reg(file, outer * 2);
+
+   /* Put accumulators down the float pipe - it's still a raw move. */
+   jay_def new = def_from_reg(r);
+   jay_MOV(b, *backing, new)->type = JAY_TYPE_F32;
+   return new;
 }
 
 static void
-pop_temp(jay_builder *b, struct jay_temp_regs t, jay_def temp)
+pop_temp(jay_builder *b, jay_def temp, jay_def backing)
 {
-   if (temp.file == GPR && temp.reg != t.gpr) {
-      jay_MOV(b, temp, def_from_reg(t.gpr));
+   if (!jay_is_null(backing)) {
+      assert(backing.file == ACCUM || backing.file == UACCUM);
+      jay_MOV(b, temp, backing)->type = JAY_TYPE_F32;
    }
 }
 
@@ -391,18 +301,36 @@ pop_temp(jay_builder *b, struct jay_temp_regs t, jay_def temp)
 static void
 mov(jay_builder *b, jay_def dst, jay_def src, struct jay_temp_regs temps)
 {
-   if (dst.file == MEM && src.file == MEM) {
-      assert(temps.gpr != NO_REG && "ensured by the spill limit");
-      jay_def temp = push_temp(b, temps.gpr, true /* stride4 */);
-      jay_MOV(b, temp, src);
-      jay_MOV(b, dst, temp);
-      pop_temp(b, temps, temp);
-   } else if (dst.file == UMEM && src.file == UMEM) {
-      assert(temps.ugpr != NO_REG && "ensured by the spill limit");
-      jay_MOV(b, def_from_reg(temps.ugpr), src);
-      jay_MOV(b, dst, def_from_reg(temps.ugpr));
+   bool split_copy = dst.file == MEM && src.file == MEM;
+   bool acc_src = false, acc_dst = false;
+
+   if (dst.file == GPR && src.file == GPR) {
+      struct jay_partition *p = &b->shader->partition;
+      struct jay_register_block D = jay_lookup_block(p, dst.reg, GPR);
+      struct jay_register_block S = jay_lookup_block(p, src.reg, GPR);
+
+      acc_dst = D.type == JAY_BLOCK_ACCUM;
+      acc_src = S.type == JAY_BLOCK_ACCUM;
+
+      split_copy |= D.stride != S.stride &&
+                    D.stride != JAY_STRIDE_4 &&
+                    S.stride != JAY_STRIDE_4;
+
+      split_copy |= (acc_dst && S.stride != JAY_STRIDE_4) ||
+                    (acc_src && D.stride != JAY_STRIDE_4);
+   }
+
+   if (split_copy) {
+      jay_def temp = jay_null(), backing = jay_null();
+      temp = push_temp(b, temps, GPR, false, &backing, jay_null(), jay_null());
+      jay_MOV(b, temp, src)->type = acc_src ? JAY_TYPE_F32 : JAY_TYPE_U32;
+      jay_MOV(b, dst, temp)->type = acc_dst ? JAY_TYPE_F32 : JAY_TYPE_U32;
+      pop_temp(b, temp, backing);
    } else {
-      jay_MOV(b, dst, src);
+      jay_MOV(b, dst, src)->type =
+         (acc_src || acc_dst) ? JAY_TYPE_F32 :
+         dst.file == FLAG     ? JAY_TYPE_U | b->shader->dispatch_width :
+                                JAY_TYPE_U32;
    }
 }
 
@@ -447,12 +375,11 @@ jay_emit_parallel_copies(jay_builder *b,
    BITSET_WORD *packed = BITSET_CALLOC(UINT16_MAX);
 
    if (0) {
-      const char *files = "ruMm";
       printf("[[\n");
 
       for (unsigned i = 0; i < num_copies; i++) {
-         printf("  %c%u = %c%u\n", files[r_file(pcopies[i].dst)],
-                r_reg(pcopies[i].dst), files[r_file(pcopies[i].src)],
+         printf("  %s%u = %s%u\n", jay_file_prefix(r_file(pcopies[i].dst)),
+                r_reg(pcopies[i].dst), jay_file_prefix(r_file(pcopies[i].src)),
                 r_reg(pcopies[i].src));
       }
 
@@ -545,19 +472,26 @@ jay_emit_parallel_copies(jay_builder *b,
          jay_def dst = def_from_reg(copy->dst), src = def_from_reg(copy->src);
          assert(dst.file == src.file);
          enum jay_file file = dst.file;
-         jay_reg tmp = (file == GPR || file == MEM) ? temps.gpr : temps.ugpr;
 
-         if (tmp != NO_REG) {
-            struct jay_temp_regs t = { .gpr = temps.gpr2, .ugpr = temps.ugpr2 };
-            jay_def temp = push_temp(b, tmp, file == MEM /* stride4 */);
-            {
-               mov(b, temp, dst, t);
-               mov(b, dst, src, t);
-               mov(b, src, temp, t);
-            }
-            pop_temp(b, temps, temp);
+         if (file == GPR &&
+             jay_def_stride(b->shader, dst) == JAY_STRIDE_4 &&
+             jay_def_stride(b->shader, src) == JAY_STRIDE_4) {
+
+            /* If everything is stride=4, swapping is easy */
+            jay_def acc = jay_bare_reg(ACCUM, 2);
+            jay_MOV(b, acc, dst)->type = JAY_TYPE_F32;
+            jay_MOV(b, dst, src)->type = JAY_TYPE_F32;
+            jay_MOV(b, src, acc)->type = JAY_TYPE_F32;
          } else {
-            jay_SWAP(b, dst, src);
+            struct jay_temp_regs t = { .gpr = temps.gpr2, .ugpr = temps.ugpr };
+            jay_def temp_backing = jay_null();
+            jay_def temp =
+               push_temp(b, temps, file == GPR || file == MEM ? GPR : UGPR,
+                         true /* outer */, &temp_backing, dst, src);
+            mov(b, temp, dst, t);
+            mov(b, dst, src, t);
+            mov(b, src, temp, t);
+            pop_temp(b, temp, temp_backing);
          }
 
          for (unsigned j = 0; j < num_copies; j++) {
@@ -584,33 +518,19 @@ jay_emit_parallel_copies(jay_builder *b,
    /* Emit moves after swaps because they fan out and thus increase demand.
     * This gives us more freedom around temporaries. The rewrite of simple
     * copies above ensures correctness.
-    *
-    * Simiarly, we first emit memory-memory copies since those require
-    * temporaries but only register copies can clobber the temporaries.
     */
    for (unsigned i = 0; i < num_simple; i++) {
       jay_def dst = def_from_reg(simple[i].dst);
       jay_def src = def_from_reg(simple[i].src);
 
-      if (jay_is_mem(dst) && jay_is_mem(src)) {
-         mov(b, dst, src, temps);
+      mov(b, dst, src, temps);
+
+      if (temps.gpr == simple[i].dst || temps.gpr == simple[i].src) {
+         temps.gpr = NO_REG;
       }
-   }
 
-   for (unsigned i = 0; i < num_simple; i++) {
-      jay_def dst = def_from_reg(simple[i].dst);
-      jay_def src = def_from_reg(simple[i].src);
-
-      if (!(jay_is_mem(dst) && jay_is_mem(src))) {
-         mov(b, dst, src, temps);
-
-         if (temps.gpr == simple[i].dst || temps.gpr == simple[i].src) {
-            temps.gpr = NO_REG;
-         }
-
-         if (temps.ugpr == simple[i].dst || temps.ugpr == simple[i].src) {
-            temps.ugpr = NO_REG;
-         }
+      if (temps.ugpr == simple[i].dst || temps.ugpr == simple[i].src) {
+         temps.ugpr = NO_REG;
       }
    }
 
@@ -620,13 +540,6 @@ jay_emit_parallel_copies(jay_builder *b,
 
    free(simple);
    free(done);
-}
-
-static bool
-reg_is_available(jay_ra_state *ra, jay_reg reg)
-{
-   assert(reg != NO_REG);
-   return BITSET_TEST(ra->available_regs[r_file(reg)], r_reg(reg));
 }
 
 static void
@@ -659,26 +572,38 @@ register_demand(jay_ra_state *ra, enum jay_file f)
    return n - __bitset_prefix_sum(ra->available_regs[f], n, BITSET_WORDS(n));
 }
 
-static jay_reg
-try_find_free_reg(jay_ra_state *ra, enum jay_file file, unsigned except)
+static bool
+is_block_compatible(struct jay_register_block block,
+                    enum jay_file file,
+                    enum jay_stride min_stride,
+                    enum jay_stride max_stride,
+                    bool eot,
+                    bool allow_accum)
 {
-   unsigned i;
+   return block.type != JAY_BLOCK_SPILL &&
+          (file != GPR ||
+           (min_stride <= block.stride && block.stride <= max_stride)) &&
+          (!eot || block.type == JAY_BLOCK_EOT) &&
+          (allow_accum || block.type != JAY_BLOCK_ACCUM);
+}
 
-   /* Prefer stride 4 temporaries, since they are more compatible and thus
-    * should reduce swapping on average.
-    */
-   if (file == GPR) {
-      BITSET_FOREACH_SET(i, ra->available_regs[file], ra->num_regs[file]) {
-         if (i != except &&
-             jay_gpr_to_stride(&ra->bld.shader->partition, i) == JAY_STRIDE_4) {
-            return make_reg(file, i);
+static jay_reg
+try_find_free_reg(jay_ra_state *ra,
+                  enum jay_file file,
+                  unsigned except,
+                  bool stride4)
+{
+   for (unsigned b = 0; b < ra->b.shader->partition.nr_blocks[file]; ++b) {
+      struct jay_register_block B = ra->b.shader->partition.blocks[file][b];
+
+      if (is_block_compatible(B, file, stride4 ? JAY_STRIDE_4 : 0,
+                              stride4 ? JAY_STRIDE_4 : ~0, false, !stride4)) {
+
+         for (unsigned i = B.start_gpr; i < B.start_gpr + B.len_gpr; ++i) {
+            if (BITSET_TEST(ra->available_regs[file], i) && i != except) {
+               return make_reg(file, i);
+            }
          }
-      }
-   }
-
-   BITSET_FOREACH_SET(i, ra->available_regs[file], ra->num_regs[file]) {
-      if (i != except) {
-         return make_reg(file, i);
       }
    }
 
@@ -688,7 +613,7 @@ try_find_free_reg(jay_ra_state *ra, enum jay_file file, unsigned except)
 static jay_reg
 find_free_reg(jay_ra_state *ra, enum jay_file file, unsigned except)
 {
-   jay_reg reg = try_find_free_reg(ra, file, except);
+   jay_reg reg = try_find_free_reg(ra, file, except, false);
 
    if (reg == NO_REG) {
       fprintf(stderr, "file %u, current demand %u, target %u\n", file,
@@ -702,15 +627,122 @@ find_free_reg(jay_ra_state *ra, enum jay_file file, unsigned except)
 static inline struct jay_temp_regs
 find_temp_regs(jay_ra_state *ra)
 {
-   jay_reg gpr = try_find_free_reg(ra, GPR, ~0);
-   jay_reg ugpr = try_find_free_reg(ra, UGPR, ~0);
+   /* For efficiency we only bother using stride=4 temporaries */
+   jay_reg gpr = try_find_free_reg(ra, GPR, ~0, true);
 
    return (struct jay_temp_regs) {
       .gpr = gpr,
-      .ugpr = ugpr,
-      .gpr2 = try_find_free_reg(ra, GPR, gpr),
-      .ugpr2 = try_find_free_reg(ra, UGPR, ugpr),
+      .ugpr = try_find_free_reg(ra, UGPR, ~0, false),
+      .gpr2 = try_find_free_reg(ra, GPR, gpr, true),
    };
+}
+
+static void
+pick_regs_from_block(jay_ra_state *ra,
+                     enum jay_file file,
+                     unsigned size,
+                     unsigned alignment,
+                     jay_inst *I,
+                     jay_def var,
+                     bool is_src,
+                     struct jay_register_block block,
+                     unsigned block_cost,
+                     struct affinity affinity,
+                     unsigned *best_cost,
+                     unsigned *best_reg,
+                     unsigned first)
+{
+   /* Cross-lane access cannot be SIMD split if the source/destination registers
+    * overlap, but as long as we don't tie those destinations, we're ok.
+    */
+   bool may_tie = !jay_is_shuffle_like(I);
+
+   first = align(first, alignment);
+   for (unsigned i = first; i + size <= block.len_gpr; i += alignment) {
+      unsigned r = block.start_gpr + i;
+
+      unsigned cost = block_cost;
+      bool tied = !is_src && BITSET_TEST(ra->killed[file], r);
+      if (tied ? !may_tie : BITSET_TEST_COUNT(ra->pinned[file], r, size))
+         continue;
+
+      /* Try to tie predicated default values (and forcibly tie flags),
+       * otherwise post-RA lowering needs to insert a predicated-MOV or SEL.
+       */
+      if (I->predication && !is_src) {
+         if (var.file == FLAG && jay_inst_get_predicate(I)->reg != r) {
+            continue;
+         } else if (I->predication == JAY_PREDICATED_DEFAULT &&
+                    jay_inst_get_default(I)->reg != r) {
+            cost++;
+         }
+      }
+
+      /* Any move we can coalesce, we should */
+      if (I->op == JAY_OPCODE_MOV)
+         cost += !tied;
+
+      /* If there are stricter alignment requirements later, model the cost of
+       * inserting copies for that.
+       */
+      if (affinity.align &&
+          (i < affinity.align_offs ||
+           !util_is_aligned(i - affinity.align_offs, affinity.align)))
+         cost += size;
+
+      if (affinity.repr == jay_channel(var, 0)) {
+         /* If we are the collect representative but the final collect won't
+          * actually be usable, the whole vector will need to be copied.
+          */
+         if (i < affinity.offset || !util_is_aligned(i - affinity.offset, 4)) {
+            cost += affinity.nr;
+         }
+      } else if (affinity.repr) {
+         /* If we are used for a collect but not in the right place, we will
+          * similarly insert copies.
+          */
+         if (ra->reg_for_index[affinity.repr] != NO_REG &&
+             r_reg(ra->reg_for_index[affinity.repr]) != r - affinity.offset) {
+
+            cost++;
+         }
+      }
+
+      for (unsigned c = 0; c < size; ++c) {
+         unsigned j = r + c;
+
+         /* If the register is unavailable, account for the cost of shuffling */
+         if (!BITSET_TEST(ra->available_regs[file], j) && !tied) {
+            bool live_out = u_sparse_bitset_test(&ra->block->live_out,
+                                                 ra->index_for_reg[file][j]);
+            cost += 1 + live_out;
+         }
+
+         /* Model the cost of shuffling for phis */
+         struct phi_web_node *phi_web =
+            &ra->phi_web[phi_web_find(ra->phi_web, jay_channel(var, c))];
+         if (phi_web->reg != NO_REG && r_reg(phi_web->reg) != j) {
+            cost += 2;
+         }
+
+         /* Choosing this register will pin it, leaving it unavailable to later
+          * smaller sources which will need a move.
+          */
+         cost += BITSET_TEST(ra->sources[file], j);
+      }
+
+      if (cost < *best_cost) {
+         *best_cost = cost;
+         *best_reg = r;
+
+         /* If we find something with 0 cost, we are guaranteed to pick this
+          * register, so terminate early. This speeds up the search.
+          */
+         if (cost == 0) {
+            return;
+         }
+      }
+   }
 }
 
 static unsigned
@@ -722,40 +754,21 @@ pick_regs(jay_ra_state *ra,
           enum jay_stride max_stride,
           jay_inst *I,
           jay_def var,
-          jay_def *last_killed,
           bool is_src)
 {
-   struct jay_partition *partition = &ra->bld.shader->partition;
-   unsigned first = 0, end = ra->num_regs[file];
-   bool must_tie = I->op == JAY_OPCODE_LANE_ID_EXPAND;
-   must_tie &= !is_src;
-
-   /* Cross-lane access cannot be SIMD split if the source/destination registers
-    * overlap, but as long as we don't tie those destinations, we're ok.
-    */
-   bool may_tie = !jay_is_shuffle_like(I);
-
-   /* Ensure we do not cross partitions */
-   if (file == UGPR && size > 16) {
-      first = partition->large_ugpr_block.start;
-      end = partition->large_ugpr_block.start + partition->large_ugpr_block.len;
-   }
-
-   /* Sources used by end-of-thread sends must be at the end of the file */
-   if (I->op == JAY_OPCODE_SEND && jay_send_eot(I)) {
-      first = ra->eot_offs;
-   }
+   struct jay_partition *partition = &ra->b.shader->partition;
+   bool eot = jay_is_early_eot_send(ra->b.shader, I);
 
    /* If possible, keep sources in place to avoid shuffles. */
    if (is_src && jay_channel(var, 0) != 0) {
       unsigned cur = r_reg(ra->reg_for_index[jay_channel(var, 0)]);
-      enum jay_stride stride = jay_gpr_to_stride(partition, cur);
+      struct jay_register_block block = jay_lookup_block(partition, cur, file);
 
       if (!BITSET_TEST_COUNT(ra->pinned[file], cur, size) &&
-          util_is_aligned(cur, alignment) &&
-          cur >= first &&
-          cur + size <= end &&
-          (file != GPR || (min_stride <= stride && stride <= max_stride))) {
+          util_is_aligned(cur - block.start_gpr, alignment) &&
+          is_block_compatible(block, file, min_stride, max_stride, eot,
+                              false) &&
+          cur + size <= (block.start_gpr + block.len_gpr)) {
          return cur;
       }
    }
@@ -766,117 +779,79 @@ pick_regs(jay_ra_state *ra,
       ra->phi_web[phi_web_find(ra->phi_web, jay_channel(var, 0))].affinity;
 
    assert(alignment >= size && "alignment must be a multiple of size");
-   unsigned nr = DIV_ROUND_UP((end + 1 - size - first), alignment);
-   unsigned roundrobin = (ra->roundrobin[file]) % nr;
-   unsigned rr_al = roundrobin * alignment, nr_al = nr * alignment;
-   ra->roundrobin[file] += size;
 
-   for (unsigned i = rr_al; i < rr_al + nr_al; i += alignment) {
-      /* We select registers roundrobin. This has several benefits:
-       *
-       * 1. Easier coalescing since we are less likely statistically to allocate
-       *    a register that a future instruction has an affinity.
-       *
-       * 2. More freedom for post-RA scheduling thanks to fewer dependencies.
-       *
-       * 3. Less stalling due to SWSB annotations from register reuse.
-       */
-      unsigned r = first + (i >= nr_al ? (i - nr_al) : i);
-      assert(r >= first && r + size <= end);
+   /* We select registers roundrobin. This has several benefits:
+    *
+    * 1. Easier coalescing since we are less likely statistically to allocate
+    *    a register that a future instruction has an affinity.
+    *
+    * 2. More freedom for post-RA scheduling thanks to fewer dependencies.
+    *
+    * 3. Less stalling due to SWSB annotations from register reuse.
+    */
+   enum jay_stride stride = file == GPR ? min_stride : 0;
+   struct jay_roundrobin *rr = &ra->roundrobin[file][stride];
+   unsigned nr_blocks = partition->nr_blocks[file];
 
-      unsigned cost = 0;
-      bool tied = last_killed && last_killed->reg == r;
-      enum jay_stride stride =
-         file == GPR ? jay_gpr_to_stride(partition, r) : min_stride;
-
-      if ((tied ? !may_tie :
-                  (must_tie || BITSET_TEST_COUNT(ra->pinned[file], r, size))) ||
-          !(min_stride <= stride && stride <= max_stride))
-         continue;
-
-      /* Assigning a stride that is too big may result in SIMDness splitting.
-       * Model that cost so we prefer packed registers.
-       */
-      cost += stride - min_stride;
-
-      /* If we are used for end-of-thread and it is not in the appropriate
-       * register, we will need to insert 1 copy per channel at the end.
-       */
-      if (affinity.eot && r < ra->eot_offs)
-         cost += size;
-
-      /* If there are stricter alignment requirements later, model the cost of
-       * inserting copies for that.
-       */
-      if (affinity.align &&
-          !util_is_aligned(r - affinity.align_offs, affinity.align))
-         cost += size;
-
-      if (affinity.repr == jay_channel(var, 0)) {
-         /* If we are the collect representative but the final collect won't
-          * actually be usable, the whole vector will need to be copied.
-          */
-         if (!util_is_aligned(r - affinity.offset, 8) ||
-             (affinity.eot && r - affinity.offset < ra->eot_offs)) {
-            cost += 8;
-         }
-      } else if (affinity.repr) {
-         /* If we are used for a collect but not in the right place, we will
-          * similarly insert copies.
-          */
-         if (ra->reg_for_index[affinity.repr] != NO_REG &&
-             r_reg(ra->reg_for_index[affinity.repr]) != r - affinity.offset) {
-
-            cost += size;
-         }
-      }
-
-      for (unsigned c = 0; c < size; ++c) {
-         unsigned i = r + c;
-
-         /* If the register is unavailable, account for the cost of shuffling */
-         if (!BITSET_TEST(ra->available_regs[file], i) && !tied) {
-            cost++;
-
-            /* ..plus the cost of shuffling back. */
-            if (u_sparse_bitset_test(&ra->block->live_out,
-                                     ra->index_for_reg[file][i]))
-               cost++;
-         }
-
-         /* Model the cost of shuffling for phis */
-         if (c < jay_num_values(var)) {
-            struct phi_web_node *phi_web =
-               &ra->phi_web[phi_web_find(ra->phi_web, jay_channel(var, c))];
-            if (phi_web->reg != NO_REG && r_reg(phi_web->reg) != i) {
-               cost += 2;
-            }
-         }
-
-         /* Choosing this register will pin it, leaving it unavailable to later
-          * smaller sources which will need to be shuffled. Account for those
-          * moves.
-          *
-          * TODO: Faster algorithm.
-          */
-         jay_foreach_src_index(I, s, c, index) {
-            if (jay_num_values(I->src[s]) < size &&
-                ra->reg_for_index[index] == make_reg(file, i)) {
-               cost++;
-            }
-         }
-      }
-
-      if (cost < best_cost) {
-         best_cost = cost;
-         best_reg = r;
-
-         /* If we find something with 0 cost, we are guaranteed to pick this
-          * register, so terminate early. This speeds up the search.
-          */
-         if (cost == 0) {
+   /* Make sure we use the optimal stride for roundrobin RA */
+   if (file == GPR) {
+      for (unsigned i = 0; i < nr_blocks; ++i) {
+         if (partition->blocks[GPR][rr->block].stride == stride) {
             break;
+         } else {
+            rr->block = (rr->block + 1 == nr_blocks) ? 0 : rr->block + 1;
          }
+      }
+   }
+
+   unsigned last_b_ = rr->block + nr_blocks;
+   for (unsigned b_ = rr->block; b_ <= last_b_ && best_cost > 0; ++b_) {
+      unsigned b = b_ >= nr_blocks ? (b_ - nr_blocks) : b_;
+      assert(b < nr_blocks);
+
+      struct jay_register_block block = partition->blocks[file][b];
+
+      if (is_block_compatible(block, file, min_stride, max_stride, eot,
+                              false)) {
+         unsigned r = b_ == rr->block ? rr->gpr : 0;
+
+         if (affinity.repr == jay_channel(var, 0) && b_ == rr->block) {
+            r += affinity.offset;
+         }
+
+         /* Assigning a stride that is too big may result in SIMDness splitting.
+          * Model that cost so we prefer packed registers.
+          */
+         unsigned block_cost = file == GPR ? block.stride - min_stride : 0;
+
+         /* If we are used for end-of-thread and it is not in the appropriate
+          * register, we will need to insert 1 copy per channel at the end.
+          */
+         if (affinity.eot && block.type != JAY_BLOCK_EOT) {
+            block_cost += size;
+         }
+
+         /* Consider only blocks that could be picked */
+         if (best_cost > block_cost) {
+            pick_regs_from_block(ra, file, size, alignment, I, var, is_src,
+                                 block, block_cost, affinity, &best_cost,
+                                 &best_reg, r);
+         }
+      }
+   }
+
+   /* If we chose a register roundrobin (the constant 16 here is determined
+    * experimentally), advance the roundrobin. As a heuristic, advance by a
+    * whole vector if we are the representative. This leaves us registers for
+    * the rest of the vector.
+    */
+   if (rr->gpr <= best_reg && best_reg <= rr->gpr + 16) {
+      bool is_repr = affinity.repr == jay_channel(var, 0);
+      rr->gpr = best_reg + MAX2(size, is_repr ? affinity.nr : 0);
+
+      if (rr->gpr >= partition->blocks[file][rr->block].len_gpr) {
+         rr->block = ((rr->block + 1) == nr_blocks) ? 0 : (rr->block + 1);
+         rr->gpr = 0;
       }
    }
 
@@ -885,18 +860,11 @@ pick_regs(jay_ra_state *ra,
    return best_reg;
 }
 
-struct window {
-   jay_reg base;
-   uint16_t length;
-};
-static_assert(sizeof(struct window) == 4, "packed");
-
 static void
 assign_regs_for_inst(jay_ra_state *ra, jay_inst *I)
 {
-   jay_shader *shader = ra->bld.shader;
+   jay_shader *shader = ra->b.shader;
    jay_def *vars[JAY_MAX_OPERANDS];
-   jay_def *last_killed[JAY_NUM_RA_FILES] = { 0 };
    jay_def saved_srcs[JAY_MAX_SRCS];
    struct jay_parallel_copy copies[JAY_MAX_DEF_LENGTH * JAY_MAX_OPERANDS];
    uint32_t eviction_indices[JAY_MAX_DEF_LENGTH * JAY_MAX_OPERANDS];
@@ -935,7 +903,7 @@ assign_regs_for_inst(jay_ra_state *ra, jay_inst *I)
           */
          jay_foreach_index(I->src[s], _, index) {
             jay_reg reg = current_reg(ra, index);
-            assert(reg != NO_REG);
+            BITSET_SET(ra->sources[r_file(reg)], r_reg(reg));
 
             eviction_indices[nr_copies] = index;
             copies[nr_copies++] = (struct jay_parallel_copy) { .src = reg };
@@ -946,6 +914,10 @@ assign_regs_for_inst(jay_ra_state *ra, jay_inst *I)
 
    if (!jay_is_null(I->dst) && I->dst.file < JAY_NUM_RA_FILES) {
       vars[nr_vars++] = &I->dst;
+   }
+
+   if (!jay_is_null(I->cond_flag) && I->cond_flag.file < JAY_NUM_RA_FILES) {
+      vars[nr_vars++] = &I->cond_flag;
    }
 
    /* Sort variables by size in descending order. We use insertion sort
@@ -973,13 +945,8 @@ assign_regs_for_inst(jay_ra_state *ra, jay_inst *I)
       bool killed = false;
       jay_def var = *(vars[i]);
       unsigned size = jay_num_values(var);
-      if (is_src) {
-         assert(util_is_power_of_two_nonzero(size) && "NPOT sources lowered");
-      } else {
-         size = util_next_power_of_two(size);
-      }
-
-      unsigned alignment = I->op == JAY_OPCODE_EXPAND_QUAD ? 1 : size;
+      unsigned alignment =
+         I->op == JAY_OPCODE_EXPAND_QUAD ? 1 : util_next_power_of_two(size);
       enum jay_file file = var.file;
       enum jay_stride min_stride = JAY_STRIDE_2, max_stride = JAY_STRIDE_8;
 
@@ -1011,6 +978,10 @@ assign_regs_for_inst(jay_ra_state *ra, jay_inst *I)
                break;
             }
          }
+
+         jay_foreach_index(var, c, index) {
+            BITSET_CLEAR(ra->sources[file], r_reg(ra->reg_for_index[index]));
+         }
       } else {
          alignment = MAX2(alignment, jay_dst_alignment(shader, I));
          min_stride = jay_dst_stride_minmax(I, false);
@@ -1018,21 +989,30 @@ assign_regs_for_inst(jay_ra_state *ra, jay_inst *I)
       }
 
       /* Choose registers satisfying the constraints and minimizing shuffles */
-      unsigned base =
-         pick_regs(ra, file, size, alignment, min_stride, max_stride, I, var,
-                   is_src ? NULL : last_killed[file], is_src);
+      unsigned base = pick_regs(ra, file, size, alignment, min_stride,
+                                max_stride, I, var, is_src);
       jay_reg reg = make_reg(file, base);
 
       /* If we decided to tie, process that */
-      if (!is_src && last_killed[file] && last_killed[file]->reg == base) {
+      if (!is_src && BITSET_TEST(ra->killed[file], base)) {
+         unsigned found = ~0;
+         for (unsigned j = 0; j < i; ++j) {
+            if (vars[j]->file == file && vars[j]->reg == base) {
+               found = j;
+               break;
+            }
+         }
+
+         assert(found < i && vars[found] >= I->src && "killed source");
+         unsigned lu_offs =
+            jay_source_last_use_bit(saved_srcs, vars[found] - I->src);
+
          /* Fully killed source so we can zero a contiguous range. Note we need
           * to use the unpadded size to avoid leaking a register for vec3
           * destinations tied to vec4 sources.
           */
-         unsigned offs =
-            jay_source_last_use_bit(saved_srcs, last_killed[file] - I->src);
-         BITSET_CLEAR_COUNT(I->last_use, offs, jay_num_values(var));
-         last_killed[file] = NULL;
+         BITSET_CLEAR_COUNT(I->last_use, lu_offs, jay_num_values(var));
+         BITSET_CLEAR(ra->killed[file], base);
       } else {
          /* Otherwise pin our choice */
          BITSET_SET_COUNT(ra->pinned[file], base, size);
@@ -1057,7 +1037,7 @@ assign_regs_for_inst(jay_ra_state *ra, jay_inst *I)
       }
 
       if (killed) {
-         last_killed[file] = vars[i];
+         BITSET_SET(ra->killed[file], vars[i]->reg);
       }
    }
 
@@ -1081,14 +1061,14 @@ assign_regs_for_inst(jay_ra_state *ra, jay_inst *I)
    }
 
    /* Shuffle everything */
-   ra->bld.cursor = jay_before_inst(I);
-   jay_emit_parallel_copies(&ra->bld, copies, nr_copies, temp_regs);
+   ra->b.cursor = jay_before_inst(I);
+   jay_emit_parallel_copies(&ra->b, copies, nr_copies, temp_regs);
 
    /* Reset data structures */
    for (unsigned i = 0; i < nr_vars; ++i) {
       jay_def var = *(vars[i]);
-      BITSET_CLEAR_COUNT(ra->pinned[var.file], var.reg,
-                         util_next_power_of_two(jay_num_values(var)));
+      BITSET_CLEAR_COUNT(ra->pinned[var.file], var.reg, jay_num_values(var));
+      BITSET_CLEAR_COUNT(ra->killed[var.file], var.reg, jay_num_values(var));
    }
 
    /* Sources selected for early-kill have had their last_use fields cleared.
@@ -1097,7 +1077,9 @@ assign_regs_for_inst(jay_ra_state *ra, jay_inst *I)
    unsigned kill_idx = 0;
    jay_foreach_ssa_src(I, s) {
       jay_foreach_index(saved_srcs[s], c, idx) {
-         if (is_ra_src(I->src[s]) && BITSET_TEST(I->last_use, kill_idx)) {
+         if (I->src[s].file < JAY_NUM_RA_FILES &&
+             BITSET_TEST(I->last_use, kill_idx)) {
+
             release_reg(ra, make_reg(I->src[s].file, I->src[s].reg + c));
          }
 
@@ -1152,15 +1134,15 @@ local_ra(jay_ra_state *ra, jay_block *block)
       }
 
       /* Release registers for destinations that are immediately killed */
-      jay_foreach_index(I->dst, _, index) {
-         if (BITSET_TEST(ra->bld.func->dead_defs, index)) {
+      jay_foreach_dst_index(I, _, index) {
+         if (BITSET_TEST(ra->b.func->dead_defs, index)) {
             release_reg(ra, current_reg(ra, index));
          }
       }
 
       if (jay_debug & JAY_DBG_PRINTDEMAND) {
-         printf("(RA) [G:%u\tU:%u] ", register_demand(ra, GPR),
-                register_demand(ra, UGPR));
+         printf("(RA) [G:%u\tU:%u\tF:%u] ", register_demand(ra, GPR),
+                register_demand(ra, UGPR), register_demand(ra, FLAG));
          jay_print_inst(stdout, I);
       }
    }
@@ -1216,11 +1198,11 @@ local_ra(jay_ra_state *ra, jay_block *block)
    block->temps_out = find_temp_regs(ra);
 
    /* Handle the end of the block */
-   ra->bld.cursor = jay_before_block(block);
+   ra->b.cursor = jay_before_block(block);
 
    jay_foreach_inst_in_block_rev(block, I) {
       if (I->op != JAY_OPCODE_PHI_SRC && !jay_op_is_control_flow(I->op)) {
-         ra->bld.cursor = jay_after_inst(I);
+         ra->b.cursor = jay_after_inst(I);
          break;
       }
 
@@ -1233,7 +1215,7 @@ local_ra(jay_ra_state *ra, jay_block *block)
    const unsigned num_pcopies =
       util_dynarray_num_elements(&copies, struct jay_parallel_copy);
 
-   jay_emit_parallel_copies(&ra->bld, copies.data, num_pcopies, temp_regs);
+   jay_emit_parallel_copies(&ra->b, copies.data, num_pcopies, temp_regs);
    util_dynarray_fini(&copies);
 }
 
@@ -1241,6 +1223,12 @@ local_ra(jay_ra_state *ra, jay_block *block)
  * Record all phi webs. First initialize the union-find data structure
  * with all SSA defs in their own singletons, then union together anything
  * related by a phi. The resulting union-find structure will be the webs.
+ *
+ * As a heuristic, we skip the union if the phi source interferes with the phi
+ * destination (equivalently: the phi source is live-out of the source block).
+ * These phis could never be coalesced, so the union can only hurt (and it does
+ * in practice in complex web scenarios). Note this case is only possible
+ * because we do not lower the input program to conventional SSA (CSSA) form.
  */
 static void
 construct_phi_webs(struct phi_web_node *web, jay_function *f)
@@ -1251,7 +1239,9 @@ construct_phi_webs(struct phi_web_node *web, jay_function *f)
 
    jay_foreach_block(f, block) {
       jay_foreach_phi_src_in_block(block, phi) {
-         phi_web_union(web, jay_index(phi->src[0]), jay_phi_src_index(phi));
+         if (!u_sparse_bitset_test(&block->live_out, jay_index(phi->src[0]))) {
+            phi_web_union(web, jay_index(phi->src[0]), jay_phi_src_index(phi));
+         }
       }
    }
 }
@@ -1259,7 +1249,7 @@ construct_phi_webs(struct phi_web_node *web, jay_function *f)
 static void
 insert_parallel_copies_for_phis(jay_function *f)
 {
-   jay_reg *phi_dsts = calloc(f->ssa_alloc, sizeof(jay_reg));
+   jay_reg *phi_dsts = malloc(f->ssa_alloc * sizeof(jay_reg));
    struct util_dynarray copies = UTIL_DYNARRAY_INIT;
    memset(phi_dsts, 0xFF, sizeof(jay_reg) * f->ssa_alloc);
 
@@ -1290,276 +1280,17 @@ insert_parallel_copies_for_phis(jay_function *f)
    free(phi_dsts);
 }
 
-static struct jay_register_block
-block_gpr_to_grf(struct jay_partition *p, enum jay_file file, unsigned block)
-{
-   assert(file == GPR || file == UGPR);
-   assert(((p->blocks[file][block].start * 16) % p->units_x16[file]) == 0);
-   assert(((p->blocks[file][block].len * 16) % p->units_x16[file]) == 0);
-
-   return (struct jay_register_block) {
-      .start = (p->blocks[file][block].start * 16) / p->units_x16[file],
-      .len = (p->blocks[file][block].len * 16) / p->units_x16[file],
-   };
-}
-
 static void
-print_partition(struct jay_partition *p)
+map_gpr_to_acc(jay_shader *shader, jay_def *x)
 {
-   for (unsigned f = 0; f < JAY_NUM_GRF_FILES; ++f) {
-      for (unsigned b = 0; b < JAY_PARTITION_BLOCKS; ++b) {
-         struct jay_register_block B = block_gpr_to_grf(p, f, b);
-         const char *file = f ? "UGPR" : "GPR";
+   if (x->file == GPR) {
+      struct jay_register_block B =
+         jay_lookup_block(&shader->partition, x->reg, GPR);
 
-         if (B.len > 1) {
-            fprintf(stderr, "%s: %u-%u\n", file, B.start, B.start + B.len - 1);
-         } else if (B.len == 1) {
-            fprintf(stderr, "%s: %u\n", file, B.start);
-         }
+      if (B.type == JAY_BLOCK_ACCUM) {
+         x->file = ACCUM;
+         x->reg = (2 + (x->reg - B.start_gpr)) * 2;
       }
-   }
-
-   fprintf(stderr, "\n");
-}
-
-/*
- * Verify that a register partition is a bijective mapping of the GRF file.
- */
-static void
-validate_partition(struct jay_partition *p,
-                   unsigned stride4_header_size,
-                   unsigned nonuniform_gprs)
-{
-   BITSET_DECLARE(regs, JAY_NUM_PHYS_GRF) = { 0 };
-
-   for (unsigned f = 0; f < JAY_NUM_GRF_FILES; ++f) {
-      for (unsigned b = 0; b < JAY_PARTITION_BLOCKS; ++b) {
-         struct jay_register_block B = block_gpr_to_grf(p, f, b);
-         if (B.len) {
-            assert(B.start + B.len <= JAY_NUM_PHYS_GRF && "GRF file size");
-            assert(!BITSET_TEST_COUNT(regs, B.start, B.len) && "uniqueness");
-
-            BITSET_SET_COUNT(regs, B.start, B.len);
-         }
-      }
-   }
-
-   for (unsigned i = 0; i < JAY_NUM_PHYS_GRF; ++i) {
-      assert(BITSET_TEST(regs, i) && "all GRFs mapped");
-   }
-
-   assert(p->large_ugpr_block.len && "partition must have a large UGPR block");
-   assert(p->base2 >= p->base8 && p->base_eot >= p->base2 && "monotonic");
-   assert(p->base8 >= stride4_header_size && "header is big enough");
-   assert(p->base_eot + p->units_x16[GPR] <= nonuniform_gprs && "EOT fits");
-   assert(util_is_aligned(p->base8, 8) && "so vectors don't cross");
-   assert(util_is_aligned(p->base2, 8) && "so vectors don't cross");
-   assert(util_is_aligned(p->base_eot, 8) && "so vectors don't cross");
-}
-
-static void
-build_partition(jay_shader *shader, unsigned *blocks, unsigned n)
-{
-   unsigned base = 0;
-   unsigned ugpr_base = 0;
-   struct jay_partition *p = &shader->partition;
-
-   *p = (struct jay_partition) {
-      .units_x16[UGPR] = jay_ugpr_per_grf(shader) * 16,
-      .units_x16[GPR] = 16 / jay_grf_per_gpr(shader),
-   };
-
-   for (unsigned i = 0; i < n; ++i) {
-      enum jay_file file = (i & 1) ? GPR : UGPR;
-      unsigned file_i = i >> 1;
-
-      p->blocks[file][file_i].start = (base * p->units_x16[file]) / 16;
-      p->blocks[file][file_i].len = (blocks[i] * p->units_x16[file]) / 16;
-
-      if (file == UGPR && blocks[i] >= 8) {
-         p->large_ugpr_block = (struct jay_register_block) {
-            .start = (ugpr_base * p->units_x16[file]) / 16,
-            .len = p->blocks[file][file_i].len,
-         };
-      }
-
-      base += blocks[i];
-      if (file == UGPR) {
-         ugpr_base += blocks[i];
-      }
-
-      /* GPR partition blocks must be vector size aligned to avoid crossing */
-      if (file == GPR && i != (n - 1)) {
-         unsigned max_vec = 8;
-         assert(util_is_aligned(blocks[i], max_vec * jay_grf_per_gpr(shader)));
-      }
-   }
-}
-
-/*
- * Partition the register file for the entire shader. All functions must
- * share the same partition for correctness with non-uniform function calls.
- * For unlinked library functions, we must use the ABI partition (TODO).
- */
-void
-jay_partition_grf(jay_shader *shader)
-{
-   /* Calculate the maximum register demand across all functions in the shader.
-    * We will use this to choose a good partition.
-    */
-   struct jay_partition *p = &shader->partition;
-   unsigned demand[JAY_NUM_GRF_FILES] = { 0 };
-
-   jay_foreach_function(shader, f) {
-      jay_compute_liveness(f);
-      jay_calculate_register_demands(f);
-
-      demand[GPR] = MAX2(demand[GPR], f->demand[GPR]);
-      demand[UGPR] = MAX2(demand[UGPR], f->demand[UGPR]);
-   }
-
-   /* We must have enough register file space for the register payload, plus the
-    * reserved UGPRs in the case we spill. That UGPR interferes with everything
-    * we preload so it needs to be reserved specially here for the worst case.
-    */
-   jay_foreach_preload(jay_shader_get_entrypoint(shader), I) {
-      unsigned end = jay_preload_reg(I) + jay_num_values(I->dst);
-      unsigned extra = I->dst.file == UGPR ? shader->dispatch_width + 1 : 0;
-      assert(I->dst.file < JAY_NUM_GRF_FILES);
-      demand[I->dst.file] = MAX2(demand[I->dst.file], end + extra);
-   }
-
-   /* Determine a good GPR/UGPR split informed by the demand calculation */
-   unsigned ugpr_per_grf = jay_ugpr_per_grf(shader);
-   unsigned uniform_grfs = DIV_ROUND_UP(demand[UGPR], ugpr_per_grf);
-
-   /* We must have enough for SIMD1 images (TODO: Check if this actually
-    * applies. Or if we could eliminate this with smarter partitioning even.)
-    */
-   unsigned min_ugprs = 16;
-   min_ugprs = MAX2(min_ugprs, 256);
-
-   unsigned grf_block_alignment = 8 * jay_grf_per_gpr(shader); /* max_vec */
-
-   /* TODO: We could partition more cleverly */
-   uniform_grfs = CLAMP(align(uniform_grfs, grf_block_alignment),
-                        DIV_ROUND_UP(min_ugprs, ugpr_per_grf),
-                        128 - (32 * jay_grf_per_gpr(shader)));
-   unsigned nonuniform_grfs = JAY_NUM_PHYS_GRF - uniform_grfs;
-
-   /* Check the split */
-   assert((uniform_grfs * ugpr_per_grf) >= min_ugprs);
-   assert(nonuniform_grfs >= 32 * jay_grf_per_gpr(shader));
-   assert((uniform_grfs + nonuniform_grfs) == JAY_NUM_PHYS_GRF);
-
-   /* Partition GRFs between GPR & UGPR */
-   unsigned dispatch_grf = 0;
-   unsigned stride4_header_size = 0;
-
-   if (shader->stage == MESA_SHADER_VERTEX) {
-      unsigned attrib_grfs = shader->prog_data->vue.urb_read_length * 8;
-      unsigned blocks[] = {
-         1,                                         /* UGPR: g0 */
-         8,                                         /* GPR: URB output handle */
-         shader->push_grfs,                         /* UGPR: Push constants */
-         attrib_grfs,                               /* GPR: Vertex inputs */
-         uniform_grfs - (blocks[0] + blocks[2]),    /* UGPR: * */
-         nonuniform_grfs - (blocks[1] + blocks[3]), /* GPR: * and EOT */
-      };
-
-      build_partition(shader, blocks, ARRAY_SIZE(blocks));
-      dispatch_grf = blocks[0] + blocks[1];
-      stride4_header_size = blocks[1] + blocks[3];
-   } else if (shader->stage == MESA_SHADER_FRAGMENT) {
-      unsigned len0 = jay_grf_per_gpr(shader);
-      unsigned blocks[] = {
-         len0,                /* UGPR: g0 (and maybe g1) */
-         len0 * 8,            /* GPR: Barycentrics */
-         uniform_grfs - len0, /* UGPR: Dispatch (eg push constants) & general */
-         nonuniform_grfs - (len0 * 8), /* GPR: General & end-of-thread */
-      };
-      build_partition(shader, blocks, ARRAY_SIZE(blocks));
-      dispatch_grf = blocks[0] + blocks[1];
-      stride4_header_size = blocks[1];
-   } else {
-      unsigned blocks[] = { uniform_grfs - 4, nonuniform_grfs, 4 };
-      build_partition(shader, blocks, ARRAY_SIZE(blocks));
-   }
-
-   /* TODO: Make the stride partition smarter */
-   unsigned nonuniform_gprs = nonuniform_grfs / jay_grf_per_gpr(shader);
-   unsigned eot_gprs = 16 / jay_grf_per_gpr(shader);
-   p->base8 = ROUND_DOWN_TO(nonuniform_gprs - (16 + eot_gprs), 8) + 0;
-   p->base2 = 8 + p->base8;
-   p->base_eot = 8 + p->base2;
-
-   // print_partition(p);
-   validate_partition(p, stride4_header_size, nonuniform_gprs);
-
-   if (shader->stage == MESA_SHADER_FRAGMENT && shader->dispatch_width == 32) {
-      shader->prog_data->fs.dispatch_grf_start_reg_32 = dispatch_grf;
-   } else if (shader->stage == MESA_SHADER_FRAGMENT &&
-              shader->dispatch_width == 16) {
-      shader->prog_data->fs.dispatch_grf_start_reg_16 = dispatch_grf;
-   } else {
-      shader->prog_data->base.dispatch_grf_start_reg = dispatch_grf;
-   }
-
-   /* By construction of our partition, the entire GRF is used. */
-   shader->prog_data->base.grf_used = JAY_NUM_PHYS_GRF;
-
-   /* Set the targets for the virtual register file accordingly */
-   for (unsigned f = 0; f < JAY_NUM_GRF_FILES; ++f) {
-      for (unsigned b = 0; b < JAY_PARTITION_BLOCKS; ++b) {
-         shader->num_regs[f] += p->blocks[f][b].len;
-      }
-   }
-
-   /* TODO: These are arbitrary. Need to rework somehow, we have options. */
-   shader->num_regs[MEM] = 512;
-   shader->num_regs[UMEM] = 2048;
-}
-
-static void
-spill_file(jay_function *f, enum jay_file file, bool *spilled)
-{
-   unsigned limit = f->shader->num_regs[file];
-
-   /* If testing spilling, set limit tightly. */
-   if ((jay_debug & JAY_DBG_SPILL) &&
-       file == GPR &&
-       f->shader->stage != MESA_SHADER_VERTEX) {
-      limit = 13;
-   }
-
-   /* Ensures we don't XOR swap, XXX: TODO: FIXME */
-   limit--;
-
-   if (f->demand[file] > limit) {
-      /* In the worst case, we
-       * require 2 temporary registers to lower a memory-memory swap produced by
-       * parallel copy lowering, so adjust the limit to be num_regs - 2.
-       */
-      limit--;
-
-      /* If we spill, we need to reserve UGPRs for spilling */
-      if (!(*spilled)) {
-         unsigned reservation = f->shader->dispatch_width + 1;
-         f->shader->num_regs[UGPR] -= reservation;
-         f->shader->partition.large_ugpr_block.len -= reservation;
-      }
-
-      jay_spill(f, file, limit);
-      jay_validate(f->shader, "spilling");
-      jay_compute_liveness(f);
-      jay_calculate_register_demands(f);
-
-      if (f->demand[file] > limit) {
-         fprintf(stderr, "limit %u but demand %u\n", limit, f->demand[file]);
-         UNREACHABLE("spiller bug");
-      }
-
-      *spilled = true;
    }
 }
 
@@ -1567,30 +1298,10 @@ static void
 jay_register_allocate_function(jay_function *f)
 {
    jay_shader *shader = f->shader;
-   jay_ra_state ra = { .bld.shader = shader, .bld.func = f };
-
-   /* Spill as needed to fit within the limits. We spill GPR before UGPR since
-    * spilling GPRs requires reserving a UGPR.
-    */
-   bool spilled = false;
-   spill_file(f, GPR, &spilled);
-   spill_file(f, UGPR, &spilled);
-
+   jay_ra_state ra = { .b.shader = shader, .b.func = f };
    typed_memcpy(ra.num_regs, shader->num_regs, JAY_NUM_RA_FILES);
 
-   /* The end of the register file is allowed for end-of-thread messages.
-    * Calculate the offset in GPRs. Compute shaders have this as UGPRs while
-    * fragment shaders have this as GPRs.
-    */
-   if (mesa_shader_stage_is_compute(shader->stage)) {
-      ra.eot_offs = ROUND_DOWN_TO(ra.num_regs[UGPR], jay_ugpr_per_grf(shader)) -
-                    jay_ugpr_per_grf(shader);
-   } else {
-      ra.eot_offs = ra.num_regs[GPR] - (16 / jay_grf_per_gpr(shader));
-   }
-
    linear_ctx *lin_ctx = linear_context(shader);
-
    ra.reg_for_index = linear_alloc_array(lin_ctx, jay_reg, f->ssa_alloc);
    ra.global_reg_for_index = linear_alloc_array(lin_ctx, jay_reg, f->ssa_alloc);
    ra.affinities = linear_zalloc_array(lin_ctx, struct affinity, f->ssa_alloc);
@@ -1603,9 +1314,11 @@ jay_register_allocate_function(jay_function *f)
       ra.index_for_reg[file] = linear_zalloc_array(lin_ctx, uint32_t, num_regs);
       ra.available_regs[file] = BITSET_LINEAR_ZALLOC(lin_ctx, num_regs);
       ra.pinned[file] = BITSET_LINEAR_ZALLOC(lin_ctx, num_regs);
+      ra.killed[file] = BITSET_LINEAR_ZALLOC(lin_ctx, num_regs);
+      ra.sources[file] = BITSET_LINEAR_ZALLOC(lin_ctx, num_regs);
    }
 
-   ra.phi_web = linear_zalloc_array(lin_ctx, struct phi_web_node, f->ssa_alloc);
+   ra.phi_web = linear_alloc_array(lin_ctx, struct phi_web_node, f->ssa_alloc);
 
    /* Construct the phi equivalence classes using the union-find data
     * structure. This associates all SSA values related to the same phi,
@@ -1613,34 +1326,45 @@ jay_register_allocate_function(jay_function *f)
     */
    construct_phi_webs(ra.phi_web, f);
 
+   /* We track the order of instructions in the program to inform coalescing */
+   uint32_t *order = linear_alloc_array(lin_ctx, uint32_t, f->ssa_alloc);
+   uint32_t order_counter = 0;
+
    jay_foreach_inst_in_func(f, block, I) {
+      jay_foreach_dst_index(I, _, index) {
+         order[index] = order_counter++;
+      }
+
       jay_foreach_src_index(I, s, c, index) {
          /* We check repr==0 to try to coalesce with the first vector use, as
           * the closest to the definition. This heuristic reduces shuffling.
           */
          if (jay_num_values(I->src[s]) > 1 && !ra.affinities[index].repr) {
-            uint32_t repr = UINT_MAX, repr_c = 0;
+            uint32_t repr = UINT_MAX, repr_c = 0, best_order = UINT_MAX;
 
-            /* Pick the representative with the smallest index, as it most
-             * likely dominates the other components.
-             */
-            jay_foreach_comp(I->src[s], j) {
-               if (jay_channel(I->src[s], j) < repr) {
-                  repr = jay_channel(I->src[s], j);
+            /* Pick the earliest representative to maximize freedom */
+            jay_foreach_index(I->src[s], j, index) {
+               if (order[index] < best_order) {
+                  repr = index;
                   repr_c = j;
+                  best_order = order[index];
                }
             }
 
             ra.affinities[index].repr = repr;
             ra.affinities[index].offset = repr == index ? c : c - repr_c;
+            ra.affinities[index].nr = MIN2(jay_num_values(I->src[s]), 15);
          }
 
-         if (I->op == JAY_OPCODE_SEND && jay_send_eot(I)) {
+         if (jay_is_early_eot_send(shader, I)) {
             ra.affinities[index].eot = true;
          }
 
-         if (jay_src_alignment(shader, I, s) >= ra.affinities[index].align) {
-            ra.affinities[index].align = jay_src_alignment(shader, I, s);
+         unsigned al = jay_src_alignment(shader, I, s);
+         al = MAX2(al, util_next_power_of_two(jay_num_values(I->src[s])));
+
+         if (al >= ra.affinities[index].align) {
+            ra.affinities[index].align = al;
             ra.affinities[index].align_offs = c;
          }
 
@@ -1660,12 +1384,16 @@ jay_register_allocate_function(jay_function *f)
 
    insert_parallel_copies_for_phis(f);
 
-   /* Lower spills using the UGPRs we stole above. We need to update num_regs
-    * for correct scoreboarding calculations.
-    */
-   if (spilled) {
+   if (f->demand[MEM]) {
       jay_lower_spill(f);
-      f->shader->num_regs[UGPR] += f->shader->dispatch_width + 1;
+   }
+
+   jay_foreach_inst_in_func(f, block, I) {
+      map_gpr_to_acc(shader, &I->dst);
+
+      jay_foreach_src(I, s) {
+         map_gpr_to_acc(shader, &I->src[s]);
+      }
    }
 }
 

@@ -474,7 +474,7 @@ optimise_nir(nir_shader *nir, unsigned quirks, bool is_blend)
       NIR_PASS(progress, nir, nir_opt_algebraic);
       NIR_PASS(progress, nir, nir_opt_constant_folding);
       NIR_PASS(progress, nir, nir_opt_undef);
-      NIR_PASS(progress, nir, nir_lower_undef_to_zero);
+      NIR_PASS(progress, nir, nir_lower_undef_to_zero, NULL);
 
       NIR_PASS(progress, nir, nir_opt_loop_unroll);
 
@@ -2999,6 +2999,7 @@ midgard_compile_shader_nir(nir_shader *nir,
       nir_log_shaderi(nir);
 
    info->tls_size = nir->scratch_size;
+   info->fau.max = PAN_MAX_PUSH;
 
    nir_foreach_function_with_impl(func, impl, nir) {
       list_inithead(&ctx->blocks);

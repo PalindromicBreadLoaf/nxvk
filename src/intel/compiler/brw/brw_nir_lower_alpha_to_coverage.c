@@ -91,23 +91,16 @@ brw_nir_lower_alpha_to_coverage(nir_shader *shader)
          assert(block->cf_node.parent == &impl->cf_node);
          assert(nir_cf_node_is_last(&block->cf_node));
 
-         /* See store_output in brw_shader::nir_emit_fs_intrinsic */
-         const unsigned store_offset = nir_src_as_uint(intrin->src[1]);
-         const unsigned driver_location = nir_intrinsic_base(intrin) +
-            SET_FIELD(store_offset, BRW_NIR_FRAG_OUTPUT_LOCATION);
+         const nir_io_semantics sem = nir_intrinsic_io_semantics(intrin);
 
-         /* Extract the FRAG_RESULT */
-         const unsigned location =
-            GET_FIELD(driver_location, BRW_NIR_FRAG_OUTPUT_LOCATION);
-
-         if (location == FRAG_RESULT_SAMPLE_MASK) {
+         if (sem.location == FRAG_RESULT_SAMPLE_MASK) {
             assert(sample_mask_write == NULL);
             sample_mask_write = intrin;
             sample_mask_write_first = (color0_write == NULL);
          }
 
-         if (location == FRAG_RESULT_COLOR ||
-             location == FRAG_RESULT_DATA0) {
+         if (sem.location == FRAG_RESULT_COLOR ||
+             sem.location == FRAG_RESULT_DATA0) {
             uint32_t mask = nir_intrinsic_write_mask(intrin) <<
                             nir_intrinsic_component(intrin);
             /* need the w component */
@@ -151,9 +144,8 @@ brw_nir_lower_alpha_to_coverage(nir_shader *shader)
    nir_def *dither_mask = build_dither_mask(&b, color0);
    dither_mask = nir_iand(&b, sample_mask, dither_mask);
 
-   nir_def *fs_config = nir_load_fs_config_intel(&b);
-   nir_def *alpha_to_coverage =
-      nir_test_mask(&b, fs_config, INTEL_FS_CONFIG_ALPHA_TO_COVERAGE);
+   nir_def *alpha_to_coverage = nir_test_fs_config_intel(
+      &b, 1, INTEL_FS_CONFIG_ALPHA_TO_COVERAGE);
    dither_mask = nir_bcsel(&b, alpha_to_coverage,
                            dither_mask, sample_mask_write->src[0].ssa);
 

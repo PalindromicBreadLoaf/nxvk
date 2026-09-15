@@ -3,6 +3,7 @@
  * Copyright (C) 2023 Amazon.com, Inc. or its affiliates.
  * Copyright (C) 2018 Alyssa Rosenzweig
  * Copyright (C) 2020 Collabora Ltd.
+ * Copyright (C) 2026 NXP
  * Copyright © 2017 Intel Corporation
  * SPDX-License-Identifier: MIT
  */
@@ -44,12 +45,14 @@
 #include "pan_util.h"
 #include "pan_desc.h"
 #include "pan_trace.h"
+#include "panfrost_tracepoints.h"
+#include "panfrost_perfetto.h"
 
 /* JOBX() is used to select the job backend helpers to call from generic
  * functions. */
 #if PAN_ARCH <= 9
 #define JOBX(__suffix) GENX(jm_##__suffix)
-#elif PAN_ARCH <= 13
+#elif PAN_ARCH <= 14
 #define JOBX(__suffix) GENX(csf_##__suffix)
 #else
 #error "Unsupported arch"
@@ -146,13 +149,14 @@ panfrost_sampler_compare_func(const struct pipe_sampler_state *cso)
 }
 
 static enum mali_mipmap_mode
-pan_pipe_to_mipmode(enum pipe_tex_mipfilter f)
+pan_pipe_to_mipmode(enum pipe_tex_mipfilter f, bool use_perf_trilinear)
 {
    switch (f) {
    case PIPE_TEX_MIPFILTER_NEAREST:
       return MALI_MIPMAP_MODE_NEAREST;
    case PIPE_TEX_MIPFILTER_LINEAR:
-      return MALI_MIPMAP_MODE_TRILINEAR;
+      return use_perf_trilinear ? MALI_MIPMAP_MODE_PERFORMANCE_TRILINEAR :
+                                  MALI_MIPMAP_MODE_TRILINEAR;
 #if PAN_ARCH >= 6
    case PIPE_TEX_MIPFILTER_NONE:
       return MALI_MIPMAP_MODE_NONE;
@@ -220,7 +224,9 @@ panfrost_create_sampler_state(struct pipe_context *pctx,
       cfg.wrap_mode_t = translate_tex_wrap(cso->wrap_t, using_nearest);
       cfg.wrap_mode_r = translate_tex_wrap(cso->wrap_r, using_nearest);
 
-      cfg.mipmap_mode = pan_pipe_to_mipmode(cso->min_mip_filter);
+      cfg.mipmap_mode = pan_pipe_to_mipmode(cso->min_mip_filter,
+                                            cso->max_anisotropy > 1);
+
       cfg.compare_function = panfrost_sampler_compare_func(cso);
       cfg.seamless_cube_map = cso->seamless_cube_map;
 
@@ -1571,15 +1577,17 @@ panfrost_emit_const_buf(struct panfrost_batch *batch,
       panfrost_emit_ubo(ubos.cpu, ubo, address, usz);
    }
 
-   assert(pushed_words);
-   *pushed_words = ss->info.push.count;
+   const struct pan_fau_layout *fau = &ss->info.fau;
 
-   if (ss->info.push.count == 0)
+   assert(pushed_words);
+   *pushed_words = fau->count;
+
+   if (fau->count == 0)
       return ubos.gpu;
 
    /* Copy push constants required by the shader */
    struct pan_ptr push_transfer =
-      pan_pool_alloc_aligned(&batch->pool.base, ss->info.push.count * 4, 16);
+      pan_pool_alloc_aligned(&batch->pool.base, fau->count * 4, 16);
 
    if (!push_transfer.cpu)
       return 0;
@@ -1587,8 +1595,8 @@ panfrost_emit_const_buf(struct panfrost_batch *batch,
    uint32_t *push_cpu = (uint32_t *)push_transfer.cpu;
    *push_constants = push_transfer.gpu;
 
-   for (unsigned i = 0; i < ss->info.push.count; ++i) {
-      struct pan_ubo_word src = ss->info.push.words[i];
+   pan_fau_foreach_reloc(fau, i) {
+      struct pan_ubo_relocation src = fau->words[i].relocation;
 
       if (src.ubo == sysval_ubo) {
          unsigned sysval_idx = src.offset / 16;
@@ -1637,6 +1645,10 @@ panfrost_emit_const_buf(struct panfrost_batch *batch,
       /* TODO: Is there any benefit to combining ranges */
       memcpy(push_cpu + i, (uint8_t *)mapped_ubo + src.offset, 4);
    }
+
+   /* Promoted immediates are copied directly */
+   pan_fau_foreach_imm(fau, i)
+      push_cpu[i] = fau->words[i].constant;
 
    return ubos.gpu;
 }
@@ -1801,13 +1813,14 @@ panfrost_create_sampler_view_bo(struct panfrost_sampler_view *so,
 
    unsigned first_level = so->base.u.tex.first_level;
    unsigned last_level = so->base.u.tex.last_level;
-   unsigned first_layer = so->base.u.tex.first_layer;
-   unsigned last_layer = so->base.u.tex.last_layer;
+   unsigned first_layer_or_z_slice = so->base.u.tex.first_layer;
+   unsigned last_layer_or_z_slice = so->base.u.tex.last_layer;
 
    if (so->base.target == PIPE_TEXTURE_3D) {
-      first_layer /= prsrc->image.props.extent_px.depth;
-      last_layer /= prsrc->image.props.extent_px.depth;
-      assert(!first_layer && !last_layer);
+      unsigned depth = prsrc->image.props.extent_px.depth;
+      assert(first_layer_or_z_slice < depth && last_layer_or_z_slice < depth);
+      first_layer_or_z_slice = 0;
+      last_layer_or_z_slice = depth - 1;
    }
 
    struct pan_image_view iview = {
@@ -1815,8 +1828,8 @@ panfrost_create_sampler_view_bo(struct panfrost_sampler_view *so,
       .dim = type,
       .first_level = first_level,
       .last_level = last_level,
-      .first_layer = first_layer,
-      .last_layer = last_layer,
+      .first_layer_or_z_slice = first_layer_or_z_slice,
+      .last_layer_or_z_slice = last_layer_or_z_slice,
       .swizzle =
          {
             so->base.swizzle_r,
@@ -2409,7 +2422,7 @@ panfrost_emit_vertex_data(struct panfrost_batch *batch, uint64_t *buffers)
             cfg.pointer = addr;
             cfg.stride = stride;
             cfg.size = size;
-            cfg.divisor_r = __builtin_ctz(hw_divisor);
+            cfg.divisor_r = hw_divisor ? __builtin_ctz(hw_divisor) : 0;
          }
 
       } else {
@@ -3250,29 +3263,13 @@ panfrost_update_state_3d(struct panfrost_batch *batch)
          panfrost_emit_vertex_buffers(batch);
    }
 #else
-   unsigned vt_shader_dirty = ctx->dirty_shader[MESA_SHADER_VERTEX];
-   struct panfrost_compiled_shader *vs = ctx->prog[MESA_SHADER_VERTEX];
-   struct panfrost_vertex_state *vstate = ctx->vertex;
-   bool attr_offsetted_by_instance_base =
-      vstate->attr_depends_on_base_instance_mask &
-      BITFIELD_MASK(vs->info.attributes_read_count);
-#if PAN_ARCH >= 6
-   /* Bifrost needs to place texel buffers after the image attributes, so we
-    * need to emit them if textures or the shader is dirty. */
-   unsigned attribs_dirty_mask =
-      PAN_DIRTY_STAGE_IMAGE | PAN_DIRTY_STAGE_TEXTURE | PAN_DIRTY_STAGE_SHADER;
-#else
-   unsigned attribs_dirty_mask = PAN_DIRTY_STAGE_IMAGE | PAN_DIRTY_STAGE_SHADER;
-#endif
-
-   /* Vertex data, vertex shader and images accessed by the vertex shader have
-    * an impact on the attributes array, we need to re-emit anytime one of these
-    * parameters changes. */
-   if ((dirty & PAN_DIRTY_VERTEX) || (vt_shader_dirty & attribs_dirty_mask) ||
-       attr_offsetted_by_instance_base) {
-      batch->attribs[MESA_SHADER_VERTEX] = panfrost_emit_vertex_data(
-         batch, &batch->attrib_bufs[MESA_SHADER_VERTEX]);
-   }
+   /* Always re-emit vertex attributes, in midgard and bifrost they depend on
+    * per-draw parameters (e.g. vertex_count, instancing, images and textures),
+    * which are likely to change every draw, so don't bother trying to save an
+    * attribute[_buffer] re-emission.
+    */
+   batch->attribs[MESA_SHADER_VERTEX] = panfrost_emit_vertex_data(
+      batch, &batch->attrib_bufs[MESA_SHADER_VERTEX]);
 #endif
 }
 
@@ -3443,7 +3440,7 @@ panfrost_single_draw_direct(struct panfrost_batch *batch,
    struct panfrost_compiled_shader *vs = ctx->prog[MESA_SHADER_VERTEX];
    bool idvs = vs->info.vs.idvs;
 
-   UNUSED unsigned vertex_count =
+   unsigned vertex_count =
       panfrost_draw_get_vertex_count(batch, info, draw, idvs);
 
    panfrost_statistics_record(ctx, info, draw);
@@ -3473,7 +3470,14 @@ panfrost_single_draw_direct(struct panfrost_batch *batch,
                                     info->mode == MESA_PRIM_POINTS);
 #endif
 
-   JOBX(launch_draw)(batch, info, drawid_offset, draw, vertex_count);
+#if PAN_ARCH >= 10
+   if (batch->draw_count == 0)
+      trace_panfrost_start_vertex_tiler(&batch->trace,
+                               &(struct panfrost_trace_cs_info){ .batch = batch });
+#endif
+
+   if (vertex_count > 0)
+      JOBX(launch_draw)(batch, info, drawid_offset, draw, vertex_count);
    batch->draw_count++;
 }
 
@@ -3608,6 +3612,12 @@ panfrost_draw_indirect(struct pipe_context *pipe,
    if (panfrost_batch_skip_rasterization(batch))
       return;
 
+#if PAN_ARCH >= 10
+   if (batch->draw_count == 0)
+      trace_panfrost_start_vertex_tiler(&batch->trace,
+                               &(struct panfrost_trace_cs_info){ .batch = batch });
+#endif
+
    JOBX(launch_draw_indirect)(batch, &tmp_info, drawid_offset, indirect);
    batch->draw_count++;
 }
@@ -3722,8 +3732,39 @@ panfrost_launch_grid_on_batch(struct pipe_context *pipe,
       panfrost_batch_read_rsrc(batch, pan_resource(info->indirect), MESA_SHADER_COMPUTE);
 
    /* launch it */
+#if PAN_ARCH >= 10
+   struct panfrost_trace_cs_info start_tcs = { .batch = batch };
+   if (info->indirect)
+      trace_panfrost_start_compute_indirect(&batch->trace, &start_tcs);
+   else
+      trace_panfrost_start_compute(&batch->trace, &start_tcs);
+#endif
+
    JOBX(launch_grid)(batch, info);
    batch->compute_count++;
+
+   /* On CSF, defer the end timestamp until the compute scoreboard slot
+    * signals.
+    */
+#if PAN_ARCH >= 10
+   const uint16_t compute_end_wait = BITFIELD_BIT(PANFROST_SB_COMPUTE);
+   struct panfrost_trace_cs_info end_tcs = { .batch = batch,
+                                             .sb_wait_mask = compute_end_wait };
+   if (info->indirect) {
+      const uint64_t base = pan_resource(info->indirect)->plane.base +
+                            info->indirect_offset;
+      trace_panfrost_end_compute_indirect(&batch->trace, &end_tcs,
+         info->block[0], info->block[1], info->block[2],
+         (struct u_trace_address){ .bo = NULL, .offset = base },
+         (struct u_trace_address){ .bo = NULL, .offset = base + sizeof(uint32_t) },
+         (struct u_trace_address){ .bo = NULL, .offset = base + 2 * sizeof(uint32_t) });
+   } else {
+      trace_panfrost_end_compute(&batch->trace, &end_tcs,
+         info->block[0], info->block[1], info->block[2],
+         info->grid[0], info->grid[1], info->grid[2]);
+   }
+#endif
+
    batch->tls.gpu = saved_tls;
 }
 
@@ -4085,8 +4126,6 @@ panfrost_create_vertex_elements_state(struct pipe_context *pctx,
       so->element_buffer[i] = pan_assign_vertex_buffer(
          so->buffers, &so->nr_bufs, elements[i].vertex_buffer_index,
          elements[i].instance_divisor);
-      if (elements[i].instance_divisor)
-         so->attr_depends_on_base_instance_mask |= BITFIELD_BIT(i);
    }
 
    for (int i = 0; i < num_elements; ++i) {
@@ -4504,6 +4543,8 @@ screen_destroy(struct pipe_screen *pscreen)
    struct panfrost_device *dev = pan_device(pscreen);
    GENX(pan_fb_preload_cache_cleanup)(&dev->fb_preload_cache);
    pan_blend_shader_cache_cleanup(&dev->blend_shaders);
+   if (dev->precomp_cache)
+      GENX(panfrost_precomp_cache_cleanup)(dev->precomp_cache);
 }
 
 static void
@@ -4631,9 +4672,51 @@ submit_batch(struct panfrost_batch *batch, struct pan_fb_info *fb)
 
    emit_tls(batch);
 
+#if PAN_ARCH >= 10
+   struct panfrost_context *ctx = batch->ctx;
+
+   if (batch->draw_count > 0)
+      trace_panfrost_end_vertex_tiler(&batch->trace,
+                             &(struct panfrost_trace_cs_info){ .batch = batch,
+                                                               .sb_wait_mask = BITFIELD_BIT(PANFROST_SB_RENDER) },
+                             batch->draw_count);
+
+#ifdef HAVE_PERFETTO
+   panfrost_perfetto_submit(ctx);
+#endif
+#endif
+
    if (panfrost_has_fragment_job(batch)) {
+#if PAN_ARCH >= 10
+      struct pipe_framebuffer_state *pfb = &batch->key;
+      uint32_t submit_id = ++ctx->submit_count;
+      enum pipe_format cbuf0_fmt = pfb->nr_cbufs > 0 && pfb->cbufs[0].texture
+                                      ? pfb->cbufs[0].format
+                                      : PIPE_FORMAT_NONE;
+      enum pipe_format zs_fmt = pfb->zsbuf.texture ? pfb->zsbuf.format
+                                                    : PIPE_FORMAT_NONE;
+      uint16_t width = pfb->width;
+      uint16_t height = pfb->height;
+      uint8_t mrts = pfb->nr_cbufs;
+      uint8_t samples = MAX2(pfb->samples, 1);
+
+      struct panfrost_trace_cs_info _tcs = { .batch = batch };
+      /* Defer start_fragment until tiling completes (using at that moment the
+       * render scoreboard slot), matching end_vertex_tiler, so the two
+       * stages don't overlap in Perfetto.
+       */
+      trace_panfrost_start_fragment(&batch->trace,
+                           &(struct panfrost_trace_cs_info){ .batch = batch,
+                                                             .sb_wait_mask = BITFIELD_BIT(PANFROST_SB_RENDER) });
+#endif
+
       emit_fbd(batch, fb);
       emit_fragment_job(batch, fb);
+
+#if PAN_ARCH >= 10
+      trace_panfrost_end_fragment(&batch->trace, &_tcs, submit_id, cbuf0_fmt,
+                         zs_fmt, width, height, mrts, samples);
+#endif
    }
 
    return JOBX(submit_batch)(batch);
@@ -4646,7 +4729,35 @@ emit_write_timestamp(struct panfrost_batch *batch,
    batch->need_job_req_cycle_count = true;
    batch->has_time_query = true;
 
-   JOBX(emit_write_timestamp)(batch, dst, offset);
+#if PAN_ARCH >= 10
+   GENX(csf_emit_write_timestamp)(batch, dst, offset, 0);
+#else
+   GENX(jm_emit_write_timestamp)(batch, dst, offset);
+#endif
+}
+
+static void
+emit_trace_ts(struct panfrost_batch *batch,
+              struct panfrost_resource *dst, uint64_t offset,
+              uint16_t sb_wait_mask)
+{
+#if PAN_ARCH >= 10
+   GENX(csf_emit_write_timestamp)(batch, dst, offset, sb_wait_mask);
+#else
+   UNREACHABLE("u_trace and Perfetto render stages only supported on CSF");
+#endif
+}
+
+static void
+emit_trace_copy(struct panfrost_batch *batch,
+                struct panfrost_resource *dst, uint64_t dst_offset_B,
+                uint64_t src_gpu_addr, uint32_t size_B)
+{
+#if PAN_ARCH >= 10
+   GENX(csf_emit_copy_data)(batch, dst, dst_offset_B, src_gpu_addr, size_B);
+#else
+   UNREACHABLE("GPU-side trace copy only supported on CSF (arch >= 10)");
+#endif
 }
 
 static uint64_t
@@ -4679,6 +4790,10 @@ GENX(panfrost_cmdstream_screen_init)(struct panfrost_screen *screen)
    screen->vtbl.afbc_pack = panfrost_afbc_pack;
    screen->vtbl.mtk_detile = panfrost_mtk_detile_compute;
    screen->vtbl.emit_write_timestamp = emit_write_timestamp;
+   screen->vtbl.emit_trace_ts = emit_trace_ts;
+#if PAN_ARCH >= 10
+   screen->vtbl.emit_trace_copy = emit_trace_copy;
+#endif
    screen->vtbl.select_tile_size = GENX(pan_select_tile_size);
    screen->vtbl.get_conv_desc = get_conv_desc;
 

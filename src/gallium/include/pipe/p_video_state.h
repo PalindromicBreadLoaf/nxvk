@@ -241,6 +241,7 @@ struct pipe_picture_desc
    uint64_t in_fence_value;
    /* A fence for pipe_video_codec::end_frame to signal job completion */
    struct pipe_fence_handle **out_fence;
+   struct pipe_fence_handle **out_pipe_fence;
 };
 
 struct pipe_quant_matrix
@@ -2151,6 +2152,7 @@ struct pipe_av1_picture_desc
 
 struct pipe_vpp_blend
 {
+   bool enabled;
    enum pipe_video_vpp_blend_mode mode;
    /* To be used with PIPE_VIDEO_VPP_BLEND_MODE_GLOBAL_ALPHA */
    float global_alpha;

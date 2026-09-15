@@ -261,6 +261,7 @@ struct r600_pipe_sampler_view {
 	struct pipe_sampler_view	base;
 	struct list_head		list;
 	struct r600_resource		*tex_resource;
+	struct pipe_resource		*replace_resource;
 	uint32_t			tex_resource_words[8];
 	bool				skip_mip_address_reloc;
 	bool				is_stencil_sampler;
@@ -451,6 +452,7 @@ struct r600_image_view {
 	uint32_t resource_words[8];
 	bool skip_mip_address_reloc;
 	uint32_t buf_size;
+	uint32_t va_offset;
 };
 
 struct r600_image_state {
@@ -487,6 +489,10 @@ struct r600_lds_constant_buffer {
 	uint32_t instance_base;
 	uint32_t vertex_base;
 	uint32_t draw_id;
+
+	/* gl_PrimitiveID instanced compatibility */
+	uint32_t primitiveid_modulo;
+	uint32_t primitiveid_inverse;
 };
 
 struct r600_context {
@@ -613,6 +619,8 @@ struct r600_context {
 	struct pipe_constant_buffer lds_constbuf_pipe;
 
 	struct r600_scratch_buffer scratch_buffers[MAX2(R600_NUM_HW_STAGES, EG_NUM_HW_STAGES)];
+
+	void (*setup_buffer_constants)(struct r600_context *rctx, int shader_type);
 
 	/* Debug state. */
 	bool			is_debug;
@@ -825,7 +833,8 @@ void evergreen_dma_copy_buffer(struct r600_context *rctx,
 void evergreen_setup_tess_constants(struct r600_context *rctx,
 				    const struct pipe_draw_info *info,
 				    unsigned *num_patches,
-				    const bool vertexid);
+				    const bool vertexid,
+				    const uint32_t primitiveid_modulo);
 uint32_t evergreen_get_ls_hs_config(struct r600_context *rctx,
 				    const struct pipe_draw_info *info,
 				    unsigned num_patches);
@@ -1123,6 +1132,8 @@ void evergreen_emit_atomic_buffer_save(struct r600_context *rctx,
 				       const unsigned global_atomic_count);
 void r600_update_compressed_resource_state(struct r600_context *rctx, bool compute_only);
 
-void eg_setup_buffer_constants(struct r600_context *rctx, int shader_type);
+void r600_palm_to_aruba_setup_buffer_constants(struct r600_context *rctx, int shader_type);
+void r600_cedar_to_hemlock_setup_buffer_constants(struct r600_context *rctx, int shader_type);
+void r600_setup_buffer_constants(struct r600_context *rctx, int shader_type);
 void r600_update_driver_const_buffers(struct r600_context *rctx, bool compute_only);
 #endif

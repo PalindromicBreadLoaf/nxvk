@@ -78,7 +78,6 @@ spec@arb_depth_texture@texwrap formats@GL_DEPTH_COMPONENT32- NPOT,Fail
 spec@arb_direct_state_access@gettextureimage-formats init-by-rendering,Fail
 spec@arb_direct_state_access@gettextureimage-formats,Fail
 spec@arb_framebuffer_object@fbo-blit-scaled-linear,Fail
-spec@arb_point_sprite@arb_point_sprite-checkerboard,Fail
 spec@arb_point_sprite@arb_point_sprite-mipmap,Fail
 spec@arb_shader_storage_buffer_object@compiler@atomicmin-swizzle.vert,Fail
 spec@arb_shader_texture_lod@execution@arb_shader_texture_lod-texgrad,Fail
@@ -87,39 +86,7 @@ spec@arb_texture_buffer_object@texture-buffer-size-clamp,Fail
 spec@arb_texture_buffer_object@texture-buffer-size-clamp@r8ui_texture_buffer_size_via_sampler,Fail
 spec@arb_texture_buffer_object@texture-buffer-size-clamp@rg8ui_texture_buffer_size_via_sampler,Fail
 spec@arb_texture_buffer_object@texture-buffer-size-clamp@rgba8ui_texture_buffer_size_via_sampler,Fail
-spec@arb_texture_float@texwrap formats bordercolor,Fail
-spec@arb_texture_float@texwrap formats bordercolor-swizzled,Fail
-spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_ALPHA32F_ARB- swizzled- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_INTENSITY32F_ARB- swizzled- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_LUMINANCE32F_ARB- swizzled- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_LUMINANCE_ALPHA32F_ARB- swizzled- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_RGB32F- swizzled- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_RGBA32F- swizzled- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor@GL_ALPHA32F_ARB- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor@GL_INTENSITY32F_ARB- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor@GL_LUMINANCE32F_ARB- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor@GL_LUMINANCE_ALPHA32F_ARB- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor@GL_RGB32F- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor@GL_RGBA32F- border color only,Fail
 spec@arb_texture_rectangle@1-1-linear-texture,Fail
-spec@arb_texture_rg@texwrap formats bordercolor,Fail
-spec@arb_texture_rg@texwrap formats bordercolor-swizzled,Fail
-spec@arb_texture_rg@texwrap formats bordercolor-swizzled@GL_R16- swizzled- border color only,Fail
-spec@arb_texture_rg@texwrap formats bordercolor-swizzled@GL_RG16- swizzled- border color only,Fail
-spec@arb_texture_rg@texwrap formats bordercolor@GL_R16- border color only,Fail
-spec@arb_texture_rg@texwrap formats bordercolor@GL_RG16- border color only,Fail
-spec@arb_texture_rg@texwrap formats-float bordercolor,Fail
-spec@arb_texture_rg@texwrap formats-float bordercolor-swizzled,Fail
-spec@arb_texture_rg@texwrap formats-float bordercolor-swizzled@GL_R32F- swizzled- border color only,Fail
-spec@arb_texture_rg@texwrap formats-float bordercolor-swizzled@GL_RG32F- swizzled- border color only,Fail
-spec@arb_texture_rg@texwrap formats-float bordercolor@GL_R32F- border color only,Fail
-spec@arb_texture_rg@texwrap formats-float bordercolor@GL_RG32F- border color only,Fail
-spec@arb_texture_rg@texwrap formats-float offset,Fail
-spec@arb_texture_rg@texwrap formats-float offset@GL_R32F- NPOT,Fail
-spec@arb_texture_rg@texwrap formats-float offset@GL_RG32F- NPOT,Fail
-spec@arb_texture_rg@texwrap formats-float,Fail
-spec@arb_texture_rg@texwrap formats-float@GL_R32F- NPOT,Fail
-spec@arb_texture_rg@texwrap formats-float@GL_RG32F- NPOT,Fail
 spec@egl 1.4@eglterminate then unbind context,Fail
 spec@egl_khr_surfaceless_context@viewport,Fail
 spec@egl_mesa_configless_context@basic,Fail
@@ -241,11 +208,15 @@ spec@nv_image_formats@compiler@declaration-disallow-rgba16-unorm-3d.frag,Fail
 spec@nv_image_formats@compiler@declaration-disallow-rgba16-unorm-3d.vert,Fail
 spec@nv_image_formats@compiler@declaration-disallow-rgba16-unorm-cube.frag,Fail
 spec@nv_image_formats@compiler@declaration-disallow-rgba16-unorm-cube.vert,Fail
-spec@oes_point_sprite@arb_point_sprite-checkerboard_gles1,Fail
 spec@oes_shader_io_blocks@compiler@layout-location-aliasing.vert,Fail
 
-# https://gitlab.freedesktop.org/mesa/piglit/-/merge_requests/1109
-spec@nv_read_depth@read_depth_gles3,Fail
+# https://gitlab.freedesktop.org/mesa/piglit/-/merge_requests/1136
+spec@arb_texture_rg@texwrap formats bordercolor,Fail
+spec@arb_texture_rg@texwrap formats bordercolor-swizzled,Fail
+spec@arb_texture_rg@texwrap formats bordercolor-swizzled@GL_R16- swizzled- border color only,Fail
+spec@arb_texture_rg@texwrap formats bordercolor-swizzled@GL_RG16- swizzled- border color only,Fail
+spec@arb_texture_rg@texwrap formats bordercolor@GL_R16- border color only,Fail
+spec@arb_texture_rg@texwrap formats bordercolor@GL_RG16- border color only,Fail
 
 # A sub-case involving polygon stipple fails because driver doesn't implement
 # stipple
@@ -433,16 +404,12 @@ spec@arb_texture_barrier@arb_texture_barrier-blending-in-shader 512 42 8 8 7,Fai
 spec@arb_texture_barrier@arb_texture_barrier-blending-in-shader 512 42 8 8 8,Fail
 
 # Piglit OpenCL tests
-api@clbuildprogram,Fail
-api@clcompileprogram,Fail
 api@clgetcommandqueueinfo,Fail
 api@clgetextensionfunctionaddressforplatform,Fail
 api@clgetkernelarginfo,Fail
 api@cllinkprogram,Fail
-program@build@vector-data-types,Fail
 program@execute@amdgcn-f32-inline-immediates,Fail
 program@execute@amdgcn-f32-inline-immediates@add integer 64,Fail
-program@execute@amdgcn.sign_extend_inreg,Crash
 program@execute@builtin@builtin-float-nextafter-1.0.generated,Fail
 program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float1,Fail
 program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float16,Fail
@@ -455,20 +422,11 @@ program@execute@builtin@builtin-float-sign-1.0.generated@sign float16,Fail
 program@execute@builtin@builtin-float-sign-1.0.generated@sign float2,Fail
 program@execute@builtin@builtin-float-sign-1.0.generated@sign float4,Fail
 program@execute@builtin@builtin-float-sign-1.0.generated@sign float8,Fail
-program@execute@builtin@builtin-long-abs-1.0.generated,Crash
-program@execute@builtin@builtin-long-clamp-1.1.generated,Crash
-program@execute@builtin@builtin-long-max-1.1.generated,Crash
-program@execute@builtin@builtin-long-min-1.1.generated,Crash
-program@execute@builtin@builtin-long-popcount-1.2.generated,Fail
 program@execute@builtin@builtin-long-popcount-1.2.generated@popcount long1,Fail
 program@execute@builtin@builtin-long-popcount-1.2.generated@popcount long16,Fail
 program@execute@builtin@builtin-long-popcount-1.2.generated@popcount long2,Fail
 program@execute@builtin@builtin-long-popcount-1.2.generated@popcount long4,Fail
 program@execute@builtin@builtin-long-popcount-1.2.generated@popcount long8,Fail
-program@execute@builtin@builtin-ulong-clamp-1.1.generated,Crash
-program@execute@builtin@builtin-ulong-max-1.1.generated,Crash
-program@execute@builtin@builtin-ulong-min-1.1.generated,Crash
-program@execute@builtin@builtin-ulong-popcount-1.2.generated,Fail
 program@execute@builtin@builtin-ulong-popcount-1.2.generated@popcount ulong1,Fail
 program@execute@builtin@builtin-ulong-popcount-1.2.generated@popcount ulong16,Fail
 program@execute@builtin@builtin-ulong-popcount-1.2.generated@popcount ulong2,Fail
@@ -476,19 +434,14 @@ program@execute@builtin@builtin-ulong-popcount-1.2.generated@popcount ulong4,Fai
 program@execute@builtin@builtin-ulong-popcount-1.2.generated@popcount ulong8,Fail
 program@execute@global-offset,Fail
 program@execute@global-offset@3d- input dependent,Fail
-program@execute@scalar-arithmetic-long,Crash
-program@execute@scalar-arithmetic-ulong,Crash
-program@execute@scalar-comparison-long,Crash
-program@execute@scalar-comparison-ulong,Crash
-program@execute@scalar-load-long,Crash
-program@execute@scalar-load-ulong,Crash
 program@run kernel with max work item sizes,Fail
+
+# Bisected to 626ec83855a ("rusticl: implement CL 3.1 platform features")
+api@clsetkernelarg,Fail
+api@clsetkernelarg@Input checks,Fail
 
 # Bisected to 6bc47e65 ("rusticl: Fix work group size validation")
 program@bitcoin: phatk kernel,Fail
-
-# Bisected to c8d7fad1534 ("rusticl: return correct error from clCreateSubBuffer")
-api@clgetmemobjectinfo,Fail
 
 # Failures from arm32
 arm32-KHR-GL31.framebuffer_blit.multisampled_to_singlesampled_blit_color_config_test,Fail
@@ -516,19 +469,6 @@ program@execute@vector-conversion,Fail
 
 
 ubsan-KHR-GL31.framebuffer_blit.multisampled_to_singlesampled_blit_color_config_test,Fail
-
-
-# https://gitlab.khronos.org/Tracker/vk-gl-cts/-/issues/6437
-dEQP-VK.binding_model.unused_invalid_descriptor.copy.combined_image_sampler,Crash
-dEQP-VK.binding_model.unused_invalid_descriptor.copy.uniform_buffer,Crash
-dEQP-VK.binding_model.unused_invalid_descriptor.copy.sampled_image,Crash
-dEQP-VK.binding_model.unused_invalid_descriptor.copy.storage_buffer,Crash
-dEQP-VK.binding_model.unused_invalid_descriptor.write.invalid.combined_image_sampler,Crash
-dEQP-VK.binding_model.unused_invalid_descriptor.write.invalid.sampled_image,Crash
-dEQP-VK.binding_model.unused_invalid_descriptor.write.unused.combined_image_sampler,Crash
-dEQP-VK.binding_model.unused_invalid_descriptor.write.unused.sampled_image,Crash
-dEQP-VK.binding_model.unused_invalid_descriptor.write.unused.storage_buffer,Crash
-dEQP-VK.binding_model.unused_invalid_descriptor.write.unused.uniform_buffer,Crash
 
 # SKQP failing tests
 ES2BlendWithNoTexture,Fail
@@ -669,4 +609,9 @@ TransferPixelsTest,Fail
 
 # uprev Piglit in Mesa
 spec@arb_texture_view@tex-view,Fail
+spec@glsl-1.30@execution@glsl-packed-back-color,Fail
 
+# VKCTS 1.4.5.3 -> 1.4.6.1 uprev
+dEQP-VK.robustness.buffer_access.through_pointers.graphics.writes.vertex.4B_in_memory_with_scalar_f32,Fail
+dEQP-VK.robustness.buffer_access.through_pointers.graphics.writes.vertex.4B_in_memory_with_scalar_s32,Fail
+dEQP-VK.robustness.buffer_access.through_pointers.graphics.writes.vertex.4B_in_memory_with_scalar_u32,Fail

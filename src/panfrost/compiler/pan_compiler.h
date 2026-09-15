@@ -6,11 +6,13 @@
 #ifndef __PAN_COMPILER_H__
 #define __PAN_COMPILER_H__
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
 
 #include "compiler/nir/nir_defines.h"
 #include "compiler/shader_enums.h"
+#include "util/bitset.h"
 #include "util/u_dynarray.h"
 #include "util/format/u_formats.h"
 #include "util/shader_stats.h"
@@ -19,9 +21,12 @@ struct pan_shader_info;
 
 bool pan_will_dump_shaders(unsigned arch);
 bool pan_want_debug_info(unsigned arch);
+bool pan_use_kraid(unsigned arch, mesa_shader_stage stage, bool internal);
 
 const nir_shader_compiler_options *
-pan_get_nir_shader_compiler_options(unsigned arch, bool merge_wg);
+pan_get_nir_shader_compiler_options(unsigned arch,
+                                    mesa_shader_stage stage,
+                                    bool merge_wg);
 
 /* Inputs to the backend compiler */
 struct pan_compile_inputs {
@@ -36,9 +41,6 @@ struct pan_compile_inputs {
     * checks. */
    bool robust_descriptors;
 
-   /* Mask of UBOs that may be moved to push constants */
-   uint32_t pushable_ubos;
-
    /* Varying layout in memory, if known */
    const struct pan_varying_layout *varying_layout;
 
@@ -49,29 +51,31 @@ struct pan_compile_inputs {
 
    /* Settings to move constants into the FAU. */
    struct {
-      uint32_t *values;
-      /* In multiples of 32bit. */
-      uint32_t max_amount;
-      /* In multiples of 32bit. */
-      uint32_t offset;
-   } fau_consts;
+      /* Driver-reserved range at the start of the FAU */
+      uint32_t reserved;
+      /* Mask of UBOs that may be moved to push constants */
+      uint32_t pushable_ubos;
+      /* Whether the backend may promote immediates into the FAU */
+      bool promote_immediates;
+   } fau;
 };
 
 /* Every panfrost compilation pipeline should adhere to:
- * 1. Driver-specific early lowering + pan_optimize_nir() (optional)
+ * 1. Driver-specific early lowering
  * 2. pan_preprocess_nir()
  * 3. Descriptor lowering
  * 4. pan_postprocess_nir()
  * 5. Inline sysvals
- * 5. pan_shader_compile()
+ * 6. pan_shader_compile()
  * ONLY SYSVAL LOWERING is allowed between postprocess and shader_compile.
  * Driver-specific lowerings should be either BEFORE preprocess or BETWEEN
  * preprocess and postprocess.  Any code except sysval inlining put after
  * postprocess WILL BE NAKed.
  */
 void pan_preprocess_nir(nir_shader *nir, uint64_t gpu_id);
-void pan_optimize_nir(nir_shader *nir, uint64_t gpu_id);
-void pan_postprocess_nir(nir_shader *nir, uint64_t gpu_id);
+void pan_postprocess_nir(nir_shader *nir,
+                         const struct pan_compile_inputs *inputs,
+                         struct pan_shader_info *info);
 
 void pan_shader_compile(nir_shader *nir, struct pan_compile_inputs *inputs,
                         struct util_dynarray *binary,
@@ -132,26 +136,82 @@ enum { PAN_VERTEX_ID = 16, PAN_INSTANCE_ID = 17, PAN_MAX_ATTRIBUTE };
  */
 #define PAN_MAX_PUSH 128
 
-#define PAN_MAX_MULTIVIEW_VIEW_COUNT 8
-
 /* Architectural invariants (Midgard and Bifrost): UBO must be <= 2^16 bytes so
  * an offset to a word must be < 2^16. There are less than 2^8 UBOs */
 
-struct pan_ubo_word {
+struct pan_ubo_relocation {
    uint16_t ubo;
    uint16_t offset;
 };
 
-struct pan_ubo_push {
-   unsigned count;
-   struct pan_ubo_word words[PAN_MAX_PUSH];
+union pan_fau_entry {
+   struct pan_ubo_relocation relocation;
+   uint32_t constant;
 };
+
+struct pan_fau_layout {
+   union pan_fau_entry words[PAN_MAX_PUSH];
+   BITSET_DECLARE(is_const, PAN_MAX_PUSH);
+
+   /* FAU space reserved by the driver, in units of 32-bit words.
+    * This always goes at the start of the FAU and its contents are
+    * entirely up to the driver.  This range is considered is
+    * neither constants nor UBO relocations for the purposes of
+    * pan_fau_foreach_*().
+    */
+   unsigned reserved;
+
+   /* The total number of FAU words used, including the driver
+    * reserved range, constants, and UBO relocations.
+    */
+   unsigned count;
+
+   /* The maximum number of FAU words available.  This is set based
+    * on hardware properties.
+    */
+   unsigned max;
+};
+
+static inline unsigned
+pan_fau_available(const struct pan_fau_layout *fau)
+{
+   return fau->max - fau->count;
+}
+
+static inline unsigned
+pan_fau_emit_const(struct pan_fau_layout *fau, uint32_t imm)
+{
+   assert(fau->count < fau->max);
+   fau->words[fau->count].constant = imm;
+   BITSET_SET(fau->is_const, fau->count);
+
+   return fau->count++;
+}
+
+static inline unsigned
+pan_fau_emit_reloc(struct pan_fau_layout *fau, struct pan_ubo_relocation reloc)
+{
+   assert(fau->count < fau->max);
+   fau->words[fau->count].relocation = reloc;
+   BITSET_CLEAR(fau->is_const, fau->count);
+
+   return fau->count++;
+}
+
+#define pan_fau_foreach_reloc(fau, i)                                          \
+   for (unsigned i = (fau)->reserved; i < (fau)->count; ++i)                   \
+      if (!BITSET_TEST((fau)->is_const, i))
+
+#define pan_fau_foreach_imm(fau, i)                                            \
+   for (unsigned i = (fau)->reserved; i < (fau)->count; ++i)                   \
+      if (BITSET_TEST((fau)->is_const, i))
 
 /* Helper for searching the above. Note this is O(N) to the number of pushed
  * constants, do not run in the draw call hot path */
 
-unsigned pan_lookup_pushed_ubo(struct pan_ubo_push *push, unsigned ubo,
-                               unsigned offs);
+unsigned pan_lookup_pushed_ubo(const struct pan_fau_layout *fau,
+                               unsigned ubo, unsigned offs);
+int pan_lookup_pushed_imm(const struct pan_fau_layout *fau, uint32_t imm);
 
 enum pan_varying_section {
    PAN_VARYING_SECTION_POSITION,
@@ -374,9 +434,6 @@ struct pan_shader_info {
    /* Bit mask of preloaded registers */
    uint64_t preload;
 
-   uint32_t fau_consts_count;
-   uint32_t fau_consts[128];
-
    union {
       struct {
          bool reads_frag_coord;
@@ -486,9 +543,13 @@ struct pan_shader_info {
       struct pan_varying_layout formats;
    } varyings;
 
-   /* UBOs to push to Register Mapped Uniforms (Midgard) or Fast Access
-    * Uniforms (Bifrost) */
-   struct pan_ubo_push push;
+   /* Entries in either Fast Access Uniforms (FAU, Bifrost) or Register Mapped
+    * Uniforms (for Midgard).  The driver can promote values here for faster
+    * access, those can be either immediates that are not in the small_const
+    * tables, or UBOs that have been promoted (or push constants, but those are
+    * not written by the backend)
+    */
+   struct pan_fau_layout fau;
 
    uint32_t ubo_mask;
 
@@ -573,5 +634,11 @@ pan_res_handle(unsigned table, unsigned index)
 
 void pan_disassemble(FILE *fp, const void *code, size_t size, uint64_t gpu_id,
                      bool verbose);
+
+static inline unsigned
+pan_max_multiview_view_count(unsigned arch)
+{
+   return arch >= 14 ? 16 : 8;
+}
 
 #endif /* __PAN_COMPILER_H__ */

@@ -896,7 +896,19 @@ ntq_get_alu_src(struct v3d_compile *c, nir_alu_instr *instr,
 static struct qreg
 ntq_minify(struct v3d_compile *c, struct qreg size, struct qreg level)
 {
-        return vir_MAX(c, vir_SHR(c, size, level), vir_uniform_ui(c, 1));
+        /* For valid textures, a minified level is at least 1.
+         * However, with VK_KHR_robustness2 nullDescriptor we represent null
+         * resources with a base size of 0.
+         */
+        struct qreg minified = vir_MAX(c, vir_SHR(c, size, level),
+                                       vir_uniform_ui(c, 1));
+
+        if (!c->key->null_descriptor)
+                return minified;
+
+        vir_set_pf(c, vir_MOV_dest(c, vir_nop_reg(), size), V3D_QPU_PF_PUSHZ);
+        return vir_MOV(c, vir_SEL(c, V3D_QPU_COND_IFNA, minified,
+                       vir_uniform_ui(c, 0)));
 }
 
 static void
@@ -1384,26 +1396,57 @@ ntq_emit_alu(struct v3d_compile *c, nir_alu_instr *instr)
                 break;
 
         case nir_op_fneg:
-                result = vir_XOR(c, src[0], vir_uniform_ui(c, UINT32_C(1) << 31));
+                if (c->devinfo->ver >= 71 &&
+                    instr->def.bit_size == 16) {
+                        result = vir_VFNEG(c, src[0]);
+                } else {
+                        result = vir_XOR(c, src[0],
+                                         vir_uniform_ui(c, UINT32_C(1) << 31));
+                }
                 break;
         case nir_op_ineg:
                 result = vir_NEG(c, src[0]);
                 break;
 
         case nir_op_fmul:
-                result = vir_FMUL(c, src[0], src[1]);
+                if (c->devinfo->ver >= 71 &&
+                    instr->def.bit_size == 16) {
+                        result = vir_VFMUL(c, src[0], src[1]);
+                } else {
+                        result = vir_FMUL(c, src[0], src[1]);
+                }
                 break;
         case nir_op_fadd:
-                result = vir_FADD(c, src[0], src[1]);
+                if (c->devinfo->ver >= 71 &&
+                    instr->def.bit_size == 16) {
+                        result = vir_VFADD(c, src[0], src[1]);
+                } else {
+                        result = vir_FADD(c, src[0], src[1]);
+                }
                 break;
         case nir_op_fsub:
-                result = vir_FSUB(c, src[0], src[1]);
+                if (c->devinfo->ver >= 71 &&
+                    instr->def.bit_size == 16) {
+                        result = vir_VFSUB(c, src[0], src[1]);
+                } else {
+                        result = vir_FSUB(c, src[0], src[1]);
+                }
                 break;
         case nir_op_fmin:
-                result = vir_FMIN(c, src[0], src[1]);
+                if (c->devinfo->ver >= 71 &&
+                    instr->def.bit_size == 16) {
+                        result = vir_VFMIN(c, src[0], src[1]);
+                } else {
+                        result = vir_FMIN(c, src[0], src[1]);
+                }
                 break;
         case nir_op_fmax:
-                result = vir_FMAX(c, src[0], src[1]);
+                if (c->devinfo->ver >= 71 &&
+                    instr->def.bit_size == 16) {
+                        result = vir_VFMAX(c, src[0], src[1]);
+                } else {
+                        result = vir_FMAX(c, src[0], src[1]);
+                }
                 break;
 
         case nir_op_f2i32: {
@@ -1734,8 +1777,14 @@ ntq_emit_alu(struct v3d_compile *c, nir_alu_instr *instr)
                 break;
 
         case nir_op_fabs: {
-                result = vir_FMOV(c, src[0]);
-                vir_set_unpack(c->defs[result.index], 0, V3D_QPU_UNPACK_ABS);
+                if (c->devinfo->ver >= 71 &&
+                    instr->def.bit_size == 16) {
+                        result = vir_VFABS(c, src[0]);
+                } else {
+                        result = vir_FMOV(c, src[0]);
+                        vir_set_unpack(c->defs[result.index], 0,
+                                       V3D_QPU_UNPACK_ABS);
+                }
                 break;
         }
 
@@ -1813,8 +1862,24 @@ ntq_emit_alu(struct v3d_compile *c, nir_alu_instr *instr)
 
         case nir_op_fsat:
                 assert(v3d_device_has_unpack_sat(c->devinfo));
-                result = vir_FMOV(c, src[0]);
-                vir_set_unpack(c->defs[result.index], 0, V3D71_QPU_UNPACK_SAT);
+                if (instr->def.bit_size == 16) {
+                        /* The SAT unpack saturates a 32-bit float, so it
+                         * would misinterpret f16 bits. nir_opt_algebraic can
+                         * form a 16-bit fsat from native f16 fmin/fmax after
+                         * the last bit-size lowering.
+                         */
+                        struct qreg f32 = vir_FMOV(c, src[0]);
+                        vir_set_unpack(c->defs[f32.index], 0,
+                                       V3D_QPU_UNPACK_L);
+                        result = vir_FMOV(c, f32);
+                        vir_set_unpack(c->defs[result.index], 0,
+                                       V3D71_QPU_UNPACK_SAT);
+                        vir_set_pack(c->defs[result.index], V3D_QPU_PACK_L);
+                } else {
+                        result = vir_FMOV(c, src[0]);
+                        vir_set_unpack(c->defs[result.index], 0,
+                                       V3D71_QPU_UNPACK_SAT);
+                }
                 break;
 
         case nir_op_fsat_signed:
@@ -1827,6 +1892,24 @@ ntq_emit_alu(struct v3d_compile *c, nir_alu_instr *instr)
                 assert(v3d_device_has_unpack_max0(c->devinfo));
                 result = vir_FMOV(c, src[0]);
                 vir_set_unpack(c->defs[result.index], 0, V3D71_QPU_UNPACK_MAX0);
+                break;
+
+        case nir_op_udot_4x8_uadd:
+                assert(c->devinfo->ver >= 71);
+                vir_SETNNMODE_UU(c);
+                result = vir_ADD(c, vir_V8DOT(c, src[0], src[1]), src[2]);
+                break;
+
+        case nir_op_sdot_4x8_iadd:
+                assert(c->devinfo->ver >= 71);
+                vir_SETNNMODE_SS(c);
+                result = vir_ADD(c, vir_V8DOT(c, src[0], src[1]), src[2]);
+                break;
+
+        case nir_op_sudot_4x8_iadd:
+                assert(c->devinfo->ver >= 71);
+                vir_SETNNMODE_SU(c);
+                result = vir_ADD(c, vir_V8DOT(c, src[0], src[1]), src[2]);
                 break;
 
         default:
@@ -2204,7 +2287,7 @@ v3d_optimize_nir(struct v3d_compile *c, struct nir_shader *s)
                 NIR_PASS(progress, s, nir_opt_if, false);
                 if (c && !c->disable_gcm) {
                         bool local_progress = false;
-                        NIR_PASS(local_progress, s, nir_opt_gcm, false);
+                        NIR_PASS(local_progress, s, nir_opt_gcm, false, true);
                         c->gcm_progress |= local_progress;
                         progress |= local_progress;
                 }
@@ -2253,7 +2336,7 @@ v3d_optimize_nir(struct v3d_compile *c, struct nir_shader *s)
                 }
         } while (progress);
 
-        NIR_PASS(progress, s, nir_lower_undef_to_zero);
+        NIR_PASS(progress, s, nir_lower_undef_to_zero, NULL);
 
         /* needs to be outside of optimization loop, otherwise it fights with
          * opt_algebraic optimizing the conversion lowering
@@ -2431,8 +2514,24 @@ ntq_setup_fs_inputs(struct v3d_compile *c)
                         c->inputs[loc * 4] = c->primitive_id;
                 } else if (util_varying_is_point_coord(var->data.location,
                                                        c->fs_key->point_sprite_mask)) {
+                        /* gl_PointCoord is flipped in lower_pntc_ytransform,
+                         * but varyings replaced through GL_COORD_REPLACE
+                         * don't go through this lowering, so we need to
+                         * handle them here.
+                         *
+                         * Also Gallium requires the texture coordinate be of
+                         * the form (s, t, 0, 1).
+                         */
                         c->inputs[loc * 4 + 0] = c->point_x;
-                        c->inputs[loc * 4 + 1] = c->point_y;
+                        if (var->data.location != VARYING_SLOT_PNTC &&
+                            c->fs_key->point_coord_upper_left) {
+                                c->inputs[loc * 4 + 1] = vir_FSUB(c, vir_uniform_f(c, 1.0),
+                                                                  c->point_y);
+                        } else {
+                                c->inputs[loc * 4 + 1] = c->point_y;
+                        }
+                        c->inputs[loc * 4 + 2] = vir_uniform_f(c, 0.0);
+                        c->inputs[loc * 4 + 3] = vir_uniform_f(c, 1.0);
                 } else if (var->data.compact) {
                         for (int j = 0; j < var_len; j++)
                                 emit_compact_fragment_input(c, loc, var, j);
@@ -4434,6 +4533,7 @@ ntq_emit_jump(struct v3d_compile *c, nir_jump_instr *jump)
                 break;
 
         case nir_jump_halt:
+        case nir_jump_abort:
         case nir_jump_goto:
         case nir_jump_goto_if:
                 UNREACHABLE("not supported\n");
@@ -4461,6 +4561,7 @@ ntq_emit_uniform_jump(struct v3d_compile *c, nir_jump_instr *jump)
                 break;
 
         case nir_jump_halt:
+        case nir_jump_abort:
         case nir_jump_goto:
         case nir_jump_goto_if:
                 UNREACHABLE("not supported\n");
@@ -5035,6 +5136,27 @@ v3d_nir_to_vir(struct v3d_compile *c)
                 vir_dumpi(c);
         }
 
+        /* Pressure-probe split: stash the pre-RA thrsw state. In probe-only
+         * mode, compute the pre-spill register pressure and stop before
+         * register allocation; the caller picks the lowest-pressure strategy
+         * and resumes it via v3d_nir_to_vir_finish().
+         */
+        c->restore_last_thrsw = restore_last_thrsw;
+        c->restore_scoreboard_lock = restore_scoreboard_lock;
+
+        if (c->probe_only) {
+                vir_calculate_live_intervals(c);
+                c->max_pressure = vir_get_max_temps(c);
+                return;
+        }
+
+        v3d_nir_to_vir_finish(c);
+}
+
+void
+v3d_nir_to_vir_finish(struct v3d_compile *c)
+{
+        assert(!c->probe_only);
         /* Attempt to allocate registers for the temporaries.  If we fail,
          * reduce thread count and try again.
          */
@@ -5081,8 +5203,8 @@ v3d_nir_to_vir(struct v3d_compile *c)
         /* If we didn't spill, then remove the last thread switch we injected
          * artificially (if any) and restore the previous one.
          */
-        if (!c->spills && c->last_thrsw != restore_last_thrsw)
-                vir_restore_last_thrsw(c, restore_last_thrsw, restore_scoreboard_lock);
+        if (!c->spills && c->last_thrsw != c->restore_last_thrsw)
+                vir_restore_last_thrsw(c, c->restore_last_thrsw, c->restore_scoreboard_lock);
 
         if (c->spills &&
             (V3D_DBG(VIR) ||

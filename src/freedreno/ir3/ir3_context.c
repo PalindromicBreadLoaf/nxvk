@@ -15,6 +15,12 @@
 #include "nir_intrinsics_indices.h"
 #include "util/u_math.h"
 
+static bool
+should_lower_undef(nir_undef_instr *undef)
+{
+   return undef->def.bit_size == 1;
+}
+
 struct ir3_context *
 ir3_context_init(struct ir3_compiler *compiler, struct ir3_shader *shader,
                  struct ir3_shader_variant *so)
@@ -90,7 +96,6 @@ ir3_context_init(struct ir3_compiler *compiler, struct ir3_shader *shader,
    /* nir_opt_algebraic() above would have unfused our ffmas, re-fuse them. */
    if (needs_late_alg) {
       NIR_PASS(progress, ctx->s, nir_opt_algebraic_late);
-      NIR_PASS(progress, ctx->s, ir3_nir_opt_algebraic_late);
       NIR_PASS(progress, ctx->s, nir_opt_dce);
    }
 
@@ -113,6 +118,18 @@ ir3_context_init(struct ir3_compiler *compiler, struct ir3_shader *shader,
    if ((so->type == MESA_SHADER_FRAGMENT) && compiler->info->props.has_fs_tex_prefetch) {
       NIR_PASS(_, ctx->s, ir3_nir_lower_tex_prefetch, &so->prefetch_bary_type);
    }
+
+   /* We are generally fine with undefs. However, booleans are only allowed to
+    * contain 0/1 but are stored in 16b registers. Undefs may cause such
+    * registers to be uninitialized and contain values other than 0/1. This
+    * especially happens with undef booleans in phi srcs, which are explicitly
+    * left uninitialized. In general, such non-0/1 values don't cause problems
+    * because we mostly use booleans by comparing them to 0. However, they do
+    * cause problems in special cases like `inot(x)` which we lower to `sub(1,
+    * x)` which only works if true==1. Lower 1b undefs to zero to make sure
+    * booleans always contain a valid value.
+    */
+   NIR_PASS(_, ctx->s, nir_lower_undef_to_zero, should_lower_undef);
 
    bool vectorized = false;
    NIR_PASS(vectorized, ctx->s, nir_opt_vectorize, ir3_nir_vectorize_filter,
@@ -184,7 +201,8 @@ ir3_context_init(struct ir3_compiler *compiler, struct ir3_shader *shader,
       }
    }
 
-   if (shader_debug_enabled(so->type, ctx->s->info.internal)) {
+   if (shader_debug_enabled(so->type, ctx->s->info.internal) ||
+                            ir3_shader_bisect_disasm_select(so)) {
       mesa_logi("NIR (final form) for %s shader %s:", ir3_shader_stage(so),
                 so->name);
       nir_log_shaderi(ctx->s);

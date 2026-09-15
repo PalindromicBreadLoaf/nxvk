@@ -4,7 +4,9 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "si_build_pm4.h"
+#include "si_pipe.h"
+#include "gfx/si_gfx.h"
+#include "ac_cmdbuf_cp.h"
 #include "util/os_time.h"
 #include "util/u_memory.h"
 #include "util/u_queue.h"
@@ -437,10 +439,10 @@ static void si_flush_all_queues(struct pipe_context *ctx,
    }
 
    if (force_flush) {
-      sctx->initial_gfx_cs_size = 0;
+      rflags |= RADEON_FLUSH_FORCE;
    }
 
-   if (!radeon_emitted(&sctx->gfx_cs, sctx->initial_gfx_cs_size)) {
+   if (!force_flush && !radeon_emitted(&sctx->gfx_cs, sctx->initial_gfx_cs_size)) {
       if (fence)
          ws->fence_reference(ws, &gfx_fence, sctx->last_gfx_fence);
       if (!(flags & PIPE_FLUSH_DEFERRED))

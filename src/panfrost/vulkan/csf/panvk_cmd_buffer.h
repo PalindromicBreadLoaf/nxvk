@@ -34,7 +34,11 @@ struct panvk_sync_scope {
 
 #define MAX_VBS 16
 #define MAX_RTS 8
+#if PAN_ARCH >= 14
+#define MAX_LAYERS_PER_TILER_DESC 256
+#else
 #define MAX_LAYERS_PER_TILER_DESC 8
+#endif
 
 struct panvk_cs_sync32 {
    uint32_t seqno;
@@ -61,6 +65,37 @@ enum panvk_incremental_rendering_pass {
    PANVK_IR_PASS_COUNT
 };
 
+#if PAN_ARCH >= 14
+/* Framebuffer per-layer state. Keep this structure 64-byte aligned, since
+ * we want the adjacent ZS_CRC_EXTENSION and RENDER_TARGET descriptors
+ * aligned. */
+struct panvk_fb_layer_state {
+   /** GPU address to the tiler descriptor. */
+   uint64_t tiler;
+
+   /** Frame argument. */
+   uint64_t frame_argument;
+
+   /** An instance of Fragment Flags 0. */
+   struct mali_fragment_flags_0_packed flags0;
+
+   /** An instance of Fragment Flags 2. */
+   struct mali_fragment_flags_2_packed flags2;
+
+   /** Z clear value. */
+   uint32_t z_clear;
+
+   /** GPU address to the draw call descriptors. It may be 0. */
+   uint64_t dcd_pointer;
+
+   /** GPU address to the ZS_CRC_EXTENSION descriptor. It may be 0. */
+   uint64_t dbd_pointer;
+
+   /** GPU address to the RENDER_TARGET descriptors. */
+   uint64_t rtd_pointer;
+} __attribute__((aligned(64)));
+#endif /* PAN_ARCH >= 14 */
+
 static inline uint32_t
 get_tiler_oom_handler_idx(bool has_zs_ext, uint32_t rt_count)
 {
@@ -74,7 +109,11 @@ static inline uint32_t
 get_fbd_size(bool has_zs_ext, uint32_t rt_count)
 {
    assert(rt_count >= 1 && rt_count <= MAX_RTS);
+#if PAN_ARCH >= 14
+   uint32_t fbd_size = ALIGN_POT(sizeof(struct panvk_fb_layer_state), 64);
+#else
    uint32_t fbd_size = pan_size(FRAMEBUFFER);
+#endif
    if (has_zs_ext)
       fbd_size += pan_size(ZS_CRC_EXTENSION);
    fbd_size += pan_size(RENDER_TARGET) * rt_count;
@@ -118,6 +157,14 @@ struct panvk_cs_subqueue_context {
       /* Timestamp queries that need to happen after the current rp. */
       struct cs_single_link_list ts_chain;
       struct cs_single_link_list ts_done_chain;
+      /* Fields used to pass layer count information from primary cmdbufs to
+       * secondary cmdbufs. */
+#if PAN_ARCH >= 14
+      uint32_t layer_count;
+#else
+      uint32_t td_count;
+      uint32_t last_td_fullscreen_tiler_flags;
+#endif
    } render;
    struct {
       uint32_t counter;
@@ -164,7 +211,6 @@ struct panvk_cs_deps {
       enum mali_cs_condition cond;
       struct cs_index cond_value;
    } dst[PANVK_SUBQUEUE_COUNT];
-   bool needs_layout_transitions;
 };
 
 enum panvk_sb_ids {
@@ -209,13 +255,39 @@ enum panvk_cs_regs {
    PANVK_CS_REG_RUN_IDVS_SR_END = 60,
 #endif
 
+#if PAN_ARCH >= 14
+   /* RUN_FRAGMENT2 staging regs.
+    * SW ABI:
+    * - r58:59 contain the pointer to the first tiler descriptor. This is
+    *   needed to gather completed heap chunks after a run_fragment2.
+    */
+   PANVK_CS_REG_RUN_FRAGMENT_SR_START = 0,
+   PANVK_CS_REG_RUN_FRAGMENT_SR_END = 55,
+   PANVK_CS_REG_TILER_DESC_PTR = 58,
+
+   /* RUN_FRAGMENT2 RW staging regs. The rest are initialized to zero at
+    * command stream initialization, and should never be touched again. */
+   PANVK_CS_REG_RUN_FRAGMENT_SR_RANGE_0_START = 28,
+   PANVK_CS_REG_RUN_FRAGMENT_SR_RANGE_0_END = 47,
+   PANVK_CS_REG_RUN_FRAGMENT_SR_RANGE_1_START = 52,
+   PANVK_CS_REG_RUN_FRAGMENT_SR_RANGE_1_END = 52,
+   PANVK_CS_REG_RUN_FRAGMENT_SR_RANGE_2_START = 54,
+   PANVK_CS_REG_RUN_FRAGMENT_SR_RANGE_2_END = 55,
+#else
    /* RUN_FRAGMENT staging regs.
     * SW ABI:
-    * - r38:39 contain the pointer to the first tiler descriptor. This is
+    * - r58:59 contain the pointer to the first tiler descriptor. This is
     *   needed to gather completed heap chunks after a run_fragment.
     */
    PANVK_CS_REG_RUN_FRAGMENT_SR_START = 38,
    PANVK_CS_REG_RUN_FRAGMENT_SR_END = 46,
+   PANVK_CS_REG_TILER_DESC_PTR = 58,
+
+   /* RUN_FRAGMENT RW staging regs. The rest are initialized to zero at
+    * command stream initialization, and should never be touched again. */
+   PANVK_CS_REG_RUN_FRAGMENT_SR_RANGE_0_START = 0,
+   PANVK_CS_REG_RUN_FRAGMENT_SR_RANGE_0_END = 43,
+#endif
 
    /* RUN_COMPUTE staging regs. */
    PANVK_CS_REG_RUN_COMPUTE_SR_START = 0,
@@ -395,7 +467,17 @@ panvk_cs_reg_whitelist(progress_seqno, PANVK_CS_REG_RANGE(PROGRESS_SEQNO));
 panvk_cs_reg_whitelist(compute_ctx, PANVK_CS_REG_RANGE(RUN_COMPUTE_SR));
 #define cs_update_compute_ctx(__b) panvk_cs_reg_upd_ctx(__b, compute_ctx)
 
-panvk_cs_reg_whitelist(frag_ctx, PANVK_CS_REG_RANGE(RUN_FRAGMENT_SR));
+#if PAN_ARCH >= 14
+#define PANVK_RUN_FRAG_SR_WHITELIST_RANGES                                     \
+   PANVK_CS_REG_RANGE(RUN_FRAGMENT_SR_RANGE_0),                                \
+      PANVK_CS_REG_RANGE(RUN_FRAGMENT_SR_RANGE_1),                             \
+      PANVK_CS_REG_RANGE(RUN_FRAGMENT_SR_RANGE_2)
+#else
+#define PANVK_RUN_FRAG_SR_WHITELIST_RANGES                                     \
+   PANVK_CS_REG_RANGE(RUN_FRAGMENT_SR_RANGE_0)
+#endif
+
+panvk_cs_reg_whitelist(frag_ctx, PANVK_RUN_FRAG_SR_WHITELIST_RANGES);
 #define cs_update_frag_ctx(__b) panvk_cs_reg_upd_ctx(__b, frag_ctx)
 
 panvk_cs_reg_whitelist(vt_ctx, PANVK_CS_REG_RANGE(RUN_IDVS_SR));
@@ -646,8 +728,8 @@ cs_iter_sb_update_start(struct panvk_cmd_buffer *cmdbuf,
                 offsetof(struct panvk_cs_subqueue_context, iter_sb));
 
    /* Select next scoreboard entry and wrap around if we get past the limit */
-   cs_add32(b, next_sb, next_sb, 1);
-   cs_add32(b, cmp_scratch, next_sb, -SB_ITER(dev->csf.sb.iter_count));
+   cs_add_imm32(b, next_sb, next_sb, 1);
+   cs_add_imm32(b, cmp_scratch, next_sb, -SB_ITER(dev->csf.sb.iter_count));
 
    cs_if(b, MALI_CS_CONDITION_GEQUAL, cmp_scratch) {
       cs_move32_to(b, next_sb, SB_ITER(0));
@@ -723,14 +805,8 @@ cs_next_iter_sb(struct panvk_cmd_buffer *cmdbuf,
    }
 }
 
-enum panvk_barrier_stage {
-   PANVK_BARRIER_STAGE_FIRST,
-   PANVK_BARRIER_STAGE_AFTER_LAYOUT_TRANSITION,
-};
-
 void panvk_per_arch(add_cs_deps)(
    struct panvk_cmd_buffer *cmdbuf,
-   enum panvk_barrier_stage barrier_stage,
    const VkDependencyInfo *in,
    struct panvk_cs_deps *out,
    bool is_set_event);
@@ -792,6 +868,13 @@ panvk_per_arch(calculate_task_axis_and_increment)(
    assert(*task_axis <= MALI_TASK_AXIS_Z);
    assert(*task_increment > 0);
 }
+
+void panvk_per_arch(cmd_dispatch_shader)(
+   struct panvk_cmd_buffer *cmdbuf,
+   const struct panvk_shader_variant *cs,
+   const struct panvk_shader_desc_state *cs_desc_state,
+   uint64_t push_uniforms, uint64_t tsd,
+   const struct panvk_dispatch_info *info);
 
 static VkPipelineStageFlags2
 panvk_get_subqueue_stages(enum panvk_subqueue_id subqueue)
@@ -869,5 +952,30 @@ vk_stages_to_subqueue_mask(VkPipelineStageFlags2 vk_stages,
 
 void panvk_per_arch(emit_barrier)(struct panvk_cmd_buffer *cmdbuf,
                                   struct panvk_cs_deps deps);
+
+#if PAN_ARCH >= 14
+static inline void
+cs_emit_layer_fragment_state(struct cs_builder *b, struct cs_index fbd_ptr)
+{
+   /* Emit the dynamic fragment state. This state may change per-layer. */
+
+   cs_load32_to(b, cs_sr_reg32(b, FRAGMENT, FLAGS_0), fbd_ptr,
+                offsetof(struct panvk_fb_layer_state, flags0));
+   cs_load32_to(b, cs_sr_reg32(b, FRAGMENT, FLAGS_2), fbd_ptr,
+                offsetof(struct panvk_fb_layer_state, flags2));
+   cs_load32_to(b, cs_sr_reg32(b, FRAGMENT, Z_CLEAR), fbd_ptr,
+                offsetof(struct panvk_fb_layer_state, z_clear));
+   cs_load64_to(b, cs_sr_reg64(b, FRAGMENT, TILER_DESCRIPTOR_POINTER), fbd_ptr,
+                offsetof(struct panvk_fb_layer_state, tiler));
+   cs_load64_to(b, cs_sr_reg64(b, FRAGMENT, RTD_POINTER), fbd_ptr,
+                offsetof(struct panvk_fb_layer_state, rtd_pointer));
+   cs_load64_to(b, cs_sr_reg64(b, FRAGMENT, DBD_POINTER), fbd_ptr,
+                offsetof(struct panvk_fb_layer_state, dbd_pointer));
+   cs_load64_to(b, cs_sr_reg64(b, FRAGMENT, FRAME_ARG), fbd_ptr,
+                offsetof(struct panvk_fb_layer_state, frame_argument));
+   cs_load64_to(b, cs_sr_reg64(b, FRAGMENT, FRAME_SHADER_DCD_POINTER), fbd_ptr,
+                offsetof(struct panvk_fb_layer_state, dcd_pointer));
+}
+#endif /* PAN_ARCH >= 14 */
 
 #endif /* PANVK_CMD_BUFFER_H */

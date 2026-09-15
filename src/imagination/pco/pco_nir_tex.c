@@ -44,29 +44,36 @@ static inline nir_def *get_src_def(nir_tex_instr *tex,
  * \param[in] b NIR builder.
  * \param[in] tex NIR texture instruction.
  * \param[in] tex_state Texture state words.
- * \return The replacement/lowered def.
+ * \return True if progress was made.
  */
-static nir_def *lower_tex_query_basic(nir_builder *b,
-                                      nir_tex_instr *tex,
-                                      nir_def *tex_state,
-                                      nir_def *tex_meta,
-                                      pco_data *data)
+static bool lower_tex_query_basic(nir_builder *b,
+                                  nir_tex_instr *tex,
+                                  nir_def *tex_state,
+                                  nir_def *tex_meta,
+                                  pco_data *data)
 {
+   nir_def *new_def;
+   
+   b->cursor = nir_before_instr(&tex->instr);
+
    switch (tex->op) {
    case nir_texop_query_levels:
       data->common.uses.usclib = true;
-      return usclib_tex_state_levels(b, tex_state);
+      new_def = usclib_tex_state_levels(b, tex_state);
+      break;
 
    case nir_texop_texture_samples:
       data->common.uses.usclib = true;
-      return usclib_tex_state_samples(b, tex_state);
+      new_def = usclib_tex_state_samples(b, tex_state);
+      break;
 
    case nir_texop_txs: {
       if (tex->sampler_dim == GLSL_SAMPLER_DIM_BUF) {
          assert(tex->def.num_components == 1);
          assert(!tex->is_array);
 
-         return nir_channel(b, tex_meta, PCO_IMAGE_META_BUFFER_ELEMS);
+         new_def = nir_channel(b, tex_meta, PCO_IMAGE_META_BUFFER_ELEMS);
+         break;
       }
 
       nir_def *num_comps = nir_imm_int(b, tex->def.num_components);
@@ -84,14 +91,16 @@ static nir_def *lower_tex_query_basic(nir_builder *b,
 
       data->common.uses.usclib = true;
 
-      return nir_trim_vector(b, size_comps, tex->def.num_components);
-   }
-
-   default:
+      new_def = nir_trim_vector(b, size_comps, tex->def.num_components);
       break;
    }
 
-   UNREACHABLE("");
+   default:
+      UNREACHABLE("");
+   }
+
+   nir_def_rewrite_uses(&tex->def, new_def);
+   return true;
 }
 
 static inline enum pco_dim to_pco_dim(enum glsl_sampler_dim dim)
@@ -361,7 +370,7 @@ nir_intrinsic_instr *pco_emit_nir_smp(nir_builder *b, pco_smp_params *params)
 
    if (params->sample_raw) {
       assert(!params->sample_coeffs);
-      assert(!params->sample_components);
+      assert(params->sample_components >= 1 && params->sample_components <= 4);
       assert(!params->write_data);
 
       nir_def *def = nir_smp_raw_pco(b,
@@ -369,7 +378,8 @@ nir_intrinsic_instr *pco_emit_nir_smp(nir_builder *b, pco_smp_params *params)
                                      params->tex_state,
                                      params->smp_state,
                                      .smp_flags_pco = smp_flags._,
-                                     .range = count);
+                                     .range = count,
+                                     .enabled_channels = params->sample_components);
 
       return nir_def_as_intrinsic(def);
    }
@@ -410,7 +420,7 @@ lower_tex_gather(nir_builder *b, nir_tex_instr *tex, nir_def *raw_data)
 {
    assert(!nir_tex_instr_has_explicit_tg4_offsets(tex));
 
-#define TG4_SEL(sample) (((sample) * 4) + tex->component)
+#define TG4_SEL(sample) (((sample) * (tex->component + 1)) + tex->component)
    unsigned swiz[] = { TG4_SEL(2), TG4_SEL(3), TG4_SEL(1), TG4_SEL(0) };
 #undef TG4_SEL
 
@@ -436,13 +446,12 @@ static nir_def *lower_tex_shadow(nir_builder *b,
  * \brief Lowers a texture instruction.
  *
  * \param[in] b NIR builder.
- * \param[in] instr NIR instruction.
+ * \param[in] instr NIR texture instruction.
  * \param[in] cb_data User callback data.
- * \return The replacement/lowered def.
+ * \return True if progress was made.
  */
-static nir_def *lower_tex(nir_builder *b, nir_instr *instr, void *cb_data)
+static bool lower_tex(nir_builder *b, nir_tex_instr *tex, void *cb_data)
 {
-   nir_tex_instr *tex = nir_instr_as_tex(instr);
    struct state *state = cb_data;
    pco_data *data = state->data;
    pco_ctx *ctx = state->ctx;
@@ -462,7 +471,7 @@ static nir_def *lower_tex(nir_builder *b, nir_instr *instr, void *cb_data)
          ? PVR_HAS_FEATURE(dev_info, tpu_extended_integer_lookup)
          : false;
 
-   b->cursor = nir_before_instr(instr);
+   b->cursor = nir_before_instr(&tex->instr);
 
    /* Process tex sources, build up the smp flags and data words. */
    BITSET_DECLARE(tex_src_set, nir_num_tex_src_types) = { 0 };
@@ -731,6 +740,7 @@ static nir_def *lower_tex(nir_builder *b, nir_instr *instr, void *cb_data)
 
    case nir_texop_tg4:
       params.sample_raw = true;
+      params.sample_components = tex->component + 1;
       smp = pco_emit_nir_smp(b, &params);
       result = lower_tex_gather(b, tex, &smp->def);
       break;
@@ -738,6 +748,8 @@ static nir_def *lower_tex(nir_builder *b, nir_instr *instr, void *cb_data)
    default:
       UNREACHABLE("");
    }
+
+   nir_intrinsic_set_access(smp, (enum gl_access_qualifier)tex->backend_flags);
 
    if (tex->is_shadow) {
       nir_def *compare_op =
@@ -765,20 +777,8 @@ static nir_def *lower_tex(nir_builder *b, nir_instr *instr, void *cb_data)
 
       result = lower_tex_shadow(b, result, comparator, compare_op);
    }
-
-   return result;
-}
-
-/**
- * \brief Filters texture instructions.
- *
- * \param[in] instr NIR instruction.
- * \param[in] cb_data User callback data.
- * \return True if the instruction matches the filter.
- */
-static bool is_tex(const nir_instr *instr, UNUSED const void *cb_data)
-{
-   return instr->type == nir_instr_type_tex;
+   nir_def_rewrite_uses(&tex->def, result);
+   return true;
 }
 
 /**
@@ -796,7 +796,10 @@ bool pco_nir_lower_tex(nir_shader *shader, pco_data *data, pco_ctx *ctx)
       .ctx = ctx,
    };
 
-   return nir_shader_lower_instructions(shader, is_tex, lower_tex, &state);
+   return nir_shader_tex_pass(shader,
+                              lower_tex,
+                              nir_metadata_none,
+                              &state);
 }
 
 static enum util_format_type nir_type_to_util_type(nir_alu_type nir_type)
@@ -832,19 +835,68 @@ static enum pipe_format nir_type_to_pipe_format(nir_alu_type nir_type,
                                 pure_integer);
 }
 
-static nir_def *lower_image(nir_builder *b, nir_instr *instr, void *cb_data)
+struct nonatomic_ctx {
+   unsigned desc_set;
+   unsigned binding;
+   bool has_nonatomic_io;
+};
+
+static bool check_nonatomic_io(nir_builder *b,
+                               nir_intrinsic_instr *intr,
+                               void *cb_data)
 {
-   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+   switch (intr->intrinsic) {
+   case nir_intrinsic_image_deref_load:
+   case nir_intrinsic_image_deref_store:
+      break;
+
+   default:
+      return false;
+   }
+
+   struct nonatomic_ctx *ctx = cb_data;
+
+   nir_scalar scalar = nir_scalar_resolved(intr->src[0].ssa, 0);
+   unsigned desc_set = nir_scalar_as_uint(scalar);
+   if (desc_set != ctx->desc_set)
+      return false;
+
+   scalar = nir_scalar_resolved(intr->src[0].ssa, 1);
+   unsigned binding = nir_scalar_as_uint(scalar);
+   if (binding != ctx->binding)
+      return false;
+
+   ctx->has_nonatomic_io = true;
+
+   return false;
+}
+
+static bool
+image_desc_has_nonatomic_io(nir_shader *shader, unsigned desc_set, unsigned binding)
+{
+   struct nonatomic_ctx ctx = {
+      .desc_set = desc_set,
+      .binding = binding,
+      .has_nonatomic_io = false,
+   };
+
+   nir_shader_intrinsics_pass(shader,
+                              check_nonatomic_io,
+                              nir_metadata_none,
+                              &ctx);
+
+   return ctx.has_nonatomic_io;
+}
+
+static bool
+lower_image(nir_builder *b, nir_intrinsic_instr *intr, void *cb_data)
+{
    struct state *state = cb_data;
    pco_data *data = state->data;
    pco_ctx *ctx = state->ctx;
    const struct pvr_device_info *dev_info = ctx->dev_info;
-   enum glsl_sampler_dim image_dim = nir_intrinsic_image_dim(intr);
-   bool is_array = nir_intrinsic_image_array(intr);
-   enum pipe_format format = nir_intrinsic_format(intr);
-   unsigned desc_set = nir_src_comp_as_uint(intr->src[0], 0);
-   unsigned binding = nir_src_comp_as_uint(intr->src[0], 1);
-   nir_def *elem = nir_channel(b, intr->src[0].ssa, 2);
+
+   b->cursor = nir_before_instr(&intr->instr);
 
    nir_def *lod = NULL;
    switch (intr->intrinsic) {
@@ -866,8 +918,15 @@ static nir_def *lower_image(nir_builder *b, nir_instr *instr, void *cb_data)
       break;
 
    default:
-      UNREACHABLE("");
+      return false;
    }
+
+   enum glsl_sampler_dim image_dim = nir_intrinsic_image_dim(intr);
+   bool is_array = nir_intrinsic_image_array(intr);
+   enum pipe_format format = nir_intrinsic_format(intr);
+   unsigned desc_set = nir_src_comp_as_uint(intr->src[0], 0);
+   unsigned binding = nir_src_comp_as_uint(intr->src[0], 1);
+   nir_def *elem = nir_channel(b, intr->src[0].ssa, 2);
 
    if (intr->intrinsic == nir_intrinsic_image_deref_size) {
       if (image_dim == GLSL_SAMPLER_DIM_BUF) {
@@ -877,8 +936,11 @@ static nir_def *lower_image(nir_builder *b, nir_instr *instr, void *cb_data)
                                                    elem,
                                                    .desc_set = desc_set,
                                                    .binding = binding);
-
-         return nir_channel(b, tex_meta, PCO_IMAGE_META_BUFFER_ELEMS);
+         nir_def *buf_elems =
+            nir_channel(b, tex_meta, PCO_IMAGE_META_BUFFER_ELEMS);
+         nir_def_rewrite_uses(&intr->def, buf_elems);
+         nir_instr_remove(&intr->instr);
+         return true;
       }
 
       nir_def *tex_state = nir_load_tex_state_pco(b,
@@ -901,7 +963,11 @@ static nir_def *lower_image(nir_builder *b, nir_instr *instr, void *cb_data)
 
       data->common.uses.usclib = true;
 
-      return nir_trim_vector(b, size_comps, intr->def.num_components);
+      nir_def *image_size =
+         nir_trim_vector(b, size_comps, intr->def.num_components);
+      nir_def_rewrite_uses(&intr->def, image_size);
+      nir_instr_remove(&intr->instr);
+      return true;
    }
 
    nir_alu_type type = nir_type_invalid;
@@ -1065,22 +1131,24 @@ static nir_def *lower_image(nir_builder *b, nir_instr *instr, void *cb_data)
 
    if (ia) {
       assert(!is_array);
-      nir_load_const_instr *load =
-         nir_def_as_load_const(intr->src[0].ssa);
+      nir_load_const_instr *load = nir_def_as_load_const(intr->src[0].ssa);
       bool onchip = load->def.num_components == 4;
 
       if (onchip) {
          unsigned ia_idx = nir_src_comp_as_uint(intr->src[0], 3);
-         return nir_load_output(b,
-                      intr->def.num_components,
-                      intr->def.bit_size,
-                      nir_imm_int(b, 0),
-                      .base = ia_idx,
-                      .component = 0,
-                      .dest_type = nir_intrinsic_dest_type(intr),
-                      .io_semantics.location = FRAG_RESULT_COLOR,
-                      .io_semantics.num_slots = 1/*,
-                      .io_semantics.fb_fetch_output = true*/);
+         nir_def *loaded_ia = nir_load_output(b,
+                                              intr->def.num_components,
+                                              intr->def.bit_size,
+                                              nir_imm_int(b, 0),
+                                              .base = ia_idx,
+                                              .component = 0,
+                                              .dest_type = nir_intrinsic_dest_type(intr),
+                                              .io_semantics.location = FRAG_RESULT_COLOR,
+                                              .io_semantics.num_slots = 1/*,
+                                              .io_semantics.fb_fetch_output = true*/);
+         nir_def_rewrite_uses(&intr->def, loaded_ia);
+         nir_instr_remove(&intr->instr);
+         return true;
       }
    }
 
@@ -1096,8 +1164,13 @@ static nir_def *lower_image(nir_builder *b, nir_instr *instr, void *cb_data)
 
    if (intr->intrinsic == nir_intrinsic_image_deref_atomic ||
        intr->intrinsic == nir_intrinsic_image_deref_atomic_swap) {
+      nir_atomic_op atomic_op = nir_intrinsic_atomic_op(intr);
+
       assert(util_format_is_plain(format));
-      assert(util_format_is_pure_integer(format));
+
+      /* xchg doesn't care about format/type. */
+      assert(util_format_is_pure_integer(format) ||
+             atomic_op == nir_atomic_op_xchg);
 
       assert(util_format_get_nr_components(format) == 1);
       assert(util_format_get_blockwidth(format) == 1);
@@ -1126,9 +1199,23 @@ static nir_def *lower_image(nir_builder *b, nir_instr *instr, void *cb_data)
 
       case GLSL_SAMPLER_DIM_2D: {
          /* Calculate untwiddled offset. */
-         nir_def *x = nir_i2i16(b, nir_channel(b, coords, 0));
-         nir_def *y = nir_i2i16(b, nir_channel(b, coords, 1));
-         twiddled_offset = nir_interleave(b, y, x);
+         nir_def *num_comps = nir_imm_int(b, 2);
+         nir_def *dim = nir_imm_int(b, image_dim);
+         nir_def *_is_array = nir_imm_bool(b, is_array);
+         nir_def *is_image = nir_imm_bool(b, true);
+         nir_def *size_comps = usclib_tex_state_size(b,
+                                                     tex_state,
+                                                     num_comps,
+                                                     dim,
+                                                     _is_array,
+                                                     is_image,
+                                                     lod);
+
+         twiddled_offset = usclib_twiddle2d(b,
+                                            nir_channels(b, coords, 0b11),
+                                            nir_channels(b, size_comps, 0b11));
+         data->common.uses.usclib = true;
+
          twiddled_offset =
             nir_imul_imm(b, twiddled_offset, util_format_get_blocksize(format));
 
@@ -1204,10 +1291,18 @@ static nir_def *lower_image(nir_builder *b, nir_instr *instr, void *cb_data)
 
          nir_def *addr_data = nir_vec4(b, addr_lo, addr_hi, compare, dma_data);
 
-         return nir_global_atomic_swap_pco(b,
-                                           addr_data,
-                                           .atomic_op =
-                                              nir_intrinsic_atomic_op(intr));
+         nir_def *atomic_swap = nir_global_atomic_swap_pco(
+            b,
+            intr->num_components,
+            addr_data,
+            .atomic_op = atomic_op);
+         nir_def_rewrite_uses(&intr->def, atomic_swap);
+         nir_instr_remove(&intr->instr);
+
+         if (image_desc_has_nonatomic_io(b->shader, desc_set, binding))
+            nir_dma_flush_pco(b, addr);
+
+         return true;
       }
 
       nir_def *dma_data = intr->src[3].ssa;
@@ -1216,9 +1311,18 @@ static nir_def *lower_image(nir_builder *b, nir_instr *instr, void *cb_data)
 
       data->common.uses.usclib = true;
 
-      return nir_global_atomic_pco(b,
-                                   addr_data,
-                                   .atomic_op = nir_intrinsic_atomic_op(intr));
+      nir_def *atomic =
+         nir_global_atomic_pco(b,
+                               intr->num_components,
+                               addr_data,
+                               .atomic_op = atomic_op);
+      nir_def_rewrite_uses(&intr->def, atomic);
+      nir_instr_remove(&intr->instr);
+
+      if (image_desc_has_nonatomic_io(b->shader, desc_set, binding))
+         nir_dma_flush_pco(b, addr);
+
+      return true;
    }
 
    unsigned smp_desc = ia ? PCO_IA_SAMPLER : PCO_POINT_SAMPLER;
@@ -1377,31 +1481,16 @@ static nir_def *lower_image(nir_builder *b, nir_instr *instr, void *cb_data)
 
    nir_intrinsic_instr *smp = pco_emit_nir_smp(b, &params);
 
-   if (intr->intrinsic == nir_intrinsic_image_deref_load)
-      return &smp->def;
+   nir_intrinsic_set_access(smp, nir_intrinsic_access(intr));
 
-   return NIR_LOWER_INSTR_PROGRESS_REPLACE;
-}
-
-static bool is_image(const nir_instr *instr, UNUSED const void *cb_data)
-{
-   if (instr->type != nir_instr_type_intrinsic)
-      return false;
-
-   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-   switch (intr->intrinsic) {
-   case nir_intrinsic_image_deref_load:
-   case nir_intrinsic_image_deref_store:
-   case nir_intrinsic_image_deref_atomic:
-   case nir_intrinsic_image_deref_atomic_swap:
-   case nir_intrinsic_image_deref_size:
+   if (intr->intrinsic == nir_intrinsic_image_deref_load) {
+      nir_def_rewrite_uses(&intr->def, &smp->def);
+      nir_instr_remove(&intr->instr);
       return true;
-
-   default:
-      break;
    }
 
-   return false;
+   nir_instr_remove(&intr->instr);
+   return true;
 }
 
 bool pco_nir_lower_images(nir_shader *shader, pco_data *data, pco_ctx *ctx)
@@ -1410,5 +1499,9 @@ bool pco_nir_lower_images(nir_shader *shader, pco_data *data, pco_ctx *ctx)
       .data = data,
       .ctx = ctx,
    };
-   return nir_shader_lower_instructions(shader, is_image, lower_image, &state);
+
+   return nir_shader_intrinsics_pass(shader,
+                                     lower_image,
+                                     nir_metadata_none,
+                                     &state);
 }

@@ -44,8 +44,11 @@ nir_def *nir_normalize(nir_builder *b, nir_def *vec);
 nir_def *nir_smoothstep(nir_builder *b, nir_def *edge0,
                         nir_def *edge1, nir_def *x);
 nir_def *nir_upsample(nir_builder *b, nir_def *hi, nir_def *lo);
+nir_def *nir_acos(nir_builder *b, nir_def *x);
+nir_def *nir_asin(nir_builder *b, nir_def *x);
 nir_def *nir_atan(nir_builder *b, nir_def *y_over_x);
 nir_def *nir_atan2(nir_builder *b, nir_def *y, nir_def *x);
+
 
 nir_def *
 nir_build_texture_query(nir_builder *b, nir_tex_instr *tex, nir_texop texop,
@@ -188,12 +191,6 @@ static inline nir_def *
 nir_fast_normalize(nir_builder *b, nir_def *vec)
 {
    return nir_fdiv(b, vec, nir_fast_length(b, vec));
-}
-
-static inline nir_def *
-nir_fmad(nir_builder *b, nir_def *x, nir_def *y, nir_def *z)
-{
-   return nir_fadd(b, nir_fmul(b, x, y), z);
 }
 
 static inline nir_def *

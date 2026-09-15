@@ -7,7 +7,6 @@
 #include "brw_shader.h"
 #include "brw_analysis.h"
 #include "brw_builder.h"
-#include "brw_generator.h"
 #include "brw_nir.h"
 #include "brw_cfg.h"
 #include "brw_private.h"
@@ -56,13 +55,22 @@ brw_emit_single_fb_write(brw_shader &s, const brw_builder &bld,
 }
 
 static void
-brw_do_emit_fb_writes(brw_shader &s, int nr_color_regions, bool replicate_alpha)
+brw_emit_fb_writes(brw_shader &s)
 {
-   struct brw_fs_prog_data *prog_data = brw_fs_prog_data(s.prog_data);
+   assert(s.stage == MESA_SHADER_FRAGMENT);
+   brw_fs_prog_key *key = (brw_fs_prog_key*) s.key;
    const brw_builder bld = brw_builder(&s);
 
+   /* ANV doesn't know about sample mask output during the wm key creation
+    * so we compute if we need replicate alpha and emit alpha to coverage
+    * workaround here.
+    */
+   const bool replicate_alpha = key->alpha_test_replicate_alpha ||
+      (key->nr_color_regions > 1 && key->alpha_to_coverage &&
+       s.sample_mask.file == BAD_FILE);
+
    brw_fb_write_inst *write = NULL;
-   for (int target = 0; target < nr_color_regions; target++) {
+   for (int target = 0; target < key->nr_color_regions; target++) {
       /* Skip over outputs that weren't written, unless dual source
        * blending is at play. The results may be undefined depending
        * on the blending settings, but that's what the user signed
@@ -89,15 +97,15 @@ brw_do_emit_fb_writes(brw_shader &s, int nr_color_regions, bool replicate_alpha)
    }
 
    if (write == NULL) {
-      struct brw_fs_prog_key *key = (brw_fs_prog_key*) s.key;
-      /* Disable null_rt if any non color output is written or if
-       * alpha_to_coverage can be enabled. Since the alpha_to_coverage bit is
-       * coming from the BLEND_STATE structure and the HW will avoid reading
-       * it if null_rt is enabled.
+      struct brw_fs_prog_data *prog_data = brw_fs_prog_data(s.prog_data);
+      /* Enable null_rt if the shader doesn't write any relevant output.
        */
       const bool use_null_rt =
-         key->alpha_to_coverage == INTEL_NEVER &&
-         !prog_data->uses_omask;
+         prog_data->alpha_to_coverage == INTEL_NEVER &&
+         !prog_data->uses_omask &&
+         (s.nir->info.outputs_written &
+          (BITFIELD64_BIT(FRAG_RESULT_DEPTH) |
+           BITFIELD64_BIT(FRAG_RESULT_STENCIL))) == 0;
 
       /* Even if there's no color buffers enabled, we still need to send alpha
        * out the pipeline to our null renderbuffer to support alpha-testing,
@@ -118,69 +126,6 @@ brw_do_emit_fb_writes(brw_shader &s, int nr_color_regions, bool replicate_alpha)
    }
 }
 
-static void
-brw_emit_fb_writes(brw_shader &s)
-{
-   const struct intel_device_info *devinfo = s.devinfo;
-   assert(s.stage == MESA_SHADER_FRAGMENT);
-   struct brw_fs_prog_data *prog_data = brw_fs_prog_data(s.prog_data);
-   brw_fs_prog_key *key = (brw_fs_prog_key*) s.key;
-
-   if (s.nir->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_STENCIL)) {
-      /* From the 'Render Target Write message' section of the docs:
-       * "Output Stencil is not supported with SIMD16 Render Target Write
-       * Messages."
-       */
-      if (devinfo->ver >= 20)
-         s.limit_dispatch_width(16, "gl_FragStencilRefARB unsupported "
-                                "in SIMD32+ mode.\n");
-      else
-         s.limit_dispatch_width(8, "gl_FragStencilRefARB unsupported "
-                                "in SIMD16+ mode.\n");
-   }
-
-   /* ANV doesn't know about sample mask output during the wm key creation
-    * so we compute if we need replicate alpha and emit alpha to coverage
-    * workaround here.
-    */
-   const bool replicate_alpha = key->alpha_test_replicate_alpha ||
-      (key->nr_color_regions > 1 && key->alpha_to_coverage &&
-       s.sample_mask.file == BAD_FILE);
-
-   prog_data->dual_src_blend = s.dual_src_output.file != BAD_FILE;
-   assert(!prog_data->dual_src_blend || key->nr_color_regions == 1);
-
-   /* Following condition implements Wa_14017468336:
-    *
-    * "If dual source blend is enabled do not enable SIMD32 dispatch" and
-    * "For a thread dispatched as SIMD32, must not issue SIMD8 message with Last
-    *  Render Target Select set."
-    */
-   if (devinfo->ver >= 11 && devinfo->ver <= 12 &&
-       prog_data->dual_src_blend) {
-      /* The dual-source RT write messages fail to release the thread
-       * dependency on ICL and TGL with SIMD32 dispatch, leading to hangs.
-       *
-       * XXX - Emit an extra single-source NULL RT-write marked LastRT in
-       *       order to release the thread dependency without disabling
-       *       SIMD32.
-       *
-       * The dual-source RT write messages may lead to hangs with SIMD16
-       * dispatch on ICL due some unknown reasons, see
-       * https://gitlab.freedesktop.org/mesa/mesa/-/issues/2183
-       */
-      if (devinfo->ver >= 20)
-         s.limit_dispatch_width(16, "Dual source blending unsupported "
-                                "in SIMD32 mode.\n");
-      else
-         s.limit_dispatch_width(8, "Dual source blending unsupported "
-                                "in SIMD16 and SIMD32 modes.\n");
-   }
-
-   brw_do_emit_fb_writes(s, key->nr_color_regions, replicate_alpha);
-}
-
-
 /** Emits the interpolation for the varying inputs. */
 static void
 brw_emit_interpolation_setup(brw_shader &s)
@@ -188,7 +133,6 @@ brw_emit_interpolation_setup(brw_shader &s)
    const struct intel_device_info *devinfo = s.devinfo;
    const brw_builder bld = brw_builder(&s);
    brw_builder abld = bld.annotate("compute pixel centers");
-   const struct brw_fs_prog_key *wm_key = (brw_fs_prog_key*) s.key;
    struct brw_fs_prog_data *fs_prog_data = brw_fs_prog_data(s.prog_data);
 
    brw_reg ub_cps_width, ub_cps_height;
@@ -200,23 +144,8 @@ brw_emit_interpolation_setup(brw_shader &s)
       const brw_reg r1_0 = retype(brw_vec1_reg(FIXED_GRF, 1, 0), BRW_TYPE_UD);
 
       brw_reg cps_size = ubld.vgrf(BRW_TYPE_UD);
-      switch (fs_prog_data->coarse_pixel_dispatch) {
-      case INTEL_NEVER:
-         ubld.MOV(cps_size, brw_imm_ud(0x00000101));
-         break;
-      case INTEL_SOMETIMES:
-         brw_check_dynamic_fs_config(ubld, fs_prog_data,
-                                     INTEL_FS_CONFIG_COARSE_RT_WRITES);
-
-         set_predicate_inv(BRW_PREDICATE_NORMAL, false,
-                           ubld.MOV(cps_size, r1_0));
-         set_predicate_inv(BRW_PREDICATE_NORMAL, true,
-                           ubld.MOV(cps_size, brw_imm_ud(0x00000101)));
-         break;
-      case INTEL_ALWAYS:
-         ubld.MOV(cps_size, r1_0);
-         break;
-      }
+      ubld.MOV(cps_size, fs_prog_data->coarse_pixel_dispatch ?
+                         r1_0 : brw_imm_ud(0x00000101));
 
       cps_size = component(cps_size, 0);
       ub_cps_width = retype(cps_size, BRW_TYPE_UB);
@@ -231,7 +160,7 @@ brw_emit_interpolation_setup(brw_shader &s)
    brw_reg int_sample_offset_x, int_sample_offset_y; /* Used on Gen12HP+ */
    brw_reg int_sample_offset_xy; /* Used on Gen8+ */
    brw_reg half_int_sample_offset_x, half_int_sample_offset_y;
-   if (fs_prog_data->coarse_pixel_dispatch != INTEL_ALWAYS) {
+   if (!fs_prog_data->coarse_pixel_dispatch) {
       /* The thread payload only delivers subspan locations (ss0, ss1,
        * ss2, ...). Since subspans covers 2x2 pixels blocks, we need to
        * generate 4 pixel coordinates out of each subspan location. We do this
@@ -280,7 +209,7 @@ brw_emit_interpolation_setup(brw_shader &s)
    brw_reg int_coarse_offset_x, int_coarse_offset_y; /* Used on Gen12HP+ */
    brw_reg int_coarse_offset_xy; /* Used on Gen8+ */
    brw_reg half_int_coarse_offset_x, half_int_coarse_offset_y;
-   if (fs_prog_data->coarse_pixel_dispatch != INTEL_NEVER) {
+   if (fs_prog_data->coarse_pixel_dispatch) {
       /* In coarse pixel dispatch we have to do the same ADD instruction that
        * we do in normal per pixel dispatch, except this time we're not adding
        * 1 in each direction, but instead the coarse pixel size.
@@ -325,61 +254,18 @@ brw_emit_interpolation_setup(brw_shader &s)
    brw_reg int_pixel_offset_x, int_pixel_offset_y; /* Used on Gen12HP+ */
    brw_reg int_pixel_offset_xy; /* Used on Gen8+ */
    brw_reg half_int_pixel_offset_x, half_int_pixel_offset_y;
-   switch (fs_prog_data->coarse_pixel_dispatch) {
-   case INTEL_NEVER:
-      int_pixel_offset_x = int_sample_offset_x;
-      int_pixel_offset_y = int_sample_offset_y;
-      int_pixel_offset_xy = int_sample_offset_xy;
-      half_int_pixel_offset_x = half_int_sample_offset_x;
-      half_int_pixel_offset_y = half_int_sample_offset_y;
-      break;
-
-   case INTEL_SOMETIMES: {
-      const brw_builder dbld =
-         abld.exec_all().group(MIN2(16, s.dispatch_width) * 2, 0);
-
-      brw_check_dynamic_fs_config(dbld, fs_prog_data,
-                                  INTEL_FS_CONFIG_COARSE_RT_WRITES);
-
-      int_pixel_offset_x = dbld.vgrf(BRW_TYPE_UW);
-      set_predicate(BRW_PREDICATE_NORMAL,
-                    dbld.SEL(int_pixel_offset_x,
-                             int_coarse_offset_x,
-                             int_sample_offset_x));
-
-      int_pixel_offset_y = dbld.vgrf(BRW_TYPE_UW);
-      set_predicate(BRW_PREDICATE_NORMAL,
-                    dbld.SEL(int_pixel_offset_y,
-                             int_coarse_offset_y,
-                             int_sample_offset_y));
-
-      int_pixel_offset_xy = dbld.vgrf(BRW_TYPE_UW);
-      set_predicate(BRW_PREDICATE_NORMAL,
-                    dbld.SEL(int_pixel_offset_xy,
-                             int_coarse_offset_xy,
-                             int_sample_offset_xy));
-
-      half_int_pixel_offset_x = bld.vgrf(BRW_TYPE_UW);
-      set_predicate(BRW_PREDICATE_NORMAL,
-                    bld.SEL(half_int_pixel_offset_x,
-                            half_int_coarse_offset_x,
-                            half_int_sample_offset_x));
-
-      half_int_pixel_offset_y = bld.vgrf(BRW_TYPE_UW);
-      set_predicate(BRW_PREDICATE_NORMAL,
-                    bld.SEL(half_int_pixel_offset_y,
-                            half_int_coarse_offset_y,
-                            half_int_sample_offset_y));
-      break;
-   }
-
-   case INTEL_ALWAYS:
+   if (fs_prog_data->coarse_pixel_dispatch) {
       int_pixel_offset_x = int_coarse_offset_x;
       int_pixel_offset_y = int_coarse_offset_y;
       int_pixel_offset_xy = int_coarse_offset_xy;
       half_int_pixel_offset_x = half_int_coarse_offset_x;
       half_int_pixel_offset_y = half_int_coarse_offset_y;
-      break;
+   } else {
+      int_pixel_offset_x = int_sample_offset_x;
+      int_pixel_offset_y = int_sample_offset_y;
+      int_pixel_offset_xy = int_sample_offset_xy;
+      half_int_pixel_offset_x = half_int_sample_offset_x;
+      half_int_pixel_offset_y = half_int_sample_offset_y;
    }
 
    for (unsigned i = 0; i < DIV_ROUND_UP(s.dispatch_width, 16); i++) {
@@ -415,15 +301,11 @@ brw_emit_interpolation_setup(brw_shader &s)
                   brw_reg(stride(suboffset(gi_uw, 5), 2, 8, 0)),
                   int_pixel_offset_y);
 
-         if (fs_prog_data->coarse_pixel_dispatch != INTEL_NEVER) {
-            brw_inst *addx = dbld.ADD(int_pixel_x_4b, int_pixel_x_4b,
-                                      horiz_stride(half_int_pixel_offset_x, 0));
-            brw_inst *addy = dbld.ADD(int_pixel_y_4b, int_pixel_y_4b,
-                                      horiz_stride(half_int_pixel_offset_y, 0));
-            if (fs_prog_data->coarse_pixel_dispatch != INTEL_ALWAYS) {
-               addx->predicate = BRW_PREDICATE_NORMAL;
-               addy->predicate = BRW_PREDICATE_NORMAL;
-            }
+         if (fs_prog_data->coarse_pixel_dispatch) {
+            dbld.ADD(int_pixel_x_4b, int_pixel_x_4b,
+                                     horiz_stride(half_int_pixel_offset_x, 0));
+            dbld.ADD(int_pixel_y_4b, int_pixel_y_4b,
+                                     horiz_stride(half_int_pixel_offset_y, 0));
          }
 
          hbld.MOV(int_pixel_x, horiz_stride(int_pixel_x_4b, 2));
@@ -483,53 +365,6 @@ brw_emit_interpolation_setup(brw_shader &s)
       abld.emit(SHADER_OPCODE_RCP, s.wpos_w, s.pixel_w);
    }
 
-   if (wm_key->persample_interp == INTEL_SOMETIMES) {
-      const brw_builder ubld = bld.exec_all().group(16, 0);
-      bool loaded_flag = false;
-
-      for (int i = 0; i < INTEL_BARYCENTRIC_MODE_COUNT; ++i) {
-         if (!(fs_prog_data->barycentric_interp_modes & BITFIELD_BIT(i)))
-            continue;
-
-         /* The sample mode will always be the top bit set in the perspective
-          * or non-perspective section.  In the case where no SAMPLE mode was
-          * requested, fs_prog_data_barycentric_modes() will swap out the top
-          * mode for SAMPLE so this works regardless of whether SAMPLE was
-          * requested or not.
-          */
-         int sample_mode;
-         if (BITFIELD_BIT(i) & INTEL_BARYCENTRIC_NONPERSPECTIVE_BITS) {
-            sample_mode = util_last_bit(fs_prog_data->barycentric_interp_modes &
-                                        INTEL_BARYCENTRIC_NONPERSPECTIVE_BITS) - 1;
-         } else {
-            sample_mode = util_last_bit(fs_prog_data->barycentric_interp_modes &
-                                        INTEL_BARYCENTRIC_PERSPECTIVE_BITS) - 1;
-         }
-         assert(fs_prog_data->barycentric_interp_modes &
-                BITFIELD_BIT(sample_mode));
-
-         if (i == sample_mode)
-            continue;
-
-         uint8_t *barys = payload.barycentric_coord_reg[i];
-
-         uint8_t *sample_barys = payload.barycentric_coord_reg[sample_mode];
-         assert(barys[0] && sample_barys[0]);
-
-         if (!loaded_flag) {
-            brw_check_dynamic_fs_config(ubld, fs_prog_data,
-                                        INTEL_FS_CONFIG_PERSAMPLE_INTERP);
-         }
-
-         for (unsigned j = 0; j < s.dispatch_width / 8; j++) {
-            set_predicate(
-               BRW_PREDICATE_NORMAL,
-               ubld.MOV(brw_vec8_grf(barys[j / 2] + (j % 2) * 2, 0),
-                        brw_vec8_grf(sample_barys[j / 2] + (j % 2) * 2, 0)));
-         }
-      }
-   }
-
    for (int i = 0; i < INTEL_BARYCENTRIC_MODE_COUNT; ++i) {
       s.delta_xy[i] = brw_fetch_barycentric_reg(
          bld, payload.barycentric_coord_reg[i]);
@@ -538,8 +373,7 @@ brw_emit_interpolation_setup(brw_shader &s)
 
 
 /**
- * Once we've generated code, try to convert normal FS_OPCODE_FB_WRITE
- * instructions to FS_OPCODE_REP_FB_WRITE.
+ * Emit a special clear shader that uses a SIMD16 replicated data RT write.
  */
 static void
 brw_emit_repclear_shader(brw_shader &s)
@@ -547,7 +381,14 @@ brw_emit_repclear_shader(brw_shader &s)
    brw_fs_prog_key *key = (brw_fs_prog_key*) s.key;
    brw_send_inst *write = NULL;
 
-   assert(s.devinfo->ver < 20);
+   /* BSpec 47719 Replicate Data says:
+    *
+    * "Replicate Data Render Target Write message should not be used
+    *  on all projects TGL+."
+    *
+    * See 14017879046, 14017880152 for additional information.
+    */
+   assert(s.devinfo->ver < 12);
    assume(key->nr_color_regions > 0);
 
    brw_reg color_output = retype(brw_vec4_grf(127, 0), BRW_TYPE_UD);
@@ -578,7 +419,7 @@ brw_emit_repclear_shader(brw_shader &s)
       write->header_size = i == 0 ? 0 : 2;
       write->mlen = 1 + write->header_size;
 
-      write->sfid = BRW_SFID_RENDER_CACHE;
+      write->sfid = GEN_SFID_RENDER_CACHE;
       write->src[SEND_SRC_DESC] = brw_imm_ud(
          brw_fb_write_desc(
             s.devinfo, i,
@@ -610,6 +451,7 @@ calculate_urb_setup(const struct intel_device_info *devinfo,
                     const struct brw_fs_prog_key *key,
                     struct brw_fs_prog_data *prog_data,
                     nir_shader *nir,
+                    const struct intel_vue_map *prev_stage_vue_map,
                     const struct brw_mue_map *mue_map,
                     int *per_primitive_offsets)
 {
@@ -661,9 +503,12 @@ calculate_urb_setup(const struct intel_device_info *devinfo,
          first_read_offset = per_primitive_stride = 0;
       }
    } else {
-      brw_compute_vue_map(devinfo, &vue_map, inputs_read,
-                          key->base.vue_layout,
-                          1 /* pos_slots, TODO */);
+      if (prev_stage_vue_map) {
+         memcpy(&vue_map, prev_stage_vue_map, sizeof(vue_map));
+      } else {
+         brw_compute_vue_map(devinfo, &vue_map, inputs_read,
+                             key->base.vue_layout, 1 /* pos_slots */);
+      }
       brw_compute_per_primitive_map(per_primitive_offsets,
                                     &per_primitive_stride,
                                     &first_read_offset,
@@ -724,13 +569,15 @@ calculate_urb_setup(const struct intel_device_info *devinfo,
          }
       }
 
+      int last_slot = first_slot;
       for (int slot = first_slot; slot < vue_map.num_slots; slot++) {
          int varying = vue_map.slot_to_varying[slot];
          if (varying > 0 && (inputs_read & BITFIELD64_BIT(varying))) {
             prog_data->urb_setup[varying] = slot - first_slot;
+            last_slot = slot;
          }
       }
-      urb_next = vue_map.num_slots - first_slot;
+      urb_next = last_slot - first_slot + 1;
    }
 
    prog_data->num_varying_inputs = urb_next;
@@ -748,12 +595,19 @@ calculate_urb_setup(const struct intel_device_info *devinfo,
  * variables so that we catch interpolateAtCentroid() messages too, which
  * also need the INTEL_BARYCENTRIC_[NON]PERSPECTIVE_CENTROID mode set up.
  */
-static unsigned
-brw_compute_barycentric_interp_modes(const struct intel_device_info *devinfo,
-                                     const struct brw_fs_prog_key *key,
-                                     const nir_shader *shader)
+/**
+ * Return a bitfield where bit n is set if barycentric interpolation
+ * mode n (see enum intel_barycentric_mode) is needed by the fragment
+ * shader barycentric intrinsics that take an explicit offset or
+ * sample as argument.
+ */
+static void
+brw_compute_barycentric_interp_modes(const nir_shader *shader,
+                                     unsigned *out_interp_modes,
+                                     unsigned *out_offset_interp_modes)
 {
-   unsigned barycentric_interp_modes = 0;
+   *out_interp_modes = 0;
+   *out_offset_interp_modes = 0;
 
    nir_foreach_function_impl(impl, shader) {
       nir_foreach_block(block, impl) {
@@ -765,52 +619,25 @@ brw_compute_barycentric_interp_modes(const struct intel_device_info *devinfo,
             switch (intrin->intrinsic) {
             case nir_intrinsic_load_barycentric_pixel:
             case nir_intrinsic_load_barycentric_centroid:
-            case nir_intrinsic_load_barycentric_sample:
-            case nir_intrinsic_load_barycentric_at_sample:
-            case nir_intrinsic_load_barycentric_at_offset:
+            case nir_intrinsic_load_barycentric_sample: {
+               enum intel_barycentric_mode bary = brw_barycentric_mode(intrin);
+               *out_interp_modes |= 1 << bary;
                break;
-            default:
-               continue;
             }
 
-            enum intel_barycentric_mode bary =
-               brw_barycentric_mode(key, intrin);
+            case nir_intrinsic_load_barycentric_at_sample:
+            case nir_intrinsic_load_barycentric_at_offset: {
+               enum intel_barycentric_mode bary = brw_barycentric_mode(intrin);
+               *out_offset_interp_modes |= 1 << bary;
+               break;
+            }
 
-            barycentric_interp_modes |= 1 << bary;
+            default:
+               break;
+            }
          }
       }
    }
-
-   return barycentric_interp_modes;
-}
-
-/**
- * Return a bitfield where bit n is set if barycentric interpolation
- * mode n (see enum intel_barycentric_mode) is needed by the fragment
- * shader barycentric intrinsics that take an explicit offset or
- * sample as argument.
- */
-static unsigned
-brw_compute_offset_barycentric_interp_modes(const struct brw_fs_prog_key *key,
-                                            const nir_shader *shader)
-{
-   unsigned barycentric_interp_modes = 0;
-
-   nir_foreach_function_impl(impl, shader) {
-      nir_foreach_block(block, impl) {
-         nir_foreach_instr(instr, block) {
-            if (instr->type != nir_instr_type_intrinsic)
-               continue;
-
-            nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
-            if (intrin->intrinsic == nir_intrinsic_load_barycentric_at_offset ||
-                intrin->intrinsic == nir_intrinsic_load_barycentric_at_sample)
-               barycentric_interp_modes |= 1 << brw_barycentric_mode(key, intrin);
-         }
-      }
-   }
-
-   return barycentric_interp_modes;
 }
 
 static void
@@ -871,9 +698,22 @@ brw_nir_populate_fs_prog_data(nir_shader *shader,
                               const struct intel_device_info *devinfo,
                               const struct brw_fs_prog_key *key,
                               struct brw_fs_prog_data *prog_data,
+                              const struct intel_vue_map *prev_stage_vue_map,
                               const struct brw_mue_map *mue_map,
                               int *per_primitive_offsets)
 {
+   unsigned interp_modes, offset_interp_modes;
+   brw_compute_barycentric_interp_modes(shader, &interp_modes, &offset_interp_modes);
+
+   /* Prior to Gfx20, HW has a pixel interpolator which needs to be configured
+    * appropriately for interpolation at offset/sample. Gfx20+ does that
+    * calculation in software so we only need to look at offset_interp_modes.
+    */
+   if (devinfo->ver < 20)
+      interp_modes |= offset_interp_modes;
+
+   assert(key->multisample_fbo != INTEL_NEVER || !key->persample_interp);
+
    prog_data->uses_kill = shader->info.fs.uses_discard;
    prog_data->uses_omask = !key->ignore_sample_mask_out &&
       (shader->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK));
@@ -882,36 +722,57 @@ brw_nir_populate_fs_prog_data(nir_shader *shader,
    prog_data->computed_stencil =
       shader->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_STENCIL);
 
-   prog_data->sample_shading =
-      shader->info.fs.uses_sample_shading ||
-      shader->info.outputs_read;
-   prog_data->api_sample_shading = key->api_sample_shading;
-   prog_data->min_sample_shading = key->min_sample_shading;
+   prog_data->dual_src_blend =
+      shader->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_DUAL_SRC_BLEND);
+   assert(!prog_data->dual_src_blend || key->nr_color_regions == 1);
 
-   assert(key->multisample_fbo != INTEL_NEVER ||
-          key->persample_interp == INTEL_NEVER);
+   const bool sample_shading = shader->info.fs.uses_sample_shading;
 
-   prog_data->persample_dispatch = key->persample_interp;
-   if (prog_data->sample_shading)
-      prog_data->persample_dispatch = INTEL_ALWAYS;
-
-   /* We can only persample dispatch if we have a multisample FBO */
-   prog_data->persample_dispatch = MIN2(prog_data->persample_dispatch,
-                                        key->multisample_fbo);
-
-   /* Currently only the Vulkan API allows alpha_to_coverage to be dynamic. If
-    * persample_dispatch & multisample_fbo are not dynamic, Anv should be able
-    * to definitively tell whether alpha_to_coverage is on or off.
+   prog_data->persample_interp = sample_shading || key->persample_interp;
+   /* If we have both pixel & sample interpolation we need to enable persample
+    * dispatch, otherwise spec allows us to fallback to pixel in non MSAA
+    * cases.
     */
-   prog_data->alpha_to_coverage = key->alpha_to_coverage;
+   const unsigned interp_at_pixel_and_sample_bits =
+      BITFIELD_BIT(INTEL_BARYCENTRIC_PERSPECTIVE_PIXEL) |
+      BITFIELD_BIT(INTEL_BARYCENTRIC_PERSPECTIVE_SAMPLE);
+   const bool interp_at_pixel_and_sample =
+      (interp_modes & interp_at_pixel_and_sample_bits) ==
+      interp_at_pixel_and_sample_bits;
+   prog_data->persample_dispatch =
+      (prog_data->persample_interp && key->multisample_fbo >= INTEL_SOMETIMES) ||
+       interp_at_pixel_and_sample;
+
+   /* Move sample barycentric modes to pixel when persample dispatch is always
+    * disabled.
+    */
+   {
+      unsigned tmp = 0;
+      u_foreach_bit(b, interp_modes) {
+         tmp |= BITFIELD_BIT(
+            intel_fs_barycentric_mode_for_persample_dispatch(
+               prog_data->persample_dispatch,
+               (enum intel_barycentric_mode) b));
+      }
+      interp_modes = tmp;
+   }
+
+   /* Gate alpha to coverage with the draw buffer 0 being written.
+    */
+   prog_data->alpha_to_coverage =
+      (shader->info.outputs_written &
+       (BITFIELD64_BIT(FRAG_RESULT_COLOR) |
+        BITFIELD64_BIT(FRAG_RESULT_DATA0))) != 0 ?
+      key->alpha_to_coverage : INTEL_NEVER;
 
    assert(devinfo->verx10 >= 125 || key->mesh_input == INTEL_NEVER);
-   prog_data->mesh_input = key->mesh_input;
 
    assert(devinfo->verx10 >= 200 || key->provoking_vertex_last == INTEL_NEVER);
    prog_data->provoking_vertex_last = key->provoking_vertex_last;
 
-   prog_data->uses_sample_mask =
+   prog_data->uses_fully_covered =
+      BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_FULLY_COVERED);
+   prog_data->uses_sample_mask = prog_data->uses_fully_covered ||
       BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_SAMPLE_MASK_IN);
 
    /* From the Ivy Bridge PRM documentation for 3DSTATE_PS:
@@ -924,9 +785,8 @@ brw_nir_populate_fs_prog_data(nir_shader *shader,
     * persample dispatch, we hard-code it to 0.5.
     */
    prog_data->uses_pos_offset =
-      prog_data->persample_dispatch != INTEL_NEVER &&
-      (BITSET_TEST(shader->info.system_values_read,
-                   SYSTEM_VALUE_SAMPLE_POS) ||
+      prog_data->persample_dispatch &&
+      (BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_SAMPLE_POS) ||
        BITSET_TEST(shader->info.system_values_read,
                    SYSTEM_VALUE_SAMPLE_POS_OR_CENTER));
 
@@ -934,52 +794,31 @@ brw_nir_populate_fs_prog_data(nir_shader *shader,
    prog_data->post_depth_coverage = shader->info.fs.post_depth_coverage;
    prog_data->inner_coverage = shader->info.fs.inner_coverage;
 
-   prog_data->barycentric_interp_modes =
-      brw_compute_barycentric_interp_modes(devinfo, key, shader);
-
-   /* From the BDW PRM documentation for 3DSTATE_WM:
-    *
-    *    "MSDISPMODE_PERSAMPLE is required in order to select Perspective
-    *     Sample or Non- perspective Sample barycentric coordinates."
-    *
-    * So cleanup any potentially set sample barycentric mode when not in per
-    * sample dispatch.
-    */
-   if (prog_data->persample_dispatch == INTEL_NEVER) {
-      prog_data->barycentric_interp_modes &=
-         ~BITFIELD_BIT(INTEL_BARYCENTRIC_PERSPECTIVE_SAMPLE);
-   }
+   prog_data->barycentric_interp_modes = interp_modes;
 
    if (devinfo->ver >= 20) {
-      const unsigned offset_bary_modes =
-         brw_compute_offset_barycentric_interp_modes(key, shader);
-
       prog_data->vertex_attributes_bypass = brw_needs_vertex_attributes_bypass(shader);
 
       prog_data->uses_npc_bary_coefficients =
-         offset_bary_modes & INTEL_BARYCENTRIC_NONPERSPECTIVE_BITS;
+         offset_interp_modes & INTEL_BARYCENTRIC_NONPERSPECTIVE_BITS;
       prog_data->uses_pc_bary_coefficients =
-         offset_bary_modes & ~INTEL_BARYCENTRIC_NONPERSPECTIVE_BITS;
+         offset_interp_modes & ~INTEL_BARYCENTRIC_NONPERSPECTIVE_BITS;
       prog_data->uses_sample_offsets =
-         offset_bary_modes & ((1 << INTEL_BARYCENTRIC_PERSPECTIVE_SAMPLE) |
-                              (1 << INTEL_BARYCENTRIC_NONPERSPECTIVE_SAMPLE));
+         offset_interp_modes & ((1 << INTEL_BARYCENTRIC_PERSPECTIVE_SAMPLE) |
+                                (1 << INTEL_BARYCENTRIC_NONPERSPECTIVE_SAMPLE));
    }
 
    prog_data->uses_nonperspective_interp_modes =
       (prog_data->barycentric_interp_modes & INTEL_BARYCENTRIC_NONPERSPECTIVE_BITS) ||
       prog_data->uses_npc_bary_coefficients;
 
-   /* The current VK_EXT_graphics_pipeline_library specification requires
-    * coarse to specified at compile time. But per sample interpolation can be
-    * dynamic. So we should never be in a situation where coarse &
-    * persample_interp are both respectively true & INTEL_ALWAYS.
-    *
-    * Coarse will dynamically turned off when persample_interp is active.
+   /* Variable rate shading & sample shading are 2 features that are known at
+    * compile time in Vulkan GPL & ESO scenarios, so a driver should not be
+    * setting both at the same time.
     */
-   assert(!key->coarse_pixel || key->persample_interp != INTEL_ALWAYS);
+   assert(!key->coarse_pixel || !key->persample_interp);
 
-   prog_data->coarse_pixel_dispatch =
-      intel_sometimes_invert(prog_data->persample_dispatch);
+   prog_data->coarse_pixel_dispatch = !prog_data->persample_dispatch;
    if (!key->coarse_pixel ||
        /* DG2 should support this, but Wa_22012766191 says there are issues
         * with CPS 1x1 + MSAA + FS writing to oMask.
@@ -987,11 +826,11 @@ brw_nir_populate_fs_prog_data(nir_shader *shader,
        (devinfo->verx10 < 200 &&
         (prog_data->uses_omask ||
          prog_data->uses_sample_mask)) ||
-       prog_data->sample_shading ||
+       sample_shading ||
        (prog_data->computed_depth_mode != BRW_PSCDEPTH_OFF) ||
        prog_data->computed_stencil ||
        devinfo->ver < 11) {
-      prog_data->coarse_pixel_dispatch = INTEL_NEVER;
+      prog_data->coarse_pixel_dispatch = false;
    }
 
    /* ICL PRMs, Volume 9: Render Engine, Shared Functions Pixel Interpolater,
@@ -1021,7 +860,7 @@ brw_nir_populate_fs_prog_data(nir_shader *shader,
     * interpolater message at sample.
     */
    if (intel_nir_pulls_at_sample(shader))
-      prog_data->coarse_pixel_dispatch = INTEL_NEVER;
+      prog_data->coarse_pixel_dispatch = false;
 
    /* We choose to always enable VMask prior to XeHP, as it would cause
     * us to lose out on the eliminate_find_live_channel() optimization.
@@ -1029,18 +868,19 @@ brw_nir_populate_fs_prog_data(nir_shader *shader,
    prog_data->uses_vmask = devinfo->verx10 < 125 ||
                            shader->info.fs.needs_coarse_quad_helper_invocations ||
                            shader->info.uses_wide_subgroup_intrinsics ||
-                           prog_data->coarse_pixel_dispatch != INTEL_NEVER;
+                           prog_data->coarse_pixel_dispatch;
 
    prog_data->uses_src_w =
       BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_FRAG_COORD_W);
    prog_data->uses_src_depth =
       BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_FRAG_COORD_Z) &&
-      prog_data->coarse_pixel_dispatch == INTEL_NEVER;
+      !prog_data->coarse_pixel_dispatch;
    prog_data->uses_depth_w_coefficients = prog_data->uses_pc_bary_coefficients ||
       (BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_FRAG_COORD_Z) &&
-       prog_data->coarse_pixel_dispatch != INTEL_NEVER);
+       prog_data->coarse_pixel_dispatch);
 
-   calculate_urb_setup(devinfo, key, prog_data, shader, mue_map, per_primitive_offsets);
+   calculate_urb_setup(devinfo, key, prog_data, shader, prev_stage_vue_map,
+                       mue_map, per_primitive_offsets);
    brw_compute_flat_inputs(prog_data, shader);
 }
 
@@ -1302,9 +1142,6 @@ run_fs(brw_shader &s, bool allow_spilling, bool do_rep_send)
 
    s.payload_ = new brw_fs_thread_payload(s);
 
-   if (nir->info.ray_queries > 0)
-      s.limit_dispatch_width(16, "SIMD32 not supported with ray queries.\n");
-
    if (do_rep_send) {
       assert(s.dispatch_width == 16);
       brw_emit_repclear_shader(s);
@@ -1413,7 +1250,7 @@ brw_print_fs_urb_setup(FILE *fp, const struct brw_fs_prog_data *prog_data,
    }
 }
 
-static void
+void
 brw_nir_cleanup_pre_fs_prog_data(brw_pass_tracker *pt)
 {
    pass_tracker_new_loop(pt);
@@ -1428,14 +1265,76 @@ brw_nir_cleanup_pre_fs_prog_data(brw_pass_tracker *pt)
    } while (pt->progress);
 }
 
+static unsigned
+limit_fs_dispatch_width(const struct intel_device_info *devinfo,
+                        const nir_shader *nir,
+                        const struct brw_fs_prog_key *key)
+{
+   unsigned limit = 32;
+
+   /* We don't support SIMD32 FS with ray queries.  We could, but the message
+    * is limited to SIMD16, and they're complex enough that SIMD32 isn't
+    * likely to be useful anyway.
+    */
+   if (nir->info.ray_queries > 0)
+      limit = MIN2(limit, 16);
+
+   /* The 'Render Target Write message' section of the docs says:
+    *
+    *    "Output Stencil is not supported with SIMD16 Render Target
+    *     Write Messages."
+    */
+   if (nir->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_STENCIL))
+      limit = MIN2(limit, devinfo->ver >= 20 ? 16 : 8);
+
+   /* Following condition implements Wa_14017468336:
+    *
+    * "If dual source blend is enabled do not enable SIMD32 dispatch" and
+    * "For a thread dispatched as SIMD32, must not issue SIMD8 message with
+    *  Last Render Target Select set."
+    *
+    * The dual-source RT write messages fail to release the thread
+    * dependency on ICL and TGL with SIMD32 dispatch, leading to hangs.
+    *
+    * XXX - Emit an extra single-source NULL RT-write marked LastRT in
+    *       order to release the thread dependency without disabling SIMD32.
+    *
+    * The dual-source RT write messages may lead to hangs with SIMD16
+    * dispatch on ICL due some unknown reasons, see:
+    *
+    * https://gitlab.freedesktop.org/mesa/mesa/-/issues/2183
+    */
+   if (nir->info.fs.color_is_dual_source &&
+       devinfo->ver >= 11 && devinfo->ver <= 12)
+      limit = MIN2(limit, 8);
+
+   if (devinfo->ver < 20 && key->coarse_pixel) {
+      /* SIMD32 is not supported for coarse pixel shading */
+      limit = MIN2(limit, 16);
+
+      /* SIMD16 coarse pixel shading cannot use the SIMD8 messages required
+       * for dual source blending.
+       */
+      if (nir->info.fs.color_is_dual_source)
+         limit = MIN2(limit, 8);
+   }
+
+   return limit;
+}
+
+#define INTEL_SIMD_FORCE(x) \
+   ((intel_simd_overridden & (1 << MESA_SHADER_FRAGMENT)) && INTEL_SIMD(FS, x))
+
 const unsigned *
 brw_compile_fs(const struct brw_compiler *compiler,
                struct brw_compile_fs_params *params)
 {
    struct nir_shader *nir = params->base.nir;
-   const struct brw_fs_prog_key *key = params->key;
-   struct brw_fs_prog_data *prog_data = params->prog_data;
-   bool allow_spilling = params->allow_spilling;
+   const struct brw_fs_prog_key *key =
+      (const struct brw_fs_prog_key *)params->base.key;
+   struct brw_fs_prog_data *prog_data =
+      (struct brw_fs_prog_data *)params->base.prog_data;
+   bool allow_spilling = true;
    const bool debug_enabled =
       brw_should_print_shader(nir, params->base.debug_flag ?
                                    params->base.debug_flag : DEBUG_WM,
@@ -1460,9 +1359,11 @@ brw_compile_fs(const struct brw_compiler *compiler,
    brw_nir_apply_key(pt, &key->base, max_subgroup_size);
 
    if (brw_nir_fragment_shader_needs_wa_18019110168(devinfo, key->mesh_input, nir)) {
-      if (params->mue_map && params->mue_map->wa_18019110168_active) {
-         brw_nir_frag_convert_attrs_prim_to_vert(
-            nir, params->mue_map->per_primitive_offsets);
+      if (params->mue_map) {
+         if (params->mue_map->wa_18019110168_active) {
+            brw_nir_frag_convert_attrs_prim_to_vert(
+               nir, params->mue_map->per_primitive_offsets);
+         }
       } else {
          BRW_NIR_PASS(brw_nir_frag_convert_attrs_prim_to_vert_indirect,
                       devinfo, params);
@@ -1493,7 +1394,7 @@ brw_compile_fs(const struct brw_compiler *compiler,
    memset(per_primitive_offsets, -1, sizeof(per_primitive_offsets));
 
    brw_nir_populate_fs_prog_data(nir, compiler->devinfo, key, prog_data,
-                                 params->mue_map,
+                                 params->vue_map, params->mue_map,
                                  per_primitive_offsets);
 
    /* From the SKL PRM, Volume 7, "Alpha Coverage":
@@ -1509,31 +1410,10 @@ brw_compile_fs(const struct brw_compiler *compiler,
       BRW_NIR_PASS(brw_nir_lower_alpha_to_coverage);
    }
 
-   if (prog_data->coarse_pixel_dispatch != INTEL_NEVER)
+   if (prog_data->coarse_pixel_dispatch)
       BRW_NIR_PASS(brw_nir_lower_frag_coord_z, devinfo);
 
-   if (!brw_fs_prog_key_is_dynamic(key)) {
-      uint32_t f = 0;
-
-      if (key->multisample_fbo == INTEL_ALWAYS)
-         f |= INTEL_FS_CONFIG_MULTISAMPLE_FBO;
-
-      if (key->alpha_to_coverage == INTEL_ALWAYS)
-         f |= INTEL_FS_CONFIG_ALPHA_TO_COVERAGE;
-
-      if (key->provoking_vertex_last == INTEL_ALWAYS)
-         f |= INTEL_FS_CONFIG_PROVOKING_VERTEX_LAST;
-
-      if (key->persample_interp == INTEL_ALWAYS) {
-         f |= INTEL_FS_CONFIG_PERSAMPLE_DISPATCH |
-              INTEL_FS_CONFIG_PERSAMPLE_INTERP;
-      }
-
-      if (prog_data->coarse_pixel_dispatch == INTEL_ALWAYS)
-         f |= INTEL_FS_CONFIG_COARSE_RT_WRITES;
-
-      BRW_NIR_PASS(nir_inline_sysval, nir_intrinsic_load_fs_config_intel, f);
-   }
+   BRW_NIR_PASS(brw_nir_lower_fs_config_intel, key, prog_data);
 
    brw_postprocess_nir_opts(pt);
 
@@ -1558,10 +1438,13 @@ brw_compile_fs(const struct brw_compiler *compiler,
    const unsigned reqd_dispatch_width = brw_required_dispatch_width(&nir->info);
    assert(reqd_dispatch_width == 0 || reqd_dispatch_width == 16);
 
-   /* Limit identified when first variant is compiled, see
-    * brw_shader::limit_dispatch_width().
-    */
-   unsigned dispatch_width_limit = UINT_MAX;
+   unsigned min_dispatch_width = devinfo->ver < 20 ? 8 : 16;
+   unsigned max_dispatch_width = limit_fs_dispatch_width(devinfo, nir, key);
+
+   if (reqd_dispatch_width) {
+      assert(reqd_dispatch_width == 16);
+      min_dispatch_width = max_dispatch_width = reqd_dispatch_width;
+   }
 
    std::unique_ptr<brw_shader> v8, v16, v32, vmulti;
    float throughput = 0;
@@ -1580,7 +1463,7 @@ brw_compile_fs(const struct brw_compiler *compiler,
       .archiver                = params->base.archiver,
    };
 
-   if (devinfo->ver < 20) {
+   if (min_dispatch_width == 8) {
       brw_shader_params shader_params = base_shader_params;
       shader_params.dispatch_width = 8;
       shader_params.num_polygons   = 1;
@@ -1591,17 +1474,6 @@ brw_compile_fs(const struct brw_compiler *compiler,
                                                 v8->fail_msg);
          return NULL;
       }
-
-      if (key->coarse_pixel) {
-         if (prog_data->dual_src_blend) {
-            v8->limit_dispatch_width(8, "SIMD16 coarse pixel shading cannot"
-                                     " use SIMD8 messages.\n");
-         }
-         v8->limit_dispatch_width(16, "SIMD32 not supported with coarse"
-                                  " pixel shading.\n");
-      }
-
-      dispatch_width_limit = MIN2(dispatch_width_limit, v8->max_dispatch_width);
 
       if (INTEL_SIMD(FS, 8)) {
          assert(v8->payload().num_regs % reg_unit(devinfo) == 0);
@@ -1620,8 +1492,6 @@ brw_compile_fs(const struct brw_compiler *compiler,
    }
 
    if (compiler->optimistic_simd_heuristic) {
-      unsigned max_dispatch_width = reqd_dispatch_width ? reqd_dispatch_width : 32;
-
       if (max_polygons >= 2 && !key->coarse_pixel) {
          if (max_polygons >= 4 && max_dispatch_width >= 32 &&
              4 * prog_data->num_varying_inputs <= MAX_VARYING &&
@@ -1729,9 +1599,11 @@ brw_compile_fs(const struct brw_compiler *compiler,
       }
 
    } else {
-      if ((!has_spilled && dispatch_width_limit >= 16 &&
-           !beyond_threshold[1] && INTEL_SIMD(FS, 16)) ||
-          reqd_dispatch_width == 16) {
+      bool simd16_failed = false;
+
+      if (min_dispatch_width <= 16 && max_dispatch_width >= 16 &&
+          (max_dispatch_width == 16 || INTEL_SIMD_FORCE(16) ||
+           (!has_spilled && !beyond_threshold[1] && INTEL_SIMD(FS, 16)))) {
          /* Try a SIMD16 compile */
          brw_shader_params shader_params = base_shader_params;
          shader_params.dispatch_width = 16;
@@ -1744,9 +1616,8 @@ brw_compile_fs(const struct brw_compiler *compiler,
                                 "SIMD16 shader failed to compile: %s\n",
                                 v16->fail_msg);
             v16.reset();
+            simd16_failed = true;
          } else {
-            dispatch_width_limit = MIN2(dispatch_width_limit, v16->max_dispatch_width);
-
             assert(v16->payload().num_regs % reg_unit(devinfo) == 0);
             prog_data->dispatch_grf_start_reg_16 = v16->payload().num_regs / reg_unit(devinfo);
             prog_data->base.grf_used = MAX2(prog_data->base.grf_used,
@@ -1759,15 +1630,12 @@ brw_compile_fs(const struct brw_compiler *compiler,
          }
       }
 
-      const bool simd16_failed = !v16;
+      if (max_dispatch_width == 32 &&
+          (INTEL_SIMD_FORCE(32) ||
+           (!has_spilled && !beyond_threshold[2] &&
+            !simd16_failed && INTEL_SIMD(FS, 32)))) {
+         assert(!prog_data->base.ray_queries);
 
-      /* Currently, the compiler only supports SIMD32 on SNB+ */
-      if (!has_spilled &&
-          dispatch_width_limit >= 32 &&
-          !beyond_threshold[2] &&
-          reqd_dispatch_width == 0 &&
-          !simd16_failed && INTEL_SIMD(FS, 32) &&
-          !prog_data->base.ray_queries) {
          /* Try a SIMD32 compile */
          brw_shader_params shader_params = base_shader_params;
          shader_params.dispatch_width = 32;
@@ -1783,7 +1651,7 @@ brw_compile_fs(const struct brw_compiler *compiler,
          } else {
             const brw_performance &perf = v32->performance_analysis.require();
 
-            if (!INTEL_DEBUG(DEBUG_DO32) && throughput >= perf.throughput) {
+            if (!INTEL_SIMD_FORCE(32) && throughput >= perf.throughput) {
                brw_shader_perf_log(compiler, params->base.log_data,
                                    "SIMD32 shader inefficient\n");
                v32.reset();
@@ -1803,9 +1671,10 @@ brw_compile_fs(const struct brw_compiler *compiler,
           reqd_dispatch_width == 0) {
 
          if (devinfo->ver >= 20 && max_polygons >= 4 &&
-             dispatch_width_limit >= 32 && !beyond_threshold[2] &&
+             max_dispatch_width >= 32 &&
+             (!beyond_threshold[2] || INTEL_SIMD_FORCE(4X8)) &&
              4 * prog_data->num_varying_inputs <= MAX_VARYING &&
-             INTEL_SIMD(FS, 4X8)) {
+             INTEL_SIMD_FORCE(4X8)) {
             /* Try a quad-SIMD8 compile */
             brw_shader_params shader_params = base_shader_params;
             shader_params.dispatch_width = 32;
@@ -1823,9 +1692,10 @@ brw_compile_fs(const struct brw_compiler *compiler,
          }
 
          if (!vmulti && devinfo->ver >= 20 &&
-             dispatch_width_limit >= 32 && !beyond_threshold[2] &&
+             max_dispatch_width >= 32 &&
+             (!beyond_threshold[2] || INTEL_SIMD_FORCE(4X8)) &&
              2 * prog_data->num_varying_inputs <= MAX_VARYING &&
-             INTEL_SIMD(FS, 2X16)) {
+             INTEL_SIMD_FORCE(2X16)) {
             /* Try a dual-SIMD16 compile */
             brw_shader_params shader_params = base_shader_params;
             shader_params.dispatch_width = 32;
@@ -1842,9 +1712,10 @@ brw_compile_fs(const struct brw_compiler *compiler,
             }
          }
 
-         if (!vmulti && dispatch_width_limit >= 16 && !beyond_threshold[1] &&
+         if (!vmulti && max_dispatch_width >= 16 &&
+             (!beyond_threshold[1] || INTEL_SIMD_FORCE(2X8)) &&
              2 * prog_data->num_varying_inputs <= MAX_VARYING &&
-             INTEL_SIMD(FS, 2X8)) {
+             INTEL_SIMD_FORCE(2X8)) {
             /* Try a dual-SIMD8 compile */
             brw_shader_params shader_params = base_shader_params;
             shader_params.dispatch_width = 16;
@@ -1869,58 +1740,49 @@ brw_compile_fs(const struct brw_compiler *compiler,
                                       vmulti->grf_used);
    }
 
-   /* When the caller compiles a repclear or fast clear shader, they
-    * want SIMD16-only.
-    */
-   if (reqd_dispatch_width == 16)
-      v8.reset();
+   brw_to_binary_params to_binary_params = {
+      .compiler = compiler,
+      .params = &params->base,
+      .prog_data = &prog_data->base,
+   };
 
-   brw_generator g(compiler, &params->base, &prog_data->base,
-                  MESA_SHADER_FRAGMENT);
-
-   if (unlikely(debug_enabled)) {
-      g.enable_debug(ralloc_asprintf(params->base.mem_ctx,
-                                     "%s fragment shader %s",
-                                     nir->info.label ?
-                                        nir->info.label : "unnamed",
-                                     nir->info.name));
-   }
-
-   struct genisa_stats *stats = params->base.stats;
-   uint32_t max_dispatch_width = 0;
+   unsigned num_variants = 0;
 
    if (vmulti) {
       prog_data->dispatch_multi = vmulti->dispatch_width;
       prog_data->max_polygons = vmulti->max_polygons;
-      g.generate_code(*vmulti, stats);
-      stats = stats ? stats + 1 : NULL;
+      to_binary_params.shaders[num_variants++] = vmulti.get();
       max_dispatch_width = vmulti->dispatch_width;
    } else if (v8) {
       prog_data->dispatch_8 = true;
-      g.generate_code(*v8, stats);
-      stats = stats ? stats + 1 : NULL;
+      to_binary_params.shaders[num_variants++] = v8.get();
       max_dispatch_width = 8;
    }
 
    if (v16) {
       prog_data->dispatch_16 = true;
-      prog_data->prog_offset_16 = g.generate_code(*v16, stats);
-      stats = stats ? stats + 1 : NULL;
+      to_binary_params.shaders[num_variants++] = v16.get();
       max_dispatch_width = 16;
    }
 
    if (v32) {
       prog_data->dispatch_32 = true;
-      prog_data->prog_offset_32 = g.generate_code(*v32, stats);
-      stats = stats ? stats + 1 : NULL;
+      to_binary_params.shaders[num_variants++] = v32.get();
       max_dispatch_width = 32;
    }
 
-   for (struct genisa_stats *s = params->base.stats; s != NULL && s != stats; s++)
-      s->max_dispatch_width = max_dispatch_width;
+   const unsigned *assembly = brw_to_binary(&to_binary_params);
 
-   g.add_const_data(nir->constant_data, nir->constant_data_size);
-   return g.get_assembly();
+   if (v16)
+      prog_data->prog_offset_16 = v16->start_offset;
+   if (v32)
+      prog_data->prog_offset_32 = v32->start_offset;
+
+   /* Override per-variant max_dispatch_width to make reports more useful. */
+   for (unsigned i = 0; i < num_variants && params->base.stats; i++)
+      params->base.stats[i].max_dispatch_width = max_dispatch_width;
+
+   return assembly;
 }
 
 extern "C" void

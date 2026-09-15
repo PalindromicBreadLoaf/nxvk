@@ -161,7 +161,7 @@ nir_deref_instr_has_complex_use(nir_deref_instr *deref,
       if (nir_src_is_if(use_src))
          return true;
 
-      nir_instr *use_instr = nir_src_parent_instr(use_src);
+      nir_instr *use_instr = nir_src_use_instr(use_src);
 
       switch (use_instr->type) {
       case nir_instr_type_deref: {
@@ -198,6 +198,7 @@ nir_deref_instr_has_complex_use(nir_deref_instr *deref,
          nir_intrinsic_instr *use_intrin = nir_instr_as_intrinsic(use_instr);
          switch (use_intrin->intrinsic) {
          case nir_intrinsic_load_deref:
+         case nir_intrinsic_load_deref_transpose_amd:
             assert(use_src == &use_intrin->src[0]);
             continue;
 
@@ -834,22 +835,12 @@ nir_rematerialize_deref_in_use_blocks(nir_deref_instr *instr)
       return true;
 
    struct rematerialize_deref_state state = {
-      .builder = nir_builder_create(nir_cf_node_get_function(&instr->instr.block->cf_node)),
+      .builder = nir_builder_create(instr->instr.block->impl)
    };
 
-   nir_foreach_use_safe(use, &instr->def) {
-      nir_instr *parent = nir_src_parent_instr(use);
-      if (parent->block == instr->instr.block)
-         continue;
-
-      /* If a deref is used in a phi, we can't rematerialize it, as the new
-       * derefs would appear before the phi, which is not valid.
-       */
-      if (parent->type == nir_instr_type_phi)
-         continue;
-
-      state.block = parent->block;
-      state.builder.cursor = nir_before_instr(parent);
+   nir_foreach_use_including_if_safe(use, &instr->def) {
+      state.block = nir_src_get_block(use);
+      state.builder.cursor = nir_before_src(use);
       rematerialize_deref_src(use, &state);
    }
 
@@ -891,10 +882,10 @@ static void
 nir_deref_instr_fixup_child_types(nir_deref_instr *parent)
 {
    nir_foreach_use(use, &parent->def) {
-      if (nir_src_parent_instr(use)->type != nir_instr_type_deref)
+      if (nir_src_use_instr(use)->type != nir_instr_type_deref)
          continue;
 
-      nir_deref_instr *child = nir_instr_as_deref(nir_src_parent_instr(use));
+      nir_deref_instr *child = nir_instr_as_deref(nir_src_use_instr(use));
       switch (child->deref_type) {
       case nir_deref_type_var:
          UNREACHABLE("nir_deref_type_var cannot be a child");
@@ -1236,7 +1227,7 @@ opt_deref_cast(nir_builder *b, nir_deref_instr *cast)
       /* If this isn't a trivial array cast, we can't propagate into
        * ptr_as_array derefs.
        */
-      if (is_deref_ptr_as_array(nir_src_parent_instr(use_src)) &&
+      if (is_deref_ptr_as_array(nir_src_use_instr(use_src)) &&
           !trivial_array_cast)
          continue;
 
@@ -1536,6 +1527,8 @@ nir_opt_deref_impl(nir_function_impl *impl)
             case nir_intrinsic_load_deref:
                if (opt_load_vec_deref(&b, intrin))
                   progress = true;
+               FALLTHROUGH;
+            case nir_intrinsic_load_deref_transpose_amd:
                if (opt_load_undef_deref(&b, intrin))
                   progress = true;
                break;

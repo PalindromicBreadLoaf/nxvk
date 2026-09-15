@@ -18,7 +18,7 @@ are_all_uses_fadd(nir_def *def)
       if (nir_src_is_if(use_src))
          return false;
 
-      nir_instr *use_instr = nir_src_parent_instr(use_src);
+      nir_instr *use_instr = nir_src_use_instr(use_src);
       if (use_instr->type != nir_instr_type_alu)
          return false;
 

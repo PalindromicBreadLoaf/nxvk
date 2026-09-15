@@ -9,7 +9,6 @@
  */
 
 #include "ac_descriptors.h"
-#include "gfx10_format_table.h"
 
 #include "radv_buffer.h"
 #include "radv_buffer_view.h"
@@ -37,6 +36,19 @@ radv_make_texel_buffer_descriptor(struct radv_device *device, uint64_t va, VkFor
       range /= stride;
    }
 
+   /* Previous code used SELECT_STRUCTURED_WITH_OFFSET.
+    * Both are valid options for texel buffers, but pick STRUCTURED
+    * for pragmatic reasons:
+    * - AMD D3D12 driver uses just STRUCTURED here.
+    *   This affects visible application behavior when attempting
+    *   to use 32-bit atomics on an R16_UINT view.
+    *   IL-2: Korea for example relies on this atomic to go through
+    *   as if the base texel buffer view is 32-bit, and it works by accident on D3D12 native driver.
+    *   It's possible for vkd3d-proton to workaround this quirk at significant complexity,
+    *   but if there are more direct methods available, this is the better place to do so.
+    * - Texel buffers never get intra-element offsets driven by application,
+    *   so _OFFSET OOB doesn't add much.
+    * - Matches pre-gfx10 behavior. */
    const struct ac_buffer_state ac_state = {
       .va = va,
       .size = range,
@@ -49,7 +61,8 @@ radv_make_texel_buffer_descriptor(struct radv_device *device, uint64_t va, VkFor
             swizzle[3],
          },
       .stride = stride,
-      .gfx10_oob_select = V_008F0C_OOB_SELECT_STRUCTURED_WITH_OFFSET,
+      .gfx10_oob_select = V_008F0C_OOB_SELECT_STRUCTURED,
+      .has_desc_resource_level = pdev->info.compiler_info.has_desc_resource_level,
    };
 
    ac_build_buffer_descriptor(pdev->info.gfx_level, &ac_state, state);

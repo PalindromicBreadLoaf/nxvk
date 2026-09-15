@@ -1234,7 +1234,16 @@ anv_state_reserved_array_pool_free(struct anv_state_reserved_array_pool *pool,
    simple_mtx_lock(&pool->mutex);
    BITSET_SET(pool->states, idx);
    simple_mtx_unlock(&pool->mutex);
- }
+}
+
+void
+anv_state_reserved_array_pool_index_free(struct anv_state_reserved_array_pool *pool,
+                                         uint32_t index)
+{
+   simple_mtx_lock(&pool->mutex);
+   BITSET_SET(pool->states, index);
+   simple_mtx_unlock(&pool->mutex);
+}
 
 void
 anv_bo_pool_init(struct anv_bo_pool *pool, struct anv_device *device,
@@ -1360,7 +1369,7 @@ anv_scratch_pool_finish(struct anv_device *device, struct anv_scratch_pool *pool
 
    for (unsigned i = 0; i < 16; i++) {
       if (pool->surf_states[i].map != NULL) {
-         anv_state_pool_free(&device->scratch_surface_state_pool,
+         anv_state_pool_free(anv_device_get_scratch_surface_state_pool(device),
                              pool->surf_states[i]);
       }
    }
@@ -1456,7 +1465,7 @@ anv_scratch_pool_get_surf(struct anv_device *device,
    struct anv_address addr = { .bo = bo };
 
    struct anv_state state =
-      anv_state_pool_alloc(&device->scratch_surface_state_pool,
+      anv_state_pool_alloc(anv_device_get_scratch_surface_state_pool(device),
                            device->isl_dev.ss.size, 64);
 
    isl_surf_usage_flags_t usage =
@@ -1475,7 +1484,7 @@ anv_scratch_pool_get_surf(struct anv_device *device,
 
    uint32_t current = p_atomic_cmpxchg(&pool->surfs[bucket], 0, state.offset);
    if (current) {
-      anv_state_pool_free(&device->scratch_surface_state_pool, state);
+      anv_state_pool_free(anv_device_get_scratch_surface_state_pool(device), state);
       return current;
    } else {
       pool->surf_states[bucket] = state;
@@ -1687,16 +1696,18 @@ anv_device_alloc_bo(struct anv_device *device,
     * MTL(Xe KMD only)/LNL platforms, which incur largest perf penalty from
     * page misses.
     */
-   if (align64(size, 2 * 1024 * 1024) <= (size * 4 / 3) &&
-       anv_device_has_perf_improvement_with_2mb_pages_oversubscription(device))
-      size = align64(size, 2 * 1024 * 1024);
-   /* bos larger than 1MB can't be allocated with slab but to reduce pages we
-    * could align size to 64k pages to gain performance with minimum memory
-    * waste.
-    */
-   else if ((size > (1 * 1024 * 1024)) &&
-            anv_device_has_perf_improvement_with_64k_pages(device))
-      size = align64(size, 64 * 1024);
+   if (!ANV_DEBUG(NO_ALLOC_OVER_SUBSCRIPTION)) {
+      if (align64(size, 2 * 1024 * 1024) <= (size * 4 / 3) &&
+          anv_device_has_perf_improvement_with_2mb_pages_oversubscription(device))
+         size = align64(size, 2 * 1024 * 1024);
+      /* bos larger than 1MB can't be allocated with slab but to reduce pages we
+       * could align size to 64k pages to gain performance with minimum memory
+       * waste.
+       */
+      else if ((size > (1 * 1024 * 1024)) &&
+               anv_device_has_perf_improvement_with_64k_pages(device))
+         size = align64(size, 64 * 1024);
+   }
 
    const struct intel_memory_class_instance *regions[2];
    uint32_t nregions = 0;

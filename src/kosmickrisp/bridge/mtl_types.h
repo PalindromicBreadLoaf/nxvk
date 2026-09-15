@@ -18,6 +18,7 @@ typedef void mtl_heap;
 typedef void mtl_buffer;
 typedef void mtl_texture;
 typedef void mtl_command_queue;
+typedef void mtl_command_allocator;
 typedef void mtl_command_buffer;
 typedef void mtl_command_encoder;
 typedef void mtl_blit_encoder;
@@ -30,7 +31,7 @@ typedef void mtl_sampler;
 typedef void mtl_compute_pipeline_state;
 typedef void mtl_library;
 typedef void mtl_render_pipeline_state;
-typedef void mtl_function;
+typedef void mtl_function_descriptor;
 typedef void mtl_resource;
 typedef void mtl_render_pass_descriptor;
 typedef void mtl_render_pipeline_descriptor;
@@ -41,6 +42,14 @@ typedef void mtl_depth_stencil_state;
 typedef void mtl_render_pass_attachment_descriptor;
 typedef void mtl_residency_set;
 typedef void mtl_allocation;
+typedef void mtl_compiler;
+typedef void mtl_argument_table_descriptor;
+typedef void mtl_argument_table;
+typedef void mtl_commit_options;
+typedef void mtl_counter_heap;
+
+struct mtl_feedback_data;
+typedef void (*mtl_feedback_handler_callback)(struct mtl_feedback_data *data);
 
 /** ENUMS */
 enum mtl_cpu_cache_mode {
@@ -220,6 +229,79 @@ enum mtl_depth_clip_mode {
    MTL_DEPTH_CLIP_MODE_CLAMP = 1,
 };
 
+enum mtl_barrier_scope {
+   MTL_BARRIER_SCOPE_BUFFERS = 1 << 0,
+   MTL_BARRIER_SCOPE_TEXTURES = 1 << 1,
+   MTL_BARRIER_SCOPE_RENDER_TARGETS = 1 << 2,
+};
+
+enum mtl_stages {
+   MTL_STAGE_VERTEX = 1 << 0,
+   MTL_STAGE_FRAGMENT = 1 << 1,
+   MTL_STAGE_TILE = 1 << 2,
+   MTL_STAGE_OBJECTS = 1 << 3,
+   MTL_STAGE_MESH = 1 << 4,
+   MTL_STAGE_RESOURCE_STATE = 1 << 26,
+   MTL_STAGE_DISPATCH = 1 << 27,
+   MTL_STAGE_BLIT = 1 << 28,
+   MTL_STAGE_ACCELERATION_STRUCTURE = 1 << 29,
+   MTL_STAGE_MACHINE_LEARNING = 1 << 30,
+   MTL_STAGE_ALL =
+      (MTL_STAGE_VERTEX | MTL_STAGE_FRAGMENT | MTL_STAGE_TILE |
+       MTL_STAGE_OBJECTS | MTL_STAGE_MESH | MTL_STAGE_RESOURCE_STATE |
+       MTL_STAGE_DISPATCH | MTL_STAGE_BLIT | MTL_STAGE_ACCELERATION_STRUCTURE |
+       MTL_STAGE_MACHINE_LEARNING),
+
+};
+
+enum mtl_render_stages {
+   MTL_RENDER_STAGE_VERTEX = (1UL << 0),
+   MTL_RENDER_STAGE_FRAGMENT = (1UL << 1),
+   MTL_RENDER_STAGE_TILE = (1UL << 2),
+   MTL_RENDER_STAGE_OBJECT = (1UL << 3),
+   MTL_RENDER_STAGE_MESH = (1UL << 4),
+};
+
+enum mtl_command_queue_error {
+   /* Indicates the absence of any problems. */
+   MTL_COMMAND_QUEUE_ERROR_NONE = 0,
+
+   /* Indicates the workload takes longer to execute than the system allows. */
+   MTL_COMMAND_QUEUE_ERROR_TIMEOUT = 1,
+
+   /* Indicates a process doesn’t have access to a GPU device. */
+   MTL_COMMAND_QUEUE_ERROR_NOT_PERMITTED = 2,
+
+   /* Indicates the GPU doesn’t have sufficient memory to execute a command
+    * buffer.
+    */
+   MTL_COMMAND_QUEUE_ERROR_OUT_OF_MEMORY = 3,
+
+   /* Indicates the physical removal of the GPU before the command buffer
+    * completed. Deprecated in macOS 27, never used for Apple GPUs.
+    */
+   /* MTL_COMMAND_QUEUE_ERROR_DEVICE_REMOVED = 4, */
+
+   /* Indicates that the system revokes GPU access because it’s responsible for
+    * too many timeouts or hangs.
+    */
+   MTL_COMMAND_QUEUE_ERROR_ACCESS_REVOKED = 5,
+
+   /* Indicates an internal problem in the Metal framework. */
+   MTL_COMMAND_QUEUE_ERROR_INTERNAL = 6,
+};
+
+enum mtl_math_mode {
+   MTL_MATH_MODE_SAFE = 0,
+   MTL_MATH_MODE_RELAXED = 1,
+   MTL_MATH_MODE_FAST = 2,
+};
+
+enum mtl_math_floating_point_functions {
+   MTL_MATH_FLOATING_POINT_FUNCTIONS_FAST = 0,
+   MTL_MATH_FLOATING_POINT_FUNCTIONS_PRECISE = 1,
+};
+
 /** STRUCTURES */
 struct mtl_range {
    size_t offset;
@@ -232,6 +314,10 @@ struct mtl_origin {
 
 struct mtl_size {
    size_t x, y, z;
+};
+
+struct mtl_sample_position {
+   float x, y;
 };
 
 struct mtl_viewport {
@@ -269,6 +355,23 @@ struct mtl_buffer_image_copy {
    size_t image_slice;
    size_t image_level;
    enum mtl_blit_options options;
+};
+
+struct mtl_texture_memory_copy {
+   struct mtl_size image_size;
+   struct mtl_origin image_origin;
+   size_t buffer_stride_B;
+   size_t buffer_2d_image_size_B;
+   size_t image_slice;
+   size_t image_level;
+};
+
+struct mtl_feedback_data {
+   void *user_data;
+   const char *error_message;
+   double gpu_start;
+   double gpu_end;
+   enum mtl_command_queue_error error;
 };
 
 #endif /* KK_MTL_TYPES_H */

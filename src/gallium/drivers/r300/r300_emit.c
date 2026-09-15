@@ -705,12 +705,18 @@ void r300_emit_query_start(struct r300_context *r300, unsigned size, void*state)
     }
 
     if (use_dummy_z) {
+        unsigned depthpitch = 4 | R300_DEPTHMICROTILE_TILED_SQUARE;
+
+#if UTIL_ARCH_BIG_ENDIAN
+        depthpitch |= R300_DEPTHENDIAN(R300_SURF_DWORD_SWAP);
+#endif
+
         OUT_CS_REG(R300_ZB_FORMAT, R300_DEPTHFORMAT_16BIT_INT_Z);
 
         OUT_CS_REG(R300_ZB_DEPTHOFFSET, 0);
         OUT_CS_RELOC(surf);
 
-        OUT_CS_REG(R300_ZB_DEPTHPITCH, 4 | R300_DEPTHMICROTILE_TILED_SQUARE);
+        OUT_CS_REG(R300_ZB_DEPTHPITCH, depthpitch);
         OUT_CS_RELOC(surf);
     }
 
@@ -1536,6 +1542,8 @@ unsigned r300_get_num_cs_end_dwords(struct r300_context *r300)
     dwords += r300->hyperz_state.size + 2; /* emit_hyperz_end + zcache flush */
     if (r300->screen->caps.is_r500)
         dwords += 2; /* emit_index_bias */
+    if (!r300->screen->caps.has_tcl && r300->screen->caps.has_hardware_tcl)
+        dwords += 2; /* VAP status reset for other GL users/DDX */
     dwords += 3; /* MSPOS */
 
     return dwords;

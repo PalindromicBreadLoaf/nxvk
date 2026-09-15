@@ -17,9 +17,19 @@ struct nvkmd_mem;
 struct nvk_cmd_mem {
    struct nvkmd_mem *mem;
 
+   /** High-water mark of CPU writes, in bytes from the start of the mem. */
+   uint32_t used_B;
+
    /** Link in nvk_cmd_pool::free_bos or nvk_cmd_buffer::bos */
    struct list_head link;
 };
+
+static inline void
+nvk_cmd_mem_add_used(struct nvk_cmd_mem *mem, uint32_t end_B)
+{
+   if (end_B > mem->used_B)
+      mem->used_B = end_B;
+}
 
 #define NVK_CMD_QMD_SIZE 256
 

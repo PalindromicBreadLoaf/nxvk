@@ -47,7 +47,7 @@ all_uses_float(nir_def *def)
       if (nir_src_is_if(use))
          return false;
 
-      nir_instr *use_instr = nir_src_parent_instr(use);
+      nir_instr *use_instr = nir_src_use_instr(use);
       if (use_instr->type != nir_instr_type_alu)
          return false;
 
@@ -115,8 +115,6 @@ alu_cost(nir_alu_instr *alu)
    case nir_op_ineg:
    case nir_op_bcsel:
    case nir_op_b2b1:
-   case nir_op_b2b8:
-   case nir_op_b2b16:
    case nir_op_b2b32:
    case nir_op_b2i8:
    case nir_op_b2i16:
@@ -270,7 +268,7 @@ rewrite_cost(nir_def *def, const void *data)
 {
    bool mov_needed = false, vectorizable = true;
    nir_foreach_use(use, def) {
-      nir_instr *parent_instr = nir_src_parent_instr(use);
+      nir_instr *parent_instr = nir_src_use_instr(use);
       if (parent_instr->type == nir_instr_type_tex) {
          /* TODO: Maybe check the source index, but biases can be uniform */
          break;
@@ -358,7 +356,7 @@ lower_preamble(nir_builder *b, nir_intrinsic_instr *intr, void *data)
        * byte offset (first source), not the sampler index.
        */
       nir_foreach_use_safe(use, &intr->def) {
-         nir_instr *parent = nir_src_parent_instr(use);
+         nir_instr *parent = nir_src_use_instr(use);
          if (parent->type != nir_instr_type_intrinsic)
             continue;
          nir_intrinsic_instr *pintr = nir_instr_as_intrinsic(parent);
@@ -393,7 +391,7 @@ lower_preamble(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    }
 
    nir_foreach_use_safe(use, &intr->def) {
-      nir_instr *parent = nir_src_parent_instr(use);
+      nir_instr *parent = nir_src_use_instr(use);
 
       if (parent->type == nir_instr_type_intrinsic) {
          nir_intrinsic_instr *pintr = nir_instr_as_intrinsic(parent);

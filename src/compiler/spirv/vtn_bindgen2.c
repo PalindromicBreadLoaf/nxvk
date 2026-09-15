@@ -24,12 +24,9 @@ static const struct spirv_to_nir_options spirv_options = {
 };
 
 struct nir_shader_compiler_options generic_opts = {
-   /* TODO: Do we want to set has_*? Will drivers be able to lower
-    * appropriately?
-    */
-   .fuse_ffma16 = true,
-   .fuse_ffma32 = true,
-   .fuse_ffma64 = true,
+   .float_mul_add16 = nir_float_muladd_support_keep_weak_ffma,
+   .float_mul_add32 = nir_float_muladd_support_keep_weak_ffma,
+   .float_mul_add64 = nir_float_muladd_support_keep_weak_ffma,
 
    .max_unroll_iterations = 32,
    .max_unroll_iterations_fp64 = 32,
@@ -123,7 +120,7 @@ compile(void *memctx, const uint32_t *spirv, size_t spirv_size)
 
    assert(spirv_size % 4 == 0);
    nir_shader *nir =
-      spirv_to_nir(spirv, spirv_size / 4, NULL, 0, MESA_SHADER_KERNEL,
+      spirv_to_nir(spirv, spirv_size / 4, NULL, MESA_SHADER_KERNEL,
                    "library", &spirv_options, nir_options);
    nir_validate_shader(nir, "after spirv_to_nir");
    ralloc_steal(memctx, nir);

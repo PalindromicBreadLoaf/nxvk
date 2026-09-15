@@ -8,12 +8,16 @@
  */
 
 #include "nir/radv_meta_nir.h"
+#include "tools/radv_debug_hang.h"
 #include "radv_cp_dma.h"
-#include "radv_debug.h"
 #include "radv_meta.h"
 #include "radv_sdma.h"
+#include "radv_tracepoints.h"
+#include "vk_shader_module.h"
 
 #include "radv_cs.h"
+
+#include "vk_command_pool.h"
 
 struct fill_constants {
    uint64_t addr;
@@ -199,6 +203,8 @@ radv_compute_copy_memory(struct radv_cmd_buffer *cmd_buffer, uint64_t src_va, ui
       return;
    }
 
+   radv_utrace_begin_compute_copy_memory(cmd_buffer, size);
+
    radv_meta_bind_compute_pipeline(cmd_buffer, pipeline);
 
    assert(size <= UINT32_MAX);
@@ -220,6 +226,8 @@ radv_compute_copy_memory(struct radv_cmd_buffer *cmd_buffer, uint64_t src_va, ui
    radv_meta_push_constants(cmd_buffer, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(copy_consts), &copy_consts);
 
    radv_unaligned_dispatch(cmd_buffer, dim_x, 1, 1);
+
+   radv_utrace_end_compute_copy_memory(cmd_buffer);
 }
 
 static bool
@@ -360,7 +368,8 @@ radv_copy_memory(struct radv_cmd_buffer *cmd_buffer, uint64_t src_va, uint64_t d
                              radv_prefer_compute_or_cp_dma(device, size, src_copy_flags, dst_copy_flags));
 
    if (cmd_buffer->qf == RADV_QUEUE_TRANSFER) {
-      radv_sdma_copy_memory(device, cmd_buffer->cs, src_va, dst_va, size);
+      radv_sdma_copy_memory(device, cmd_buffer->cs, src_va, dst_va, size,
+                            cmd_buffer->vk.pool->flags & VK_COMMAND_POOL_CREATE_PROTECTED_BIT);
    } else if (use_compute) {
       radv_compute_copy_memory(cmd_buffer, src_va, dst_va, size);
    } else if (size) {

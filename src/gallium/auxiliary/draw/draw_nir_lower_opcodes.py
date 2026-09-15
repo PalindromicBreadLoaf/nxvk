@@ -12,7 +12,10 @@ a, b, c = 'a', 'b', 'c'
 # may introduce but gallivm does not support.
 lower = [
    (('fmulz', a, b),    ('bcsel', ('ior', ('feq', a, 0.0), ('feq', b, 0.0)), 0.0, ('fmul', a, b))),
-   (('ffmaz', a, b, c), ('bcsel', ('ior', ('feq', a, 0.0), ('feq', b, 0.0)), c,   ('ffma', a, b, c))),
+   (('ffmaz', a, b, c), ('bcsel', ('ior', ('feq', a, 0.0), ('feq', b, 0.0)), c,   ('ffma_weak', a, b, c))),
+
+   # draw shaders are GLSL shaders, which means we can just use ffma_weak
+   (('ffma', a, b, c),  ('ffma_weak', a, b, c)),
 
    (('bitfield_select', a, b, c), ('ixor', c, ('iand', a, ('ixor', b, c)))),
    (('ubfe', a, b, c), ('ubitfield_extract', a, ('iand', b, 0x1f), ('iand', c, 0x1f))),

@@ -19,8 +19,6 @@
 /* Default GPU ID if PAN_GPU_ID is not set. This defaults to Mali-G52. */
 #define PAN_GPU_ID_DEFAULT (0x7212)
 
-bool drm_shim_driver_prefers_first_render_node = true;
-
 static uint64_t
 pan_get_gpu_id(void)
 {
@@ -131,6 +129,8 @@ panfrost_ioctl_mmap_bo(int fd, unsigned long request, void *arg)
 
    mmap_bo->offset = drm_shim_bo_get_mmap_offset(shim_fd, bo);
 
+   drm_shim_bo_put(bo);
+
    return 0;
 }
 
@@ -164,7 +164,7 @@ panthor_ioctl_dev_query(int fd, unsigned long request, void *arg)
    switch (dev_query->type) {
    case DRM_PANTHOR_DEV_QUERY_GPU_INFO: {
       struct drm_panthor_gpu_info *gpu_info =
-         (struct drm_panthor_gpu_info *)dev_query->pointer;
+         (struct drm_panthor_gpu_info *)(uintptr_t)dev_query->pointer;
 
       gpu_info->gpu_id = pan_get_gpu_id() << 16;
       gpu_info->gpu_rev = 0;
@@ -193,19 +193,20 @@ panthor_ioctl_dev_query(int fd, unsigned long request, void *arg)
    }
    case DRM_PANTHOR_DEV_QUERY_CSIF_INFO: {
       struct drm_panthor_csif_info *csif_info =
-         (struct drm_panthor_csif_info *)dev_query->pointer;
+         (struct drm_panthor_csif_info *)(uintptr_t)dev_query->pointer;
 
-      /* Dumped from a G610 */
+      unsigned arch = pan_get_gpu_id() >> 12;
+
       csif_info->csg_slot_count = 8;
       csif_info->cs_slot_count = 8;
-      csif_info->cs_reg_count = 96;
+      csif_info->cs_reg_count = arch >= 12 ? 128 : 96;
       csif_info->scoreboard_slot_count = 8;
       csif_info->unpreserved_cs_reg_count = 4;
       return 0;
    }
    case DRM_PANTHOR_DEV_QUERY_TIMESTAMP_INFO: {
       struct drm_panthor_timestamp_info *timestamp_info =
-         (struct drm_panthor_timestamp_info *)dev_query->pointer;
+         (struct drm_panthor_timestamp_info *)(uintptr_t)dev_query->pointer;
 
       /* Noop values */
       timestamp_info->timestamp_frequency = 0;
@@ -216,7 +217,7 @@ panthor_ioctl_dev_query(int fd, unsigned long request, void *arg)
    }
    case DRM_PANTHOR_DEV_QUERY_GROUP_PRIORITIES_INFO: {
       struct drm_panthor_group_priorities_info *priorities_info =
-         (struct drm_panthor_group_priorities_info *)dev_query->pointer;
+         (struct drm_panthor_group_priorities_info *)(uintptr_t)dev_query->pointer;
 
       /* Default values */
       priorities_info->allowed_mask =
@@ -261,6 +262,8 @@ panthor_ioctl_bo_mmap_offset(int fd, unsigned long request, void *arg)
 
    mmap_offset->offset = drm_shim_bo_get_mmap_offset(shim_fd, bo);
 
+   drm_shim_bo_put(bo);
+
    return 0;
 }
 
@@ -303,14 +306,11 @@ drm_shim_driver_init(void)
    uint64_t gpu_id = pan_get_gpu_id();
    bool is_csf_based = (gpu_id >> 12) > 9;
 
-   shim_device.bus_type = DRM_BUS_PLATFORM;
-
    /* panfrost uses the DRM version to expose features, instead of getparam. */
    shim_device.version_major = 1;
    shim_device.version_patchlevel = 0;
 
    if (is_csf_based) {
-      shim_device.driver_name = "panthor";
       shim_device.version_minor = 2;
       shim_device.driver_ioctls = panthor_driver_ioctls;
       shim_device.driver_ioctl_count = ARRAY_SIZE(panthor_driver_ioctls);
@@ -323,23 +323,12 @@ drm_shim_driver_init(void)
       drm_shim_init_iomem_region(DRM_PANTHOR_USER_MMIO_OFFSET, getpagesize(),
                                  panthor_iomem_mmap);
 
-      drm_shim_override_file("DRIVER=panthor\n"
-                             "OF_FULLNAME=/soc/mali\n"
-                             "OF_COMPATIBLE_0=arm,mali-valhall-csf\n"
-                             "OF_COMPATIBLE_N=1\n",
-                             "/sys/dev/char/%d:%d/device/uevent", DRM_MAJOR,
-                             render_node_minor);
+      drm_shim_platform_device_setup("panthor", "/soc/mali", "arm,mali-valhall-csf");
    } else {
-      shim_device.driver_name = "panfrost";
       shim_device.version_minor = 1;
       shim_device.driver_ioctls = panfrost_driver_ioctls;
       shim_device.driver_ioctl_count = ARRAY_SIZE(panfrost_driver_ioctls);
 
-      drm_shim_override_file("DRIVER=panfrost\n"
-                             "OF_FULLNAME=/soc/mali\n"
-                             "OF_COMPATIBLE_0=arm,mali-t860\n"
-                             "OF_COMPATIBLE_N=1\n",
-                             "/sys/dev/char/%d:%d/device/uevent", DRM_MAJOR,
-                             render_node_minor);
+      drm_shim_platform_device_setup("panfrost", "/soc/mali", "arm,mali-t860");
    }
 }

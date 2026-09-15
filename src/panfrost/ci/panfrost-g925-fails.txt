@@ -3,11 +3,6 @@ angle-KHR-GLES31.core.shader_storage_buffer_object.advanced-matrix-vsfs,Fail
 angle-KHR-GLES31.core.shader_storage_buffer_object.advanced-usage-sync-vsfs,Fail
 angle-KHR-GLES31.core.texture_cube_map_array.sampling,Fail
 
-# deqp calls glCompressedTexImage2D with 0x8b90 which is GL_PALETTE4_RGB8_OES
-# ANGLE now exposes paletted textures to ES2+, and there's a CTS bug caught by this
-# https://gitlab.khronos.org/opengl/API/-/issues/278
-angle-dEQP-GLES2.functional.negative_api.texture.generatemipmap_zero_level_array_compressed,Fail
-
 # These fail when we enable mediump
 angle-dEQP-GLES3.functional.texture.wrap.astc_10x10.clamp_mirror_linear_divisible,Fail
 angle-dEQP-GLES3.functional.texture.wrap.astc_10x10.clamp_mirror_linear_not_divisible,Fail
@@ -769,3 +764,24 @@ angle-dEQP-GLES3.functional.texture.wrap.rgba8.clamp_repeat_nearest_npot,Fail
 angle-dEQP-GLES3.functional.texture.wrap.rgba8.mirror_repeat_nearest_npot,Fail
 angle-dEQP-GLES3.functional.texture.wrap.rgba8.repeat_mirror_nearest_npot,Fail
 angle-dEQP-GLES3.functional.texture.wrap.rgba8.repeat_repeat_nearest_npot,Fail
+
+# VKCTS 1.4.4.2 -> 1.4.5.3 uprev
+dEQP-VK.wsi.xcb.present_timing.query.parallel.parallel,Fail
+dEQP-VK.wsi.xlib.present_timing.basic.timing_queue,Fail
+
+# VKCTS 1.4.5.3 -> 1.4.6.1 uprev
+# [  164.514209] panthor 48000000.gpu: [drm] *ERROR* Unhandled Page fault in AS5 at VA 0x00007FFFFFFFD200
+# [  164.514209] raw fault status: 0x10003C3
+# [  164.514209] decoded fault status: SLAVE FAULT
+# [  164.514209] exception type 0xC3: TRANSLATION_FAULT_3
+# Not entirely reliable -- which ones crash vs pass may flip around, so clear the flakes entry when it's fixed.
+dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_bind_sparse,Crash
+dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_debug_utils,Crash
+dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_device_wait_idle,Crash
+dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_large2,Crash
+dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_small2,Crash
+dEQP-VK.synchronization2.internally_synchronized_queues.debug_utils_bind_sparse,Crash
+dEQP-VK.synchronization2.internally_synchronized_queues.device_wait_idle_bind_sparse,Crash
+dEQP-VK.synchronization2.internally_synchronized_queues.large2_bind_sparse,Crash
+dEQP-VK.synchronization2.internally_synchronized_queues.small2_bind_sparse,Crash
+dEQP-VK.synchronization2.internally_synchronized_queues.xcb_wsi_bind_sparse,Crash

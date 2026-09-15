@@ -110,6 +110,19 @@ vk_collect_dependency_info_src_stages(const VkDependencyInfo* pDependencyInfo)
    return stages;
 }
 
+VkPipelineStageFlags2
+vk_collect_dependency_info_dst_stages(const VkDependencyInfo* pDependencyInfo)
+{
+   VkPipelineStageFlags2 stages = 0;
+   for (uint32_t i = 0; i < pDependencyInfo->memoryBarrierCount; i++)
+      stages |= pDependencyInfo->pMemoryBarriers[i].dstStageMask;
+   for (uint32_t i = 0; i < pDependencyInfo->bufferMemoryBarrierCount; i++)
+      stages |= pDependencyInfo->pBufferMemoryBarriers[i].dstStageMask;
+   for (uint32_t i = 0; i < pDependencyInfo->imageMemoryBarrierCount; i++)
+      stages |= pDependencyInfo->pImageMemoryBarriers[i].dstStageMask;
+   return stages;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 vk_common_CmdWriteTimestamp(
    VkCommandBuffer                             commandBuffer,

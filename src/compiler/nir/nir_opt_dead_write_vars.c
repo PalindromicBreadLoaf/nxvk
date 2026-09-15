@@ -108,15 +108,21 @@ update_unused_writes(struct util_dynarray *unused_writes,
    return progress;
 }
 
+/**
+ * is_entrypoint needs to be nir_function::is_entrypoint of the function block
+ * belongs to. The alternative would have been to use nir_cf_node_get_function
+ * instead, but that's significantly more expensive and slows down shader
+ * compilation of bigger shaders with many variables by quite a bit.
+ */
 static bool
-ends_program(nir_block *block)
+ends_program(nir_block *block, bool is_entrypoint)
 {
    /* Avoid back-edges */
    if (block->cf_node.parent->type == nir_cf_node_loop)
       return false;
 
    /* Avoid called functions */
-   if (!nir_cf_node_get_function(&block->cf_node)->function->is_entrypoint)
+   if (!is_entrypoint)
       return false;
 
    if (block->successors[0] == NULL) {
@@ -129,12 +135,13 @@ ends_program(nir_block *block)
       return false;
 
    return exec_list_is_empty(&block->successors[0]->instr_list) &&
-          ends_program(block->successors[0]);
+          ends_program(block->successors[0], is_entrypoint);
 }
 
 static bool
 remove_dead_write_vars_local(nir_shader *shader, nir_block *block,
-                             struct util_dynarray *unused_writes)
+                             struct util_dynarray *unused_writes,
+                             bool is_entrypoint)
 {
    bool progress = false;
 
@@ -187,11 +194,33 @@ remove_dead_write_vars_local(nir_shader *shader, nir_block *block,
          break;
       }
 
+      case nir_intrinsic_deref_atomic:
+      case nir_intrinsic_deref_atomic_swap:
       case nir_intrinsic_load_deref: {
          nir_deref_instr *src = nir_src_as_deref(intrin->src[0]);
          if (nir_deref_mode_must_be(src, nir_var_read_only_modes))
             break;
          clear_unused_for_read(unused_writes, src);
+         break;
+      }
+
+      case nir_intrinsic_load_deref_transpose_amd: {
+         nir_deref_instr *src = nir_src_as_deref(intrin->src[0]);
+         clear_unused_for_modes(unused_writes, src->modes);
+         break;
+      }
+
+      case nir_intrinsic_memcpy_deref: {
+         /* memcpy reads its source and writes its destination, so a store
+          * feeding it must not be eliminated by a later store to the same
+          * deref.  Since memcpy is a sized copy that walks the derefs in a
+          * loop it can touch memory beyond the src/dst deref itself, so a
+          * deref comparison is not sufficient - conservatively clear all
+          * unused writes in the accessed modes.
+          */
+         nir_deref_instr *dst = nir_src_as_deref(intrin->src[0]);
+         nir_deref_instr *src = nir_src_as_deref(intrin->src[1]);
+         clear_unused_for_modes(unused_writes, src->modes | dst->modes);
          break;
       }
 
@@ -249,7 +278,7 @@ remove_dead_write_vars_local(nir_shader *shader, nir_block *block,
     * However, if the next block is the end of the program, then we can
     * eliminate any shared writes, since no one will ever read it again.
     */
-   if (ends_program(block)) {
+   if (ends_program(block, is_entrypoint)) {
       util_dynarray_foreach_reverse(unused_writes, struct write_entry, entry) {
          if (nir_deref_mode_may_be(entry->dst, nir_var_mem_shared) &&
              nir_deref_mode_is(entry->dst, nir_var_mem_shared)) {
@@ -271,7 +300,8 @@ remove_dead_write_vars_impl(nir_shader *shader, nir_function_impl *impl,
    nir_metadata_require(impl, nir_metadata_block_index);
 
    nir_foreach_block(block, impl)
-      progress |= remove_dead_write_vars_local(shader, block, unused_writes);
+      progress |= remove_dead_write_vars_local(shader, block, unused_writes,
+                                               impl->function->is_entrypoint);
 
    return nir_progress(progress, impl, nir_metadata_control_flow);
 }

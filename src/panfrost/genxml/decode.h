@@ -23,6 +23,8 @@ struct pandecode_context {
    int dump_frame_count;
    simple_mtx_t lock;
 
+   pandecode_shader_disassemble_cb dissassemble;
+
    /* On CSF context, set to true if the root CS ring buffer
     * is managed in userspace. The blob does that, and mesa might use
     * usermode queues too at some point.
@@ -130,6 +132,13 @@ void pandecode_interpret_cs_v13(struct pandecode_context *ctx, uint64_t queue,
 void pandecode_cs_binary_v13(struct pandecode_context *ctx, uint64_t bin,
                              uint32_t bin_size);
 void pandecode_cs_trace_v13(struct pandecode_context *ctx, uint64_t trace,
+                            uint32_t trace_size, uint64_t gpu_id);
+
+void pandecode_interpret_cs_v14(struct pandecode_context *ctx, uint64_t queue,
+                                uint32_t size, uint64_t gpu_id, uint32_t *regs);
+void pandecode_cs_binary_v14(struct pandecode_context *ctx, uint64_t bin,
+                             uint32_t bin_size);
+void pandecode_cs_trace_v14(struct pandecode_context *ctx, uint64_t trace,
                             uint32_t trace_size, uint64_t gpu_id);
 
 /* Logging infrastructure */
@@ -273,6 +282,24 @@ void GENX(pandecode_depth_stencil)(struct pandecode_context *ctx,
                                    uint64_t addr);
 #endif
 
+#endif
+
+#if PAN_ARCH >= 6
+void GENX(pandecode_sample_locations)(struct pandecode_context *ctx,
+                                      uint64_t sample_locations);
+
+void
+   GENX(pandecode_frame_shader_dcds)(struct pandecode_context *ctx,
+                                     uint64_t dcd_pointer, unsigned pre_frame_0,
+                                     unsigned pre_frame_1, unsigned post_frame,
+                                     unsigned job_type_param, uint64_t gpu_id);
+#endif
+
+#if PAN_ARCH >= 5
+void GENX(pandecode_rts)(struct pandecode_context *ctx, uint64_t gpu_va,
+                         uint32_t render_target_count);
+
+void GENX(pandecode_zs_crc_ext)(struct pandecode_context *ctx, uint64_t gpu_va);
 #endif
 
 #endif /* __MMAP_TRACE_H__ */

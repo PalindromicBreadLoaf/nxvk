@@ -45,6 +45,7 @@ struct ac_sqtt {
    int start_frame;
    char *trigger_file;
    bool instruction_timing_enabled;
+   uint32_t instruction_timing_se_mask;
 
    /* Shader/memory clock frequencies in Mhz sampled at trace time. */
    uint32_t trace_shader_core_clock;
@@ -94,6 +95,7 @@ struct ac_sqtt_trace {
 
    uint32_t trace_shader_core_clock;
    uint32_t trace_memory_clock;
+   uint32_t instruction_timing_se_mask;
 
    uint32_t num_traces;
    struct ac_sqtt_data_se traces[SQTT_MAX_TRACES];
@@ -576,5 +578,7 @@ void ac_sqtt_emit_stop(const struct radeon_info *info, struct ac_pm4_state *pm4,
 
 void ac_sqtt_emit_wait(const struct radeon_info *info, struct ac_pm4_state *pm4,
                        const struct ac_sqtt *sqtt, bool is_compute_queue);
+
+bool ac_sqtt_update_bo_size(struct ac_sqtt *sqtt, const char *env_var_prefix);
 
 #endif

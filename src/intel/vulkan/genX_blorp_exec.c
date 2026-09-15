@@ -95,25 +95,14 @@ blorp_surface_reloc(struct blorp_batch *batch, uint32_t ss_offset,
       anv_batch_set_error(&cmd_buffer->batch, result);
 }
 
-static uint64_t
-blorp_get_surface_address(struct blorp_batch *blorp_batch,
-                          struct blorp_address address)
-{
-   struct anv_address anv_addr = {
-      .bo = address.buffer,
-      .offset = address.offset,
-   };
-   return anv_address_physical(anv_addr);
-}
-
 #if GFX_VER == 9
 static struct blorp_address
 blorp_get_surface_base_address(struct blorp_batch *batch)
 {
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
    return (struct blorp_address) {
-      .buffer = cmd_buffer->device->internal_surface_state_pool.block_pool.bo,
-      .offset = -cmd_buffer->device->internal_surface_state_pool.start_offset,
+      .buffer = anv_device_get_internal_surface_state_pool(cmd_buffer->device)->block_pool.bo,
+      .offset = -anv_device_get_internal_surface_state_pool(cmd_buffer->device)->start_offset,
    };
 }
 #endif
@@ -364,8 +353,24 @@ blorp_exec_on_render(struct blorp_batch *batch,
 #endif
 
    if (params->depth.enabled &&
-       !(batch->flags & BLORP_BATCH_NO_EMIT_DEPTH_STENCIL))
-      genX(cmd_buffer_emit_gfx12_depth_wa)(cmd_buffer, &params->depth.surf);
+       !(batch->flags & BLORP_BATCH_NO_EMIT_DEPTH_STENCIL)) {
+      if (INTEL_NEEDS_WA_1808121037 && params->num_samples == 1 &&
+          params->depth.surf.format == ISL_FORMAT_R16_UNORM) {
+         /* Disable HiZ planes on D16 1x MSAA to avoid sporadic corruption. */
+         genX(cmd_buffer_disable_hiz_planes)(cmd_buffer);
+      }
+   }
+
+   if (params->depth.enabled &&
+       (batch->flags & BLORP_BATCH_NO_EMIT_DEPTH_STENCIL)) {
+      /* BLORP expects that the depth buffer aux usage matches the
+       * attachment's. Undo any temporary modification.
+       */
+      enum isl_aux_usage depth_aux_usage =
+         cmd_buffer->state.gfx.depth_att.aux_usage;
+      if (cmd_buffer->state.gfx.hiz_usage != depth_aux_usage)
+         genX(cmd_buffer_emit_depth_stencil)(cmd_buffer, depth_aux_usage);
+   }
 
    genX(flush_pipeline_select_3d)(cmd_buffer);
 
@@ -442,6 +447,9 @@ blorp_exec_on_render(struct blorp_batch *batch,
       BITSET_SET(hw_state->emit_dirty, ANV_GFX_STATE_CC_STATE);
       BITSET_SET(hw_state->emit_dirty, ANV_GFX_STATE_PS_BLEND);
    }
+
+   /* Add the flagged instructions as emitted */
+   BITSET_OR(hw_state->emitted, hw_state->emitted, hw_state->emit_dirty);
 
    anv_cmd_dirty_mask_t dirty = ~(ANV_CMD_DIRTY_INDEX_BUFFER |
                                   ANV_CMD_DIRTY_XFB_ENABLE |
@@ -545,6 +553,8 @@ get_color_aux_op(const struct blorp_params *params)
    case BLORP_OP_SLOW_COLOR_CLEAR:
    case BLORP_OP_BLIT:
    case BLORP_OP_COPY:
+   case BLORP_OP_COPY_INDIRECT:
+   case BLORP_OP_COPY_IMAGE_INDIRECT:
       assert(params->fast_clear_op == ISL_AUX_OP_NONE);
       return ANV_COLOR_AUX_OP_CLASS_NONE;
    }
@@ -606,4 +616,11 @@ void
 genX(blorp_init_dynamic_states)(struct blorp_context *context)
 {
    blorp_init_dynamic_states(context);
+}
+
+static bool *
+blorp_get_write_fencing_status(struct blorp_batch *blorp_batch)
+{
+   struct anv_cmd_buffer *cmd_buffer = blorp_batch->driver_batch;
+   return &cmd_buffer->batch.write_fence_status;
 }

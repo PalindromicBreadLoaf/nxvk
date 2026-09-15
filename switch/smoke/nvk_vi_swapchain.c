@@ -18,18 +18,28 @@ int main(void)
    const char *inst_exts[] = { "VK_KHR_surface", "VK_NN_vi_surface" };
    const char *dev_exts[]  = { "VK_KHR_swapchain" };
 
+   VkSurfaceKHR    surface   = VK_NULL_HANDLE;
+   VkSwapchainKHR  swapchain = VK_NULL_HANDLE;
+   VkCommandPool   pool      = VK_NULL_HANDLE;
+   VkSemaphore     acquire_sem[MAX_INFLT] = {0}, present_sem[MAX_INFLT] = {0};
+   VkFence         inflight[MAX_INFLT] = {0};
+   VkCommandBuffer cmd[MAX_INFLT] = {0};
+
    struct nvk_ctx c;
-   if (nvk_bringup_ex(&c, inst_exts, 2, dev_exts, 1) != VK_SUCCESS) { LOG("FAIL: bringup"); goto done; }
+   if (nvk_bringup_ex(&c, inst_exts, 2, dev_exts, 1) != VK_SUCCESS) { LOG("FAIL: bringup"); goto teardown; }
 
    LOAD_INST(&c, CreateViSurfaceNN);
+   LOAD_INST(&c, DestroySurfaceKHR);
    LOAD_INST(&c, GetPhysicalDeviceSurfaceCapabilitiesKHR);
    LOAD_INST(&c, GetPhysicalDeviceSurfaceFormatsKHR);
    LOAD_INST(&c, GetPhysicalDeviceSurfaceSupportKHR);
    LOAD_DEV(&c, CreateSwapchainKHR);
+   LOAD_DEV(&c, DestroySwapchainKHR);
    LOAD_DEV(&c, GetSwapchainImagesKHR);
    LOAD_DEV(&c, AcquireNextImageKHR);
    LOAD_DEV(&c, QueuePresentKHR);
    LOAD_DEV(&c, CreateCommandPool);
+   LOAD_DEV(&c, DestroyCommandPool);
    LOAD_DEV(&c, AllocateCommandBuffers);
    LOAD_DEV(&c, BeginCommandBuffer);
    LOAD_DEV(&c, EndCommandBuffer);
@@ -37,17 +47,19 @@ int main(void)
    LOAD_DEV(&c, CmdClearColorImage);
    LOAD_DEV(&c, CmdPipelineBarrier);
    LOAD_DEV(&c, CreateSemaphore);
+   LOAD_DEV(&c, DestroySemaphore);
    LOAD_DEV(&c, CreateFence);
+   LOAD_DEV(&c, DestroyFence);
    LOAD_DEV(&c, WaitForFences);
    LOAD_DEV(&c, ResetFences);
    LOAD_DEV(&c, QueueSubmit);
+   LOAD_DEV(&c, QueueWaitIdle);
    if (!CreateViSurfaceNN) { LOG("FAIL: no vkCreateViSurfaceNN (VI WSI not wired?)"); goto done; }
 
    VkViSurfaceCreateInfoNN vci = {
       .sType = VK_STRUCTURE_TYPE_VI_SURFACE_CREATE_INFO_NN,
       .window = nwindowGetDefault(),
    };
-   VkSurfaceKHR surface;
    VkResult r = CreateViSurfaceNN(c.instance, &vci, NULL, &surface);
    LOG("vkCreateViSurfaceNN -> %d", r);
    if (r != VK_SUCCESS) goto done;
@@ -84,7 +96,6 @@ int main(void)
       .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
       .presentMode = VK_PRESENT_MODE_FIFO_KHR, .clipped = VK_TRUE,
    };
-   VkSwapchainKHR swapchain;
    r = CreateSwapchainKHR(c.dev, &sci, NULL, &swapchain);
    LOG("vkCreateSwapchainKHR -> %d", r);
    if (r != VK_SUCCESS) goto done;
@@ -100,12 +111,8 @@ int main(void)
       .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
       .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = c.qfi,
    };
-   VkCommandPool pool;
    if (CreateCommandPool(c.dev, &cpi, NULL, &pool) != VK_SUCCESS) { LOG("FAIL: pool"); goto done; }
 
-   VkSemaphore acquire_sem[MAX_INFLT], present_sem[MAX_INFLT];
-   VkFence     inflight[MAX_INFLT];
-   VkCommandBuffer cmd[MAX_INFLT];
    for (int i = 0; i < MAX_INFLT; i++) {
       VkSemaphoreCreateInfo si = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
       CreateSemaphore(c.dev, &si, NULL, &acquire_sem[i]);
@@ -200,6 +207,17 @@ int main(void)
       LOG("=== nvk_vi_swapchain FAILED (no frame presented) ===");
 
 done:
+   if (QueueWaitIdle) QueueWaitIdle(c.queue);
+   for (int i = 0; i < MAX_INFLT; i++) {
+      if (acquire_sem[i]) DestroySemaphore(c.dev, acquire_sem[i], NULL);
+      if (present_sem[i]) DestroySemaphore(c.dev, present_sem[i], NULL);
+      if (inflight[i])    DestroyFence(c.dev, inflight[i], NULL);
+   }
+   if (pool)      DestroyCommandPool(c.dev, pool, NULL);
+   if (swapchain) DestroySwapchainKHR(c.dev, swapchain, NULL);
+   if (surface && DestroySurfaceKHR) DestroySurfaceKHR(c.instance, surface, NULL);
+
+teardown:
    nvk_teardown(&c);
    if (g_nvk_log) fclose(g_nvk_log);
    return 0;

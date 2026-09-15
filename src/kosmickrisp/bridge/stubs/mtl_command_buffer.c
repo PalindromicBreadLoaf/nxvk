@@ -7,29 +7,24 @@
 #include "mtl_command_buffer.h"
 
 void
-mtl_encode_signal_event(mtl_command_buffer *cmd_buf_handle,
-                        mtl_event *event_handle, uint64_t value)
+mtl_command_allocator_reset(mtl_command_allocator *allocator)
 {
 }
 
 void
-mtl_encode_wait_for_event(mtl_command_buffer *cmd_buf_handle,
-                          mtl_event *event_handle, uint64_t value)
+mtl_begin_command_buffer(mtl_command_buffer *command_buffer,
+                         mtl_command_allocator *allocator)
 {
 }
 
 void
-mtl_add_completed_handler(mtl_command_buffer *cmd, void (*callback)(void *data),
-                          void *data)
+mtl_end_command_buffer(mtl_command_buffer *command_buffer)
 {
 }
 
 void
-mtl_command_buffer_commit(mtl_command_buffer *cmd_buf)
-{
-}
-
-void
-mtl_present_drawable(mtl_command_buffer *cmd_buf, void *drawable)
+mtl_command_resolve_counter_heap(mtl_command_buffer *command_buffer,
+                                 mtl_counter_heap *heap, uint32_t first_index,
+                                 uint32_t count, uint64_t dst_addr)
 {
 }

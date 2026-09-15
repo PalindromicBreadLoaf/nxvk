@@ -66,12 +66,12 @@ enum memory_semantics : uint8_t {
    semantic_none = 0x0,
    /* for loads: don't move any access after this load to before this load (even other loads)
     * for barriers: don't move any access after the barrier to before any
-    * atomic_loads/control_barriers/p_pops_gfx9_add_exiting_wave_id or
+    * atomic_loads/barrier_wait/p_pops_gfx9_add_exiting_wave_id or
     * certain s_wait_event before the barrier */
    semantic_acquire = 0x1,
    /* for stores: don't move any access before this store to after this store
     * for barriers: don't move any access before the barrier to after any
-    * atomic_stores/control_barriers/p_pops_gfx9_ordered_section_done or
+    * atomic_stores/barrier_signal/p_pops_gfx9_ordered_section_done or
     * certain sendmsg/exports after the barrier */
    semantic_release = 0x2,
 
@@ -1042,13 +1042,7 @@ private:
 struct RegisterDemand {
    constexpr RegisterDemand() = default;
    constexpr RegisterDemand(const int16_t v, const int16_t s) noexcept : vgpr{v}, sgpr{s} {}
-   constexpr RegisterDemand(Temp t) noexcept
-   {
-      if (t.regClass().type() == RegType::sgpr)
-         sgpr = t.size();
-      else
-         vgpr = t.size();
-   }
+   constexpr RegisterDemand(Temp t) noexcept { (*this)[t.type()] = t.size(); }
    int16_t vgpr = 0;
    int16_t sgpr = 0;
 
@@ -1065,6 +1059,18 @@ struct RegisterDemand {
    constexpr bool exceeds(const RegisterDemand other) const noexcept
    {
       return vgpr > other.vgpr || sgpr > other.sgpr;
+   }
+
+   constexpr bool empty() const noexcept { return !exceeds(RegisterDemand()); }
+
+   constexpr const int16_t& operator[](RegType type) const noexcept
+   {
+      return type == RegType::vgpr ? vgpr : sgpr;
+   }
+
+   constexpr int16_t& operator[](RegType type) noexcept
+   {
+      return type == RegType::vgpr ? vgpr : sgpr;
    }
 
    constexpr RegisterDemand operator+(const Temp t) const noexcept
@@ -1101,19 +1107,13 @@ struct RegisterDemand {
 
    constexpr RegisterDemand& operator+=(const Temp t) noexcept
    {
-      if (t.type() == RegType::sgpr)
-         sgpr += t.size();
-      else
-         vgpr += t.size();
+      (*this)[t.type()] += t.size();
       return *this;
    }
 
    constexpr RegisterDemand& operator-=(const Temp t) noexcept
    {
-      if (t.type() == RegType::sgpr)
-         sgpr -= t.size();
-      else
-         vgpr -= t.size();
+      (*this)[t.type()] -= t.size();
       return *this;
    }
 
@@ -2028,7 +2028,8 @@ bool is_wait_export_ready(amd_gfx_level gfx_level, const Instruction* instr);
 class Program;
 
 uint16_t is_atomic_or_control_instr(Program* program, const Instruction* instr,
-                                    memory_sync_info sync, unsigned semantic);
+                                    memory_sync_info sync, unsigned semantic,
+                                    sync_scope ignore_scope = scope_invocation);
 
 memory_sync_info get_sync_info(const Instruction* instr);
 
@@ -2052,7 +2053,19 @@ bool can_use_input_modifiers(amd_gfx_level gfx_level, aco_opcode op, int idx);
 bool can_use_opsel(amd_gfx_level gfx_level, aco_opcode op, int idx);
 bool instr_is_16bit(amd_gfx_level gfx_level, aco_opcode op);
 uint8_t get_gfx11_true16_mask(aco_opcode op);
+bool can_use_SDWA(amd_gfx_level gfx_level, const Instruction* instr, bool pre_ra);
 bool can_use_SDWA(amd_gfx_level gfx_level, const aco_ptr<Instruction>& instr, bool pre_ra);
+
+struct SubdwordCaps {
+   unsigned placement_stride;
+   unsigned overwrite_bytes;
+};
+
+unsigned get_subdword_operand_stride(Program* program, const Instruction* instr, unsigned idx,
+                                     RegClass rc);
+SubdwordCaps get_subdword_definition_caps(Program* program, const Instruction* instr, unsigned idx,
+                                          RegClass rc);
+
 bool opcode_supports_dpp(amd_gfx_level gfx_level, aco_opcode opcode, bool vop3p);
 bool can_use_DPP(amd_gfx_level gfx_level, const aco_ptr<Instruction>& instr, bool dpp8);
 bool can_write_m0(const aco_ptr<Instruction>& instr);
@@ -2291,6 +2304,7 @@ struct DeviceInfo {
    bool sram_ecc_enabled = false;
    bool has_point_sample_accel = false;
    bool has_gfx6_mrt_export_bug = false;
+   bool has_desc_resource_level = false;
 
    int32_t scratch_global_offset_min;
    int32_t scratch_global_offset_max;
@@ -2626,6 +2640,7 @@ typedef struct {
    const int16_t opcode_gfx9[static_cast<int>(aco_opcode::num_opcodes)];
    const int16_t opcode_gfx10[static_cast<int>(aco_opcode::num_opcodes)];
    const int16_t opcode_gfx11[static_cast<int>(aco_opcode::num_opcodes)];
+   const int16_t opcode_gfx11_7[static_cast<int>(aco_opcode::num_opcodes)];
    const int16_t opcode_gfx12[static_cast<int>(aco_opcode::num_opcodes)];
    const std::bitset<static_cast<int>(aco_opcode::num_opcodes)> is_atomic;
    const char* name[static_cast<int>(aco_opcode::num_opcodes)];

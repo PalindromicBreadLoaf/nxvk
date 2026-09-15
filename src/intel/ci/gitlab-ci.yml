@@ -27,7 +27,7 @@ anv-rpl-vk:
     - .lava-asus-CX3402CVA-brya:x86_64
   variables:
     DEQP_SUITE: anv-rpl
-    FDO_CI_CONCURRENT: 6  # We get OOMkills if we go too wide since VKCTS 1.4.4.0
+    FDO_CI_CONCURRENT: 6  # We get OOMkills if we go too wide since VKCTS 1.4.4.0, persisting in 1.4.5.3.
     # Xe regression in 6.19
     # https://gitlab.freedesktop.org/drm/xe/kernel/-/issues/7584
     KERNEL_TAG: "v6.17-mesa-ddf6"
@@ -107,17 +107,16 @@ anv-adl-angle:
 
 anv-adl-traces-restricted:
   extends:
-    - .lava-x86_64-piglit-traces
+    - .lava-x86_64-test-vk
+    - .traces-test
+    - .test-wine
     - .anv-test
     - .lava-acer-chromebox-cxi5-brask:x86_64
     - .anv-restricted-rules
   variables:
     HWCI_START_WESTON: 1
     ANGLE_TRACE_FILES_TAG: "2025-03-28"
-    PIGLIT_REPLAY_ANGLE_ARCH: x64
-    PIGLIT_TRACES_FILE: restricted-traces-intel.yml
-    PIGLIT_REPLAY_DEVICE_NAME: "vk-${GPU_VERSION}"
-    PIGLIT_REPLAY_EXTRA_ARGS: --keep-image --minio_bucket=${S3_TRACIE_PRIVATE_BUCKET} --jwt-file=${S3_JWT_FILE}
+    REPLAY_CONFIG: traces-intel-restricted.toml
     FDO_CI_CONCURRENT: 5  # Run the 10 traces in 2 sets of 5 to avoid OOMs
   allow_failure: true
 
@@ -163,6 +162,7 @@ iris-apl-egl:
     PIGLIT_NO_WINDOW: 0
     HWCI_START_WESTON: 1
     DEQP_SUITE: iris-apl-egl
+  parallel: 2
 
 iris-glk-deqp:
   extends:

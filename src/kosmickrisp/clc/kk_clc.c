@@ -32,7 +32,7 @@ static const struct spirv_to_nir_options spirv_options = {
    .temp_addr_format = nir_address_format_62bit_generic,
    .constant_addr_format = nir_address_format_64bit_global,
    .create_library = true,
-   .printf = true,
+   .printf = false, /* TODO_KOSMICKRISP Enable */
 };
 
 /* Standard optimization loop */
@@ -68,7 +68,7 @@ optimize(nir_shader *nir)
       NIR_PASS(progress, nir, nir_opt_deref);
       NIR_PASS(progress, nir, nir_opt_copy_prop_vars);
       NIR_PASS(progress, nir, nir_opt_undef);
-      NIR_PASS(progress, nir, nir_lower_undef_to_zero);
+      NIR_PASS(progress, nir, nir_lower_undef_to_zero, NULL);
 
       NIR_PASS(progress, nir, nir_opt_shrink_vectors, true);
       NIR_PASS(progress, nir, nir_opt_loop_unroll);
@@ -83,8 +83,8 @@ compile(void *memctx, const uint32_t *spirv, size_t spirv_size)
 
    assert(spirv_size % 4 == 0);
    nir_shader *nir =
-      spirv_to_nir(spirv, spirv_size / 4, NULL, 0, MESA_SHADER_KERNEL,
-                   "library", &spirv_options, nir_options);
+      spirv_to_nir(spirv, spirv_size / 4, NULL, MESA_SHADER_KERNEL, "library",
+                   &spirv_options, nir_options);
    nir_validate_shader(nir, "after spirv_to_nir");
    ralloc_steal(memctx, nir);
 
@@ -163,7 +163,6 @@ compile(void *memctx, const uint32_t *spirv, size_t spirv_size)
    NIR_PASS(_, nir, nir_opt_idiv_const, 16);
 
    msl_lower_textures(nir);
-   msl_lower_nir_late(nir);
 
    optimize(nir);
 
@@ -278,10 +277,16 @@ main(int argc, char **argv)
          NIR_PASS(_, s, nir_lower_vars_to_explicit_types, nir_var_mem_shared,
                   glsl_get_cl_type_size_align);
 
+         /* Workgroup size cannot be lowered when the shader is in library form,
+          * so we need to lower compute system values again now that it is a
+          * variant with a distinct entry-point. */
+         NIR_PASS(_, s, nir_lower_compute_system_values, NULL);
+
          NIR_PASS(_, s, nir_lower_explicit_io, nir_var_mem_shared,
                   nir_address_format_62bit_generic);
 
          msl_preprocess_nir(s);
+         msl_preprocess_nir_workarounds(nir, 0);
          msl_optimize_nir(nir);
 
          NIR_PASS(_, s, nir_opt_deref);
@@ -296,8 +301,14 @@ main(int argc, char **argv)
          NIR_PASS(_, s, nir_convert_from_ssa, true, true);
          NIR_PASS(_, s, nir_trivialize_registers);
 
-         /* nir_lower_explicit_io will create unpack_64 we need to lower */
-         NIR_PASS(_, s, nir_opt_algebraic);
+         /* nir_lower_explicit_io will create unpack_64 we need to lower.
+          * Perform in a loop to make sure any optimizations that result in
+          * instructions we don't implement are fully lowered */
+         bool progress = false;
+         do {
+            progress = false;
+            NIR_PASS(progress, s, nir_opt_algebraic);
+         } while (progress);
 
          nir_shader_gather_info(s, nir_shader_get_entrypoint(s));
          struct nir_to_msl_options options = {};

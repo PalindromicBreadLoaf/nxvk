@@ -1,8 +1,8 @@
 # Copyright © 2021 Ilia Mirkin
 # SPDX-License-Identifier: MIT
 
-subdir('drm')
 subdir('headers')
+subdir('drm')
 subdir('winsys')
 if with_nouveau_vk
   subdir('rust')
@@ -14,6 +14,9 @@ if with_tools.contains('drm-shim')
 endif
 
 if with_nouveau_vk
+  if host_machine.system() != 'horizon'
+    subdir('cubin')
+  endif
   subdir('mme')
   subdir('vulkan')
 endif

@@ -9,22 +9,15 @@
 
 #include <inttypes.h>
 
+#include "ac_cmdbuf_base.h"
 #include "ac_pm4.h"
+#include "sid.h"
 
 #include "util/bitset.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-struct ac_cmdbuf {
-   uint32_t cdw;         /* Number of used dwords. */
-   uint32_t max_dw;      /* Maximum number of dwords. */
-   uint32_t reserved_dw; /* Number of dwords reserved. */
-   uint32_t *buf;        /* The base pointer of the chunk. */
-
-   bool context_roll;
-};
 
 /* The structure layout is identical to a pair of registers in SET_*_REG_PAIRS_PACKED. */
 struct ac_gfx11_reg_pair {
@@ -194,7 +187,7 @@ enum ac_tracked_reg
    AC_TRACKED_PA_SC_AA_MASK_X0Y0_X1Y0,
    AC_TRACKED_PA_SC_AA_MASK_X0Y1_X1Y1,
 
-   AC_TRACKED_UNUSED0, /* To force alignment */
+   AC_TRACKED_DB_Z_INFO,            /* only GFX11.x for RADV */
 
    AC_NUM_TRACKED_CONTEXT_REGS,
    AC_FIRST_TRACKED_OTHER_REG = AC_NUM_TRACKED_CONTEXT_REGS,
@@ -362,15 +355,6 @@ struct ac_tracked_regs {
 #define ac_cmdbuf_set_sh_reg_seq(reg, num) __ac_cmdbuf_set_reg_seq(reg, num, 0, SI_SH, PKT3_SET_SH_REG, 0)
 
 #define ac_cmdbuf_set_sh_reg(reg, value) __ac_cmdbuf_set_reg(reg, 0, value, SI_SH, PKT3_SET_SH_REG)
-
-#define ac_cmdbuf_set_sh_reg_idx(info, reg, idx, value)        \
-   do {                                                        \
-      assert((idx));                                           \
-      unsigned __opcode = PKT3_SET_SH_REG_INDEX;               \
-      if ((info)->gfx_level < GFX10)                           \
-         __opcode = PKT3_SET_SH_REG;                           \
-      __ac_cmdbuf_set_reg(reg, idx, value, SI_SH, __opcode);   \
-   } while (0)
 
 #define ac_cmdbuf_emit_32bit_pointer(sh_offset, va, info)         \
    do {                                                           \

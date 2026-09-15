@@ -113,9 +113,17 @@ bool anv_nir_apply_pipeline_layout(nir_shader *shader,
                                    struct anv_descriptor_set_layout * const *set_layouts,
                                    uint32_t set_count,
                                    const uint32_t *dynamic_offset_start,
+                                   bool device_bindable,
                                    struct anv_pipeline_bind_map *map,
                                    struct anv_pipeline_push_map *push_map,
                                    void *push_map_mem_ctx);
+
+bool
+anv_nir_lower_descriptor_heap(nir_shader *shader,
+                              const struct anv_device *device,
+                              uint32_t embedded_sampler_count,
+                              const struct vk_sampler_state* embedded_samplers,
+                              struct anv_pipeline_bind_map *map);
 
 struct anv_nir_push_layout_info {
    bool separate_tessellation;
@@ -124,6 +132,8 @@ struct anv_nir_push_layout_info {
 };
 
 bool anv_nir_shrink_push_constant_ranges(nir_shader *nir);
+
+bool anv_nir_realign_cbv(nir_shader *shader);
 
 bool anv_nir_compute_push_layout(nir_shader *nir,
                                  const struct anv_physical_device *pdevice,
@@ -169,6 +179,8 @@ void anv_apply_per_prim_attr_wa(struct nir_shader *ms_nir,
                                 struct nir_shader *fs_nir,
                                 struct anv_device *device);
 
+bool anv_nir_xe2_r11g11b10_atomic_swap_wa(nir_shader *nir);
+
 static inline bool
 anv_nir_is_promotable_ubo_binding(nir_src src)
 {
@@ -197,6 +209,10 @@ anv_nir_get_ubo_binding_push_block(nir_src src)
 
    return nir_intrinsic_resource_block_intel(intrin);
 }
+
+bool anv_nir_is_pushable_pointer(nir_intrinsic_instr *intrin,
+                                 uint32_t *out_push_offset,
+                                 uint32_t *out_load_offset);
 
 void anv_nir_analyze_push_constants_ranges(nir_shader *nir,
                                            const struct intel_device_info *devinfo,

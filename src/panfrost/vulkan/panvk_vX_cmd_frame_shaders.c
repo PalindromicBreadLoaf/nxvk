@@ -206,8 +206,10 @@ get_frame_shader(struct panvk_device *dev,
       goto out;
 
    const struct nir_shader_compiler_options *nir_options =
-      pan_get_nir_shader_compiler_options(PAN_ARCH, false);
+      pan_get_nir_shader_compiler_options(PAN_ARCH, MESA_SHADER_FRAGMENT,
+                                          false);
    nir_shader *nir = GENX(pan_get_fb_shader)(&key->key, nir_options);
+   PAN_NIR_SET_BLAKE3_INTERNAL(nir, key);
 
    NIR_PASS(_, nir, nir_shader_instructions_pass, lower_instr,
             nir_metadata_control_flow, (void *)key);
@@ -218,10 +220,10 @@ get_frame_shader(struct panvk_device *dev,
       .gpu_id = phys_dev->kmod.dev->props.gpu_id,
       .gpu_variant = phys_dev->kmod.dev->props.gpu_variant,
       .is_blit = true,
+      .fau.reserved = DIV_ROUND_UP(sizeof(struct panvk_fb_sysvals), 4),
    };
 
    pan_preprocess_nir(nir, inputs.gpu_id);
-   pan_postprocess_nir(nir, inputs.gpu_id);
 
    VkResult result = panvk_per_arch(create_internal_shader)(
       dev, nir, &inputs, &shader);

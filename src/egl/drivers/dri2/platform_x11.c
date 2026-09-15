@@ -794,17 +794,6 @@ dri2_fourcc_for_depth(struct dri2_egl_display *dri2_dpy, uint32_t depth)
    }
 }
 
-static int
-box_intersection_area(int16_t a_x, int16_t a_y, int16_t a_width,
-                      int16_t a_height, int16_t b_x, int16_t b_y,
-                      int16_t b_width, int16_t b_height)
-{
-   int w = MIN2(a_x + a_width, b_x + b_width) - MAX2(a_x, b_x);
-   int h = MIN2(a_y + a_height, b_y + b_height) - MAX2(a_y, b_y);
-
-   return (w < 0 || h < 0) ? 0 : w * h;
-}
-
 EGLBoolean
 dri2_x11_get_msc_rate(_EGLDisplay *display, _EGLSurface *surface,
                       EGLint *numerator, EGLint *denominator)

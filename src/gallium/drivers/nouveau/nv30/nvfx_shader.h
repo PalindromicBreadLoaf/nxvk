@@ -272,7 +272,7 @@
 #define NV40_FP_OP_BRA_OPCODE_RET                                    0x5
 
 #define NV40_FP_OP_OUT_NONE         (1 << 30)
-#define NVFX_FP_OP_OUT_SAT          (1 << 31)
+#define NVFX_FP_OP_OUT_SAT          (1u << 31)
 
 /* high order bits of SRC0 */
 #define NVFX_FP_OP_SRC0_ABS          (1 << 29)
@@ -298,7 +298,7 @@
 #  define NVFX_FP_OP_COND_TR  7
 
 /* high order bits of SRC1 */
-#define NV40_FP_OP_OPCODE_IS_BRANCH                                      (1<<31)
+#define NV40_FP_OP_OPCODE_IS_BRANCH                                      (1u<<31)
 #define NVFX_FP_OP_DST_SCALE_SHIFT        28
 #define NVFX_FP_OP_DST_SCALE_MASK        (3 << 28)
 #define NVFX_FP_OP_DST_SCALE_1X                                                0

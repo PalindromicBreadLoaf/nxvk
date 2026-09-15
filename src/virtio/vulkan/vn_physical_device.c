@@ -539,13 +539,6 @@ vn_physical_device_sanitize_properties(struct vn_physical_device *physical_dev)
       if (instance->renderer->info.vk_mesa_venus_protocol_spec_version < 3)
          ver = MIN2(VK_API_VERSION_1_3, ver);
 
-      /* Clamp to 1.2 if we disabled VK_KHR_synchronization2 since it
-       * is required for 1.3.
-       * See vn_physical_device_get_passthrough_extensions()
-       */
-      if (!physical_dev->base.vk.supported_extensions.KHR_synchronization2)
-         ver = MIN2(VK_API_VERSION_1_2, ver);
-
       props->apiVersion = ver;
    }
 
@@ -566,7 +559,9 @@ vn_physical_device_sanitize_properties(struct vn_physical_device *physical_dev)
       memcpy(device_name + VK_MAX_PHYSICAL_DEVICE_NAME_SIZE - 5, "...)", 4);
       device_name_len = VK_MAX_PHYSICAL_DEVICE_NAME_SIZE - 1;
    }
-   memcpy(props->deviceName, device_name, device_name_len + 1);
+   snprintf(props->deviceName, sizeof(props->deviceName),
+            "%s", (strlen(instance->drirc.debug.force_vk_devicename) > 0) ?
+            instance->drirc.debug.force_vk_devicename : device_name);
 
    props->driverID = VK_DRIVER_ID_MESA_VENUS;
 
@@ -1063,39 +1058,6 @@ static void
 vn_physical_device_init_external_fence_handles(
    struct vn_physical_device *physical_dev)
 {
-   /* The current code manipulates the host-side VkFence directly.
-    * vkWaitForFences is translated to repeated vkGetFenceStatus.
-    *
-    * External fence is not possible currently.  Instead, we cheat by
-    * translating vkGetFenceFdKHR to an empty renderer submission for the
-    * out fence, along with a venus protocol command to fix renderer side
-    * fence payload.
-    *
-    * We would like to create a vn_renderer_sync from a host-side VkFence,
-    * similar to how a vn_renderer_bo is created from a host-side
-    * VkDeviceMemory.  That would require kernel support and tons of works on
-    * the host side.  If we had that, and we kept both the vn_renderer_sync
-    * and the host-side VkFence in sync, we would have the freedom to use
-    * either of them depending on the occasions, and support external fences
-    * and idle waiting.
-    */
-   if (physical_dev->renderer_extensions.KHR_external_fence_fd) {
-      struct vn_ring *ring = physical_dev->instance->ring.ring;
-      const VkPhysicalDeviceExternalFenceInfo info = {
-         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_FENCE_INFO,
-         .handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT,
-      };
-      VkExternalFenceProperties props = {
-         .sType = VK_STRUCTURE_TYPE_EXTERNAL_FENCE_PROPERTIES,
-      };
-      vn_call_vkGetPhysicalDeviceExternalFenceProperties(
-         ring, vn_physical_device_to_handle(physical_dev), &info, &props);
-
-      physical_dev->renderer_sync_fd.fence_exportable =
-         props.externalFenceFeatures &
-         VK_EXTERNAL_FENCE_FEATURE_EXPORTABLE_BIT;
-   }
-
    physical_dev->external_fence_handles = 0;
 
    if (physical_dev->instance->renderer->info.has_external_sync) {
@@ -1112,42 +1074,24 @@ vn_physical_device_init_external_semaphore_handles(
 {
    /* The current code manipulates the host-side VkSemaphore directly.  It
     * works very well for binary semaphores because there is no CPU operation.
-    * But for timeline semaphores, the situation is similar to that of fences.
-    * vkWaitSemaphores is translated to repeated vkGetSemaphoreCounterValue.
     *
-    * External semaphore is not possible currently.  Instead, we cheat when
-    * the semaphore is binary and the handle type is sync file. We do an empty
-    * renderer submission for the out fence, along with a venus protocol
-    * command to fix renderer side semaphore payload.
+    * Timeline semaphore is implemented on top of both renderer side device
+    * object and driver side vn_renderer_sync. Each semaphore encapsulates
+    * 1 cpu sync and vn_device::queue_count gpu syncs to ensure monotonicity
+    * of the sync timeline while supporting wait-before-signal.
+    * - device wait: forward the semaphore object to renderer side
+    * - device signal: forward the semaphore object to renderer side, and then
+    *                  submit the queue sync to signal the same timeline point
+    * - host query: query each of the driver side syncs and return the max
+    * - host wait: for each timeline semaphore, wait for any of the driver
+    *              side syncs to reach the point
+    * - host signal: forward the semaphore object to renderer side and signal
+    *                driver side cpu sync (order doesn't matter)
     *
-    * We would like to create a vn_renderer_sync from a host-side VkSemaphore,
-    * similar to how a vn_renderer_bo is created from a host-side
-    * VkDeviceMemory.  The reasoning is the same as that for fences.
-    * Additionally, we would like the sync file exported from the
-    * vn_renderer_sync to carry the necessary information to identify the
-    * host-side VkSemaphore.  That would allow the consumers to wait on the
-    * host side rather than the guest side.
+    * SYNC_FD semaphore is implemented on top of driver side vn_renderer_sync.
+    * If such semaphore isn't exported but waited, currently we resolve the
+    * wait on the driver side.
     */
-   if (physical_dev->renderer_extensions.KHR_external_semaphore_fd) {
-      struct vn_ring *ring = physical_dev->instance->ring.ring;
-      const VkPhysicalDeviceExternalSemaphoreInfo info = {
-         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO,
-         .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
-      };
-      VkExternalSemaphoreProperties props = {
-         .sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES,
-      };
-      vn_call_vkGetPhysicalDeviceExternalSemaphoreProperties(
-         ring, vn_physical_device_to_handle(physical_dev), &info, &props);
-
-      physical_dev->renderer_sync_fd.semaphore_exportable =
-         props.externalSemaphoreFeatures &
-         VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT;
-      physical_dev->renderer_sync_fd.semaphore_importable =
-         props.externalSemaphoreFeatures &
-         VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT;
-   }
-
    physical_dev->external_binary_semaphore_handles = 0;
    physical_dev->external_timeline_semaphore_handles = 0;
 
@@ -1169,42 +1113,20 @@ vn_physical_device_get_native_extensions(
 
    memset(exts, 0, sizeof(*exts));
 
-   if (physical_dev->instance->renderer->info.has_external_sync &&
-       physical_dev->renderer_sync_fd.fence_exportable) {
-      if (physical_dev->external_fence_handles ==
-          VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT) {
-         exts->KHR_external_fence_fd = true;
-      }
-   }
+   if (physical_dev->external_fence_handles ==
+       VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT)
+      exts->KHR_external_fence_fd = true;
 
-   if (physical_dev->instance->renderer->info.has_external_sync &&
-       physical_dev->renderer_sync_fd.semaphore_importable &&
-       physical_dev->renderer_sync_fd.semaphore_exportable) {
-      if (physical_dev->external_binary_semaphore_handles ==
-          VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT) {
-         exts->KHR_external_semaphore_fd = true;
-      }
-   }
+   if (physical_dev->external_binary_semaphore_handles ==
+       VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT)
+      exts->KHR_external_semaphore_fd = true;
 
 #ifdef VK_USE_PLATFORM_ANDROID_KHR
    if (physical_dev->external_memory.renderer_handle_type &&
        renderer_exts->EXT_image_drm_format_modifier &&
        renderer_exts->EXT_queue_family_foreign) {
       exts->ANDROID_external_memory_android_hardware_buffer = true;
-
-      /* For wsi, we require renderer:
-       * - semaphore sync fd import for queue submission to skip scrubbing the
-       *   wsi wait semaphores.
-       * - fence sync fd export for QueueSignalReleaseImageANDROID to export a
-       *   sync fd.
-       *
-       * TODO: relax these requirements by:
-       * - properly scrubbing wsi wait semaphores
-       * - not creating external fence but exporting sync fd directly
-       */
-      if (physical_dev->renderer_sync_fd.semaphore_importable &&
-          physical_dev->renderer_sync_fd.fence_exportable)
-         exts->ANDROID_native_buffer = true;
+      exts->ANDROID_native_buffer = true;
    }
 #else  /* VK_USE_PLATFORM_ANDROID_KHR */
    if (physical_dev->external_memory.renderer_handle_type) {
@@ -1216,20 +1138,19 @@ vn_physical_device_get_native_extensions(
 #endif /* VK_USE_PLATFORM_ANDROID_KHR */
 
 #ifdef VN_USE_WSI_PLATFORM
-   if (physical_dev->renderer_sync_fd.semaphore_importable) {
-      exts->KHR_incremental_present = true;
+   exts->KHR_incremental_present = true;
+   exts->KHR_swapchain = true;
+   exts->KHR_swapchain_maintenance1 = true;
+   exts->KHR_swapchain_mutable_format = true;
+   exts->EXT_hdr_metadata = true;
+   exts->EXT_swapchain_maintenance1 = true;
+
 #ifndef VK_USE_PLATFORM_WIN32_KHR
-      exts->KHR_present_id = true;
-      exts->KHR_present_id2 = true;
-      exts->KHR_present_wait = true;
-      exts->KHR_present_wait2 = true;
+   exts->KHR_present_id = true;
+   exts->KHR_present_id2 = true;
+   exts->KHR_present_wait = true;
+   exts->KHR_present_wait2 = true;
 #endif /* VK_USE_PLATFORM_WIN32_KHR */
-      exts->KHR_swapchain = true;
-      exts->KHR_swapchain_maintenance1 = true;
-      exts->KHR_swapchain_mutable_format = true;
-      exts->EXT_hdr_metadata = true;
-      exts->EXT_swapchain_maintenance1 = true;
-   }
 
    /* VK_EXT_pci_bus_info is required by common wsi to decide whether native
     * image or prime blit is used. Meanwhile, venus must stay on native image
@@ -1265,17 +1186,6 @@ vn_physical_device_get_passthrough_extensions(
    struct vk_device_extension_table *exts)
 {
    struct vn_renderer *renderer = physical_dev->instance->renderer;
-
-#if defined(VK_USE_PLATFORM_ANDROID_KHR) || defined(VN_USE_WSI_PLATFORM)
-   /* WSI support currently requires semaphore sync fd import for
-    * VK_KHR_synchronization2 for code simplicity. This requirement can be
-    * dropped by implementing external semaphore purely on the driver side
-    * (aka no corresponding renderer side object).
-    */
-   const bool can_sync2 = physical_dev->renderer_sync_fd.semaphore_importable;
-#else
-   static const bool can_sync2 = true;
-#endif
 
    *exts = (struct vk_device_extension_table){
       /* promoted to VK_VERSION_1_1 */
@@ -1332,7 +1242,7 @@ vn_physical_device_get_passthrough_extensions(
       .KHR_shader_integer_dot_product = true,
       .KHR_shader_non_semantic_info = true,
       .KHR_shader_terminate_invocation = true,
-      .KHR_synchronization2 = can_sync2,
+      .KHR_synchronization2 = true,
       .KHR_zero_initialize_workgroup_memory = true,
       .EXT_4444_formats = true,
       .EXT_extended_dynamic_state = true,
@@ -1406,6 +1316,7 @@ vn_physical_device_get_passthrough_extensions(
       .EXT_conditional_rendering = true,
       .EXT_conservative_rasterization = true,
       .EXT_custom_border_color = true,
+      .EXT_debug_marker = true,
       .EXT_depth_bias_control = true,
       .EXT_depth_clamp_control = true,
       .EXT_depth_clamp_zero_one = true,
@@ -1460,6 +1371,7 @@ vn_physical_device_get_passthrough_extensions(
       .EXT_transform_feedback = true,
       .EXT_vertex_attribute_divisor = true,
       .EXT_vertex_input_dynamic_state = true,
+      .EXT_ycbcr_image_arrays = true,
 
       /* vendor */
       .ARM_rasterization_order_attachment_access = true,

@@ -52,6 +52,7 @@ nvk_files = files(
   'nvk_mme.c',
   'nvk_mme.h',
   'nvk_nir_lower_descriptors.c',
+  'nvk_nir_lower_mesh_shader.c',
   'nvk_physical_device.c',
   'nvk_physical_device.h',
   'nvk_private.h',
@@ -90,6 +91,8 @@ if host_machine.system() == 'horizon'
   )
 else
   nvk_files += files(
+    'nvk_cubin.c',
+    'nvk_cubin.h',
     'nvkmd/nouveau/nvkmd_nouveau.h',
     'nvkmd/nouveau/nvkmd_nouveau_ctx.c',
     'nvkmd/nouveau/nvkmd_nouveau_dev.c',
@@ -133,6 +136,19 @@ nvkcl = custom_target(
   command : [prog_vtn_bindgen2, '@INPUT@', '@OUTPUT@'],
 )
 
+nvk_drirc = custom_target(
+  'nvk_drirc',
+  input  : [files('nvk_drirc_gen.py'), drirc_gen, '00-nvk-defaults.conf'],
+  output : ['nvk_drirc.c', 'nvk_drirc.h'],
+  command : [
+    prog_python, '@INPUT0@',
+    '--import-path', join_paths(dir_source_root, 'src/util'),
+    '--drirc-src', '@OUTPUT0@',
+    '--drirc-hdr', '@OUTPUT1@',
+    '--validate', '@INPUT2@',
+  ],
+)
+
 nvk_deps = [
   dep_libdrm,
   idep_nak,
@@ -148,7 +164,16 @@ nvk_deps = [
   idep_vulkan_wsi_headers,
 ]
 
+if host_machine.system() != 'horizon'
+  nvk_deps += [dep_elf, idep_nouveau_cubin]
+endif
+
 nvk_flags = []
+
+nvk_build_id = get_option('nvk-build-id')
+if nvk_build_id != ''
+  nvk_flags += '-DNVK_BUILD_ID_OVERRIDE="' + nvk_build_id + '"'
+endif
 
 if with_platform_android
   nvk_files += files('nvk_android.c')
@@ -158,6 +183,7 @@ libnvk = static_library(
   'nvk',
   [
     nvk_entrypoints,
+    nvk_drirc,
     cl_generated,
     nvk_files,
     nvkcl,

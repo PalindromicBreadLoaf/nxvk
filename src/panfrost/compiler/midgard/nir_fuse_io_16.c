@@ -13,7 +13,7 @@ bool nir_fuse_io_16(nir_shader *shader);
 static bool
 nir_src_is_f2fmp(nir_src *use)
 {
-   nir_instr *parent = nir_src_parent_instr(use);
+   nir_instr *parent = nir_src_use_instr(use);
 
    if (parent->type != nir_instr_type_alu)
       return false;
@@ -39,6 +39,10 @@ nir_fuse_io_16(nir_shader *shader)
                continue;
 
             if (intr->def.bit_size != 32)
+               continue;
+
+            /* Do not change interpolation precision in highp */
+            if (!nir_intrinsic_io_semantics(intr).medium_precision)
                continue;
 
             /* We swizzle at a 32-bit level so need a multiple of 2. We could

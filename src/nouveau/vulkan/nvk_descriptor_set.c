@@ -11,6 +11,7 @@
 #include "nvk_entrypoints.h"
 #include "nvk_format.h"
 #include "nvk_image_view.h"
+#include "nvk_instance.h"
 #include "nvk_physical_device.h"
 #include "nvk_sampler.h"
 #include "nvkmd/nvkmd.h"
@@ -57,6 +58,8 @@ nvk_descriptor_writer_init_push(const struct nvk_physical_device *pdev,
    w->layout = layout;
    w->set_map = push_set->data;
    w->set_size_B = sizeof(push_set->data);
+
+   push_set->size_B = layout->non_variable_descriptor_buffer_size;
 }
 
 static void
@@ -257,30 +260,30 @@ write_storage_image_view_desc(struct nvk_descriptor_writer *w,
 
 static union nvk_buffer_descriptor
 ubo_desc(const struct nvk_physical_device *pdev,
-         struct nvk_addr_range addr_range)
+         VkDeviceAddressRangeKHR addr_range)
 {
    const uint32_t min_cbuf_alignment = nvk_min_cbuf_alignment(&pdev->info);
 
-   assert(addr_range.addr % min_cbuf_alignment == 0);
-   assert(addr_range.range <= NVK_MAX_CBUF_SIZE);
+   assert(addr_range.address % min_cbuf_alignment == 0);
+   assert(addr_range.size <= NVK_MAX_CBUF_SIZE);
 
-   addr_range.addr = ROUND_DOWN_TO(addr_range.addr, min_cbuf_alignment);
-   addr_range.range = align(addr_range.range, min_cbuf_alignment);
+   addr_range.address = ROUND_DOWN_TO(addr_range.address, min_cbuf_alignment);
+   addr_range.size = align(addr_range.size, min_cbuf_alignment);
 
    if (nvk_use_bindless_cbuf_2(&pdev->info)) {
       return (union nvk_buffer_descriptor) { .cbuf2 = {
-         .base_addr_shift_6 = addr_range.addr >> 6,
-         .size_shift_4 = addr_range.range >> 4,
+         .base_addr_shift_6 = addr_range.address >> 6,
+         .size_shift_4 = addr_range.size >> 4,
       }};
    } else if (nvk_use_bindless_cbuf(&pdev->info)) {
       return (union nvk_buffer_descriptor) { .cbuf = {
-         .base_addr_shift_4 = addr_range.addr >> 4,
-         .size_shift_4 = addr_range.range >> 4,
+         .base_addr_shift_4 = addr_range.address >> 4,
+         .size_shift_4 = addr_range.size >> 4,
       }};
    } else {
       return (union nvk_buffer_descriptor) { .addr = {
-         .base_addr = addr_range.addr,
-         .size = addr_range.range,
+         .base_addr = addr_range.address,
+         .size = addr_range.size,
       }};
    }
 }
@@ -291,8 +294,8 @@ write_ubo_desc(struct nvk_descriptor_writer *w,
                uint32_t binding, uint32_t elem)
 {
    VK_FROM_HANDLE(nvk_buffer, buffer, info->buffer);
-   struct nvk_addr_range addr_range =
-      nvk_buffer_addr_range(buffer, info->offset, info->range);
+   const VkDeviceAddressRangeKHR addr_range =
+      vk_device_address_range(&buffer->vk, info->offset, info->range);
 
    const union nvk_buffer_descriptor desc = ubo_desc(w->pdev, addr_range);
    write_desc(w, binding, elem, &desc, sizeof(desc));
@@ -304,8 +307,8 @@ write_dynamic_ubo_desc(struct nvk_descriptor_writer *w,
                        uint32_t binding, uint32_t elem)
 {
    VK_FROM_HANDLE(nvk_buffer, buffer, info->buffer);
-   struct nvk_addr_range addr_range =
-      nvk_buffer_addr_range(buffer, info->offset, info->range);
+   const VkDeviceAddressRangeKHR addr_range =
+      vk_device_address_range(&buffer->vk, info->offset, info->range);
 
    const struct nvk_descriptor_set_binding_layout *binding_layout =
       &w->layout->binding[binding];
@@ -314,17 +317,14 @@ write_dynamic_ubo_desc(struct nvk_descriptor_writer *w,
 }
 
 static union nvk_buffer_descriptor
-ssbo_desc(struct nvk_addr_range addr_range)
+ssbo_desc(const struct nvk_physical_device *pdev,
+          VkDeviceAddressRangeKHR addr_range)
 {
-   assert(addr_range.addr % NVK_MIN_SSBO_ALIGNMENT == 0);
-   assert(addr_range.range <= UINT32_MAX);
-
-   addr_range.addr = ROUND_DOWN_TO(addr_range.addr, NVK_MIN_SSBO_ALIGNMENT);
-   addr_range.range = align(addr_range.range, NVK_SSBO_BOUNDS_CHECK_ALIGNMENT);
+   assert(addr_range.size <= UINT32_MAX);
 
    return (union nvk_buffer_descriptor) { .addr = {
-      .base_addr = addr_range.addr,
-      .size = addr_range.range,
+      .base_addr = addr_range.address,
+      .size = addr_range.size,
    }};
 }
 
@@ -334,10 +334,10 @@ write_ssbo_desc(struct nvk_descriptor_writer *w,
                 uint32_t binding, uint32_t elem)
 {
    VK_FROM_HANDLE(nvk_buffer, buffer, info->buffer);
-   struct nvk_addr_range addr_range =
-      nvk_buffer_addr_range(buffer, info->offset, info->range);
+   const VkDeviceAddressRangeKHR addr_range =
+      vk_device_address_range(&buffer->vk, info->offset, info->range);
 
-   const union nvk_buffer_descriptor desc = ssbo_desc(addr_range);
+   const union nvk_buffer_descriptor desc = ssbo_desc(w->pdev, addr_range);
    write_desc(w, binding, elem, &desc, sizeof(desc));
 }
 
@@ -347,13 +347,13 @@ write_dynamic_ssbo_desc(struct nvk_descriptor_writer *w,
                         uint32_t binding, uint32_t elem)
 {
    VK_FROM_HANDLE(nvk_buffer, buffer, info->buffer);
-   struct nvk_addr_range addr_range =
-      nvk_buffer_addr_range(buffer, info->offset, info->range);
+   const VkDeviceAddressRangeKHR addr_range =
+      vk_device_address_range(&buffer->vk, info->offset, info->range);
 
    const struct nvk_descriptor_set_binding_layout *binding_layout =
       &w->layout->binding[binding];
    w->set->dynamic_buffers[binding_layout->dynamic_buffer_index + elem] =
-      ssbo_desc(addr_range);
+      ssbo_desc(w->pdev, addr_range);
 }
 
 static struct nvk_edb_buffer_view_descriptor
@@ -1184,12 +1184,12 @@ nvk_GetDescriptorEXT(VkDevice _device,
    }
 
    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER: {
-      struct nvk_addr_range addr_range = { };
+      VkDeviceAddressRangeEXT addr_range = { };
       if (pDescriptorInfo->data.pUniformBuffer != NULL &&
           pDescriptorInfo->data.pUniformBuffer->address != 0) {
-         addr_range = (const struct nvk_addr_range) {
-            .addr = pDescriptorInfo->data.pUniformBuffer->address,
-            .range = pDescriptorInfo->data.pUniformBuffer->range,
+         addr_range = (VkDeviceAddressRangeEXT) {
+            .address = pDescriptorInfo->data.pUniformBuffer->address,
+            .size = pDescriptorInfo->data.pUniformBuffer->range,
          };
       }
       union nvk_buffer_descriptor desc = ubo_desc(pdev, addr_range);
@@ -1199,15 +1199,15 @@ nvk_GetDescriptorEXT(VkDevice _device,
    }
 
    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: {
-      struct nvk_addr_range addr_range = { };
+      VkDeviceAddressRangeEXT addr_range = { };
       if (pDescriptorInfo->data.pStorageBuffer != NULL &&
           pDescriptorInfo->data.pStorageBuffer->address != 0) {
-         addr_range = (const struct nvk_addr_range) {
-            .addr = pDescriptorInfo->data.pStorageBuffer->address,
-            .range = pDescriptorInfo->data.pStorageBuffer->range,
+         addr_range = (VkDeviceAddressRangeEXT) {
+            .address = pDescriptorInfo->data.pStorageBuffer->address,
+            .size = pDescriptorInfo->data.pStorageBuffer->range,
          };
       }
-      union nvk_buffer_descriptor desc = ssbo_desc(addr_range);
+      union nvk_buffer_descriptor desc = ssbo_desc(pdev, addr_range);
       assert(sizeof(desc) <= dataSize);
       memcpy(pDescriptor, &desc, sizeof(desc));
       break;

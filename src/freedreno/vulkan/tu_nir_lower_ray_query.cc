@@ -8,7 +8,7 @@
 #include "nir/nir_control_flow.h"
 #include "nir/nir_deref.h"
 
-#include "bvh/tu_build_interface.h"
+#include "bvh/tu_bvh_defines.h"
 #include "tu_shader.h"
 
 enum rq_intersection_var_index {
@@ -260,15 +260,13 @@ load_tlas(nir_builder *b, nir_def *tlas,
                               .align_mul = AS_RECORD_SIZE,
                               .align_offset = offset);
    } else {
-      return nir_load_global_ir3(b, components, 32,
-                                 nir_pack_64_2x32(b, tlas),
-                                 nir_iadd_imm(b, nir_imul_imm(b, index, AS_RECORD_SIZE / 4),
-                                              offset / 4),
-                                 /* The required alignment of the
-                                  * user-specified base from the Vulkan spec.
-                                  */
-                                 .align_mul = 256,
-                                 .align_offset = 0);
+      return nir_load_global_offset(
+         b, components, 32, nir_pack_64_2x32(b, tlas),
+         nir_iadd_imm(b, nir_imul_imm(b, index, AS_RECORD_SIZE), offset),
+         /* The required alignment of the
+          * user-specified base from the Vulkan spec.
+          */
+         .align_mul = 256, .align_offset = 0);
    }
 }
 
@@ -522,7 +520,7 @@ lower_rq_load(nir_builder *b, struct hash_table *ht, nir_intrinsic_instr *intr)
  */
 #define TU_BVH_NO_INSTANCE_ROOT 0xfffffffeu
 
-nir_def *
+static nir_def *
 nir_build_vec3_mat_mult(nir_builder *b, nir_def *vec, nir_def *matrix[], bool translation)
 {
    nir_def *result_components[3] = {
@@ -782,8 +780,8 @@ build_ray_traversal(nir_builder *b, nir_deref_instr *rq,
             /* TODO: Implement optimization to try to combine these into 1
              * 32-bit ID, for compressed nodes.
              *
-             * load_global_ir3 doesn't have the required range so we have to
-             * do the offset math ourselves.
+             * load_global_offset doesn't have the required range so we have
+             * to do the offset math ourselves.
              */
             nir_def *offset =
                nir_ior_imm(b, nir_imul_imm(b, nir_u2u64(b, bvh_node),

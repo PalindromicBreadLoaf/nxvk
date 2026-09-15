@@ -6,12 +6,15 @@
 
 #include "nir/nir.h"
 #include "nir/nir_builder.h"
+
+#include "amdgfxregs.h"
 #include "radv_nir.h"
-#include "radv_pipeline_graphics.h"
+#include "radv_pipeline.h"
+#include "radv_shader.h"
 
 typedef struct {
    const struct radv_graphics_state_key *gfx;
-   unsigned vgt_outprim_type;
+   unsigned num_raster_vertices_per_prim;
 } opt_fs_builtins_state;
 
 static bool
@@ -25,19 +28,17 @@ pass(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    if (intr->intrinsic == nir_intrinsic_load_front_face || intr->intrinsic == nir_intrinsic_load_front_face_fsign) {
       int force_front_face = 0;
 
-      switch (state->vgt_outprim_type) {
-      case V_028A6C_POINTLIST:
-      case V_028A6C_LINESTRIP:
+      switch (state->num_raster_vertices_per_prim) {
+      case 1:
+      case 2:
          force_front_face = 1;
          break;
-      case V_028A6C_TRISTRIP:
+      case 3:
          if (state->gfx->rs.cull_mode == VK_CULL_MODE_FRONT_BIT) {
             force_front_face = -1;
          } else if (state->gfx->rs.cull_mode == VK_CULL_MODE_BACK_BIT) {
             force_front_face = 1;
          }
-         break;
-      default:
          break;
       }
 
@@ -62,11 +63,12 @@ pass(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 }
 
 bool
-radv_nir_opt_fs_builtins(nir_shader *shader, const struct radv_graphics_state_key *gfx_state, unsigned vgt_outprim_type)
+radv_nir_opt_fs_builtins(nir_shader *shader, const struct radv_graphics_state_key *gfx_state,
+                         unsigned num_raster_vertices_per_prim)
 {
    opt_fs_builtins_state state = {
       .gfx = gfx_state,
-      .vgt_outprim_type = vgt_outprim_type,
+      .num_raster_vertices_per_prim = num_raster_vertices_per_prim,
    };
 
    return nir_shader_intrinsics_pass(shader, pass, nir_metadata_control_flow, &state);

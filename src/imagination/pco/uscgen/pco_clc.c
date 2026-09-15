@@ -143,7 +143,7 @@ static void optimize(nir_shader *nir)
       NIR_PASS(progress, nir, nir_opt_deref);
       NIR_PASS(progress, nir, nir_opt_copy_prop_vars);
       NIR_PASS(progress, nir, nir_opt_undef);
-      NIR_PASS(progress, nir, nir_lower_undef_to_zero);
+      NIR_PASS(progress, nir, nir_lower_undef_to_zero, NULL);
 
       NIR_PASS(progress, nir, nir_opt_shrink_vectors, true);
       NIR_PASS(progress, nir, nir_opt_loop_unroll);
@@ -166,7 +166,6 @@ spv_to_nir(void *mem_ctx, uint32_t *spirv_map, unsigned spirv_len)
    nir_shader *nir = spirv_to_nir(spirv_map,
                                   spirv_len / 4,
                                   NULL,
-                                  0,
                                   MESA_SHADER_KERNEL,
                                   "library",
                                   &precomp_spirv_options,
@@ -285,7 +284,7 @@ static nir_def *load_kernel_input(nir_builder *b,
  */
 static pco_shader *build_shader(pco_ctx *ctx, nir_shader *nir, pco_data *data)
 {
-   pco_preprocess_nir(ctx, nir);
+   pco_preprocess_nir(ctx, nir, data);
    pco_lower_nir(ctx, nir, data);
    pco_postprocess_nir(ctx, nir, data);
 
@@ -374,6 +373,11 @@ int main(int argc, char *argv[argc])
           sizeof(pvr_device_info_common));
    ++num_devices;
 
+   /* Dummy device runtime info (just zeroes).
+    * None of the precompiled shaders will be using any related functionality.
+    */
+   struct pvr_device_runtime_info dev_runtime_info = { 0 };
+
    int fd = open(spv_file, O_RDONLY);
    if (fd < 0) {
       fprintf(stderr, "Failed to open %s\n", spv_file);
@@ -411,7 +415,7 @@ int main(int argc, char *argv[argc])
                             "Imagination Technologies Ltd.",
                             basename(hdr_file));
 
-   pco_ctx *ctx = pco_ctx_create(NULL, mem_ctx);
+   pco_ctx *ctx = pco_ctx_create(NULL, &dev_runtime_info, mem_ctx);
    nir_shader *nir = spv_to_nir(mem_ctx, spirv_map, spirv_len);
    struct nir_precomp_opts opts = { 0 };
 

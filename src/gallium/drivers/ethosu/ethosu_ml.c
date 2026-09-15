@@ -11,6 +11,7 @@
 #include "util/u_inlines.h"
 
 #include <assert.h>
+#include <inttypes.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -83,12 +84,20 @@ ethosu_round_up_divide(int a, int b)
 }
 
 int
-ethosu_quantize_scale(double scale, uint32_t *shift)
+ethosu_quantize_scale(double scale, int32_t *shift, bool reduced)
 {
    int exponent = 0;
    double significand = frexp(scale, &exponent);
-   uint32_t quantized_scale = round(significand * (double)(1LL << 31));
+   int32_t quantized_scale = round(significand * (double)(1LL << 31));
    *shift = 31 - exponent;
+
+   if (reduced) {
+      quantized_scale = (quantized_scale >> 16) + (quantized_scale >> 15 & 1);
+      // make sure reduced scale does not overflow
+      quantized_scale = MIN2(quantized_scale, 0x7FFF);
+      *shift -= 16;
+   }
+
    if (*shift > 63) {
       if (quantized_scale > exp2(*shift - 63)) {
          quantized_scale = quantized_scale >> (*shift - 63);
@@ -118,6 +127,27 @@ ethosu_ml_operation_supported(struct pipe_ml_device *pdevice,
       return false;
 
    switch (operation->type) {
+   case PIPE_ML_OPERATION_TYPE_FULLY_CONNECTED: {
+      struct pipe_tensor *input = operation->input_tensors[0];
+      struct pipe_tensor *output = operation->output_tensors[0];
+      struct pipe_tensor *weight = operation->fcon.weight_tensor;
+      uint64_t input_size;
+      uint64_t output_size;
+
+      if (!weight || input->dims[0] != output->dims[0] ||
+          weight->dims[0] != 1 || weight->dims[1] != 1 ||
+          !weight->dims[2] || !weight->dims[3])
+         break;
+
+      input_size = (uint64_t)input->dims[1] * input->dims[2] *
+                   input->dims[3];
+      output_size = (uint64_t)output->dims[1] * output->dims[2] *
+                    output->dims[3];
+      supported = input_size % weight->dims[3] == 0 &&
+                  output_size == input_size / weight->dims[3] *
+                                    weight->dims[2];
+      break;
+   }
    case PIPE_ML_OPERATION_TYPE_CONVOLUTION: {
       /*
        * Dilation is not yet implemented.
@@ -128,10 +158,19 @@ ethosu_ml_operation_supported(struct pipe_ml_device *pdevice,
 
       break;
    }
+   case PIPE_ML_OPERATION_TYPE_MAXIMUM:
+   case PIPE_ML_OPERATION_TYPE_MINIMUM:
+   case PIPE_ML_OPERATION_TYPE_MUL:
    case PIPE_ML_OPERATION_TYPE_ADD:
    case PIPE_ML_OPERATION_TYPE_POOLING:
    case PIPE_ML_OPERATION_TYPE_STRIDED_SLICE:
    case PIPE_ML_OPERATION_TYPE_PAD:
+   case PIPE_ML_OPERATION_TYPE_LOGISTIC:
+   case PIPE_ML_OPERATION_TYPE_TANH:
+   case PIPE_ML_OPERATION_TYPE_HSWISH:
+   case PIPE_ML_OPERATION_TYPE_LEAKY_RELU:
+   case PIPE_ML_OPERATION_TYPE_QUANTIZE:
+   case PIPE_ML_OPERATION_TYPE_RESHAPE:
       supported = true;
       break;
    case PIPE_ML_OPERATION_TYPE_RESIZE: {
@@ -144,8 +183,7 @@ ethosu_ml_operation_supported(struct pipe_ml_device *pdevice,
       break;
    }
    case PIPE_ML_OPERATION_TYPE_CONCATENATION:
-      supported = operation->conc.axis == 3 ||
-                  operation->conc.axis == -1;
+      supported = operation->conc.axis <= 3 && operation->conc.axis >= -1;
       break;
    default:
       supported = false;
@@ -253,6 +291,7 @@ static void
 prepare_for_submission(struct ethosu_subgraph *subgraph,
                        struct pipe_context *pcontext)
 {
+   int ret;
    subgraph->screen = ethosu_screen(pcontext->screen);
    struct ethosu_screen *screen = subgraph->screen;
    uint64_t cmdstream_size = (subgraph->cursor - subgraph->cmdstream) *
@@ -262,19 +301,21 @@ prepare_for_submission(struct ethosu_subgraph *subgraph,
       ethosu_dump_buffer((uint8_t *)subgraph->cmdstream, "cmdstream", 0, 0, 0,
                          cmdstream_size);
 
-   struct drm_ethosu_cmdstream_bo_create cmd_bo_create = {
-      .size = cmdstream_size,
-      .data = (uintptr_t)subgraph->cmdstream,
-   };
+   if (cmdstream_size) {
+      struct drm_ethosu_cmdstream_bo_create cmd_bo_create = {
+         .size = cmdstream_size,
+         .data = (uintptr_t)subgraph->cmdstream,
+      };
 
-   int ret = drmIoctl(screen->fd, DRM_IOCTL_ETHOSU_CMDSTREAM_BO_CREATE,
-                      &cmd_bo_create);
-   assert(ret == 0);
+      ret = drmIoctl(screen->fd, DRM_IOCTL_ETHOSU_CMDSTREAM_BO_CREATE,
+                     &cmd_bo_create);
+      assert(ret == 0);
 
-   free(subgraph->cmdstream);
-   subgraph->cmdstream = NULL;
+      free(subgraph->cmdstream);
+      subgraph->cmdstream = NULL;
 
-   subgraph->cmdstream_bo = cmd_bo_create.handle;
+      subgraph->cmdstream_bo = cmd_bo_create.handle;
+   }
 
    DBG("subgraph->coefs_used %d\n", subgraph->coefs_used);
    if (subgraph->coefs_used > 0) {
@@ -294,6 +335,23 @@ prepare_for_submission(struct ethosu_subgraph *subgraph,
          ethosu_dump_buffer(buf, "coefs", 0, 0, 0,
                             pipe_buffer_size(subgraph->coefs_rsrc));
          pipe_buffer_unmap(pcontext, transfer_in);
+      }
+   }
+
+   subgraph->perfmon_id = 0;
+   if (DBG_ENABLED(ETHOSU_DBG_DUMP_PERF)) {
+
+      struct drm_ethosu_perfmon_create perfmon_create = {
+         .counters = { 32, 35 }, /* npu-idle, npu-active */
+         .ncounters = 2,
+      };
+      ret = drmIoctl(screen->fd, DRM_IOCTL_ETHOSU_PERFMON_CREATE, &perfmon_create);
+      DBG("Perfmon create returned %d\n", ret);
+      if (ret == 0) {
+         subgraph->perfmon_id = perfmon_create.id;
+      } else {
+         DBG("Could not create perfmon: ret=%d errno=%d (%s)\n",
+             ret, errno, strerror(errno));
       }
    }
 
@@ -407,6 +465,9 @@ ethosu_ml_subgraph_invoke(struct pipe_context *pcontext,
       pipe_buffer_unmap(pcontext, transfer_in);
    }
 
+   if (!subgraph->cmdstream_bo)
+      return;
+
    job.cmd_bo = subgraph->cmdstream_bo;
 
    if (subgraph->coefs_rsrc) {
@@ -421,6 +482,7 @@ ethosu_ml_subgraph_invoke(struct pipe_context *pcontext,
 
    submit.jobs = (uintptr_t)&job;
    submit.job_count = 1;
+   submit.perfmon_id = subgraph->perfmon_id;
 
    if (DBG_ENABLED(ETHOSU_DBG_MSGS))
       clock_gettime(CLOCK_MONOTONIC_RAW, &start);
@@ -467,6 +529,25 @@ ethosu_ml_subgraph_read_outputs(struct pipe_context *pcontext,
 
       pipe_buffer_read(pcontext, subgraph->io_rsrc, output->offset, output->size, outputs[i]);
    }
+
+   if (DBG_ENABLED(ETHOSU_DBG_DUMP_PERF)) {
+      struct ethosu_screen *screen = ethosu_screen(pcontext->screen);
+      uint64_t values[9];
+      struct drm_ethosu_perfmon_get_values get_values = {
+         .id = subgraph->perfmon_id,
+         .values_ptr = (uintptr_t)values,
+      };
+      int ret;
+
+      ret = drmIoctl(screen->fd, DRM_IOCTL_ETHOSU_PERFMON_GET_VALUES, &get_values);
+      if (ret == 0) {
+         mesa_logi("PMU: cycles=%" PRIu64 ", npu-active=%" PRIu64 ", npu-idle=%" PRIu64 "\n",
+                   values[2], values[1], values[0]);
+      } else {
+         DBG("Could not read perfmon values: ret=%d errno=%d (%s)\n",
+             ret, errno, strerror(errno));
+      }
+   }
 }
 
 void
@@ -474,23 +555,32 @@ ethosu_ml_subgraph_destroy(struct pipe_ml_device *pdevice,
                            struct pipe_ml_subgraph *psubgraph)
 {
    struct ethosu_subgraph *subgraph = (struct ethosu_subgraph *)(psubgraph);
+   struct ethosu_screen *screen = subgraph->screen;
 
    if (subgraph->io_rsrc) {
       /* Post-submission state: cleanup DRM resources */
-      struct ethosu_screen *screen = subgraph->screen;
       struct drm_gem_close arg = {0};
       int ret;
 
       pipe_resource_reference(&subgraph->io_rsrc, NULL);
       pipe_resource_reference(&subgraph->coefs_rsrc, NULL);
 
-      arg.handle = subgraph->cmdstream_bo;
-      ret = drmIoctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &arg);
-      assert(ret >= 0);
+      if (subgraph->cmdstream_bo) {
+         arg.handle = subgraph->cmdstream_bo;
+         ret = drmIoctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &arg);
+         assert(ret >= 0);
+      }
    } else {
       /* Pre-submission state: cleanup raw buffers */
       free(subgraph->cmdstream);
       free(subgraph->coefs);
+   }
+
+   if (DBG_ENABLED(ETHOSU_DBG_DUMP_PERF)) {
+      struct drm_ethosu_perfmon_destroy destroy = {
+         .id = subgraph->perfmon_id,
+      };
+      drmIoctl(screen->fd, DRM_IOCTL_ETHOSU_PERFMON_DESTROY, &destroy);
    }
 
    util_dynarray_fini(&subgraph->tensors);

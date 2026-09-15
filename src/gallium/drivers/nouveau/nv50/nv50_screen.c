@@ -269,7 +269,6 @@ nv50_init_screen_caps(struct nv50_screen *screen)
    caps->cull_distance = true;
    caps->shader_array_components = true;
    caps->legacy_math_rules = true;
-   caps->tgsi_tex_txf_lz = false;
    caps->shader_clock = true;
    caps->can_bind_const_buffer_as_vertex = true;
    caps->clear_scissored = true;
@@ -321,6 +320,9 @@ nv50_init_screen_caps(struct nv50_screen *screen)
    caps->max_point_size_aa = 64.0f;
    caps->max_texture_anisotropy = 16.0f;
    caps->max_texture_lod_bias = 15.0f;
+
+   /* Up to 16 bytes are accelerated */
+   caps->hw_clear_buffer_sizes = 1 | 2 | 4 | 8 | 16;
 }
 
 static void

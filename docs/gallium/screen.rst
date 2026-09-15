@@ -303,6 +303,8 @@ Capability about the features and limits of the driver/GPU.
 * ``pipe_caps.depth_bounds_test``: Whether bounds_test, bounds_min, and
   bounds_max states of pipe_depth_stencil_alpha_state behave according
   to the :ext:`GL_EXT_depth_bounds_test` specification.
+* ``pipe_caps.native_fp32_depth``: Whether the hardware has a true
+  floating-point depth buffer. Defaults to true.
 * ``pipe_caps.texture_query_samples``: Whether the ``TXQS`` opcode is supported
 * ``pipe_caps.force_persample_interp``: If the driver can force per-sample
   interpolation for all fragment shader inputs if
@@ -422,8 +424,6 @@ Capability about the features and limits of the driver/GPU.
 * ``pipe_caps.doubles``: Whether double precision floating-point operations
   are supported.
 * ``pipe_caps.int64``: Whether 64-bit integer operations are supported.
-* ``pipe_caps.tgsi_tex_txf_lz``: Whether TEX_LZ and TXF_LZ opcodes are
-  supported.
 * ``pipe_caps.shader_clock``: Whether the CLOCK opcode is supported.
 * ``pipe_caps.polygon_mode_fill_rectangle``: Whether the
   PIPE_POLYGON_MODE_FILL_RECTANGLE mode is supported for

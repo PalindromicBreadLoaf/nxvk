@@ -22,8 +22,6 @@
  */
 #if MFT_CODEC_H265ENC
 #include "hmft_entrypoints.h"
-#include "mfbufferhelp.h"
-#include "mfpipeinterop.h"
 #include "reference_frames_tracker_hevc.h"
 #include "wpptrace.h"
 
@@ -153,7 +151,8 @@ CDX12EncHMFT::UpdateH265EncPictureDesc( pipe_h265_enc_picture_desc *pPicInfo,
    pPicInfo->seq.sar_height = m_VUIInfo.stSARInfo.usHeight;
 
    pPicInfo->seq.num_units_in_tick = m_FrameRate.Denominator;
-   pPicInfo->seq.time_scale = m_FrameRate.Numerator; // Table E.6 seq.vui_flags.frame_field_info_present_flag is 0, deltaToDivisor should be 1.
+   pPicInfo->seq.time_scale =
+      m_FrameRate.Numerator;   // Table E.6 seq.vui_flags.frame_field_info_present_flag is 0, deltaToDivisor should be 1.
 
    pPicInfo->seq.video_format = m_VUIInfo.stVidSigType.eVideoFormat;
    pPicInfo->seq.colour_primaries = m_VUIInfo.stVidSigType.eColorPrimary;
@@ -356,6 +355,11 @@ CDX12EncHMFT::PrepareForEncodeHelper( LPDX12EncodeContext pDX12EncodeContext,
          static_cast<uint32_t>( std::max( 0, static_cast<int32_t>( cur_frame_desc->l0_reference_list.size() - 1 ) ) );
       for( uint32_t i = 0; i <= pPicInfo->num_ref_idx_l0_active_minus1; i++ )
          pPicInfo->ref_list0[i] = cur_frame_desc->l0_reference_list[i];
+   }
+
+   if( !m_EncoderCapabilities.m_bHWSupportsAppControlledSlicePartitioning && m_EncoderCapabilities.m_bHWSupportSliceModeAuto )
+   {
+      pPicInfo->slice_mode = PIPE_VIDEO_SLICE_MODE_AUTO;
    }
 
    if( m_uiDirtyRectEnabled )
@@ -760,7 +764,7 @@ CDX12EncHMFT::GetCodecPrivateData( LPBYTE pSPSPPSData, DWORD dwSPSPPSDataLen, LP
    unsigned buf_size = dwSPSPPSDataLen;
    const uint32_t intra_period = m_uiGopSize;
    const uint32_t ip_period = m_uiBFrameCount + 1;
-   const uint8_t log2_max_pic_order_cnt_lsb_minus4 = 4;
+   const uint8_t log2_max_pic_order_cnt_lsb_minus4 = HEVC_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4;
 
    pipe_h265_enc_picture_desc h265_pic_desc = {};
 
@@ -986,7 +990,8 @@ CDX12EncHMFT::GetMaxReferences( unsigned int width, unsigned int height )
    UINT32 uiMaxReferences = m_EncoderCapabilities.m_uiMaxHWSupportedDPBCapacity;
    if( width != 0 && height != 0 )
    {
-      const int minCbSizeY = 1 << ( m_EncoderCapabilities.m_HWSupportH265BlockSizes.bits.log2_min_luma_coding_block_size_minus3 + 3 );
+      const int minCbSizeY =
+         1 << ( m_EncoderCapabilities.m_HWSupportH265BlockSizes.bits.log2_min_luma_coding_block_size_minus3 + 3 );
       int maxDPBSize = GetMaxDPBSize( width, height, m_uiLevel, minCbSizeY );
       uiMaxReferences = std::min( (int) m_EncoderCapabilities.m_uiMaxHWSupportedDPBCapacity, maxDPBSize );
    }

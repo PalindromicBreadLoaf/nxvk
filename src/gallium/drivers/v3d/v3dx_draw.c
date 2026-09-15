@@ -1389,8 +1389,7 @@ v3d_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
         if (v3d->streamout.num_targets)
            job->tf_draw_calls_queued++;
 
-        /* Increment the TF offsets by how many verts we wrote.  XXX: This
-         * needs some clamping to the buffer size.
+        /* Increment the TF offsets by how many verts we wrote.
          *
          * If primitive restart is enabled or we have a geometry shader, we
          * update it later, when we can query the device to know how many
@@ -1410,8 +1409,10 @@ v3d_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
                 update_double_buffer_score(job, draws[0].count * info->instance_count);
 
         if (job->referenced_size > V3D_JOB_MAX_BO_REFERENCED_SIZE ||
-            job->submit.bo_handle_count > V3D_JOB_MAX_BO_HANDLE_COUNT) {
-                perf_debug("Flushing job with %u BOs referencing %dkb to try to free up memory\n",
+            job->submit.bo_handle_count > V3D_JOB_MAX_BO_HANDLE_COUNT ||
+            job->draw_calls_queued > V3D_JOB_MAX_DRAW_CALLS_QUEUED) {
+                perf_debug("Flushing job with %u draws, %u BOs referencing %dkb\n",
+                           job->draw_calls_queued,
                            job->submit.bo_handle_count,
                            job->referenced_size / 1024);
                 v3d_job_submit(v3d, job);
@@ -1454,7 +1455,6 @@ v3d_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
          *   so we want to keep them small if one is present.
          */
         struct drm_v3d_submit_csd submit = { 0 };
-        struct v3d_job *job = v3d_job_create(v3d);
 
         /* Set up the actual number of workgroups, synchronously mapping the
          * indirect buffer if necessary to get the dimensions.
@@ -1528,6 +1528,7 @@ v3d_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
         /* Make sure we didn't accidentally underflow. */
         assert(submit.cfg[4] != ~0);
 
+        struct v3d_job *job = v3d_job_create(v3d);
         v3d_job_add_bo(job, v3d_resource(v3d->prog.compute->resource)->bo);
         submit.cfg[5] = (v3d_resource(v3d->prog.compute->resource)->bo->offset +
                          v3d->prog.compute->offset);
@@ -1873,7 +1874,7 @@ v3d_set_global_binding(struct pipe_context *pctx,
         }
 
 
-        for (unsigned i = first; i < first + count; ++i) {
+        for (unsigned i = 0; i < count; ++i) {
                 struct pipe_resource **res = util_dynarray_element(&v3d->global_buffers, struct pipe_resource *, first + i);
                 if (resources && resources[i]) {
                         struct v3d_resource *rsc = v3d_resource(resources[i]);

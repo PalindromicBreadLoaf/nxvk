@@ -7,7 +7,6 @@
 #include "ac_nir.h"
 #include "ac_nir_helpers.h"
 #include "ac_gpu_info.h"
-#include "amdgfxregs.h"
 #include "nir_builder.h"
 #include "nir_xfb_info.h"
 #include "util/u_math.h"
@@ -651,10 +650,10 @@ analyze_shader_before_culling_walk(nir_def *ssa,
 static void
 analyze_shader_before_culling(nir_shader *shader, lower_ngg_nogs_state *s)
 {
-   nir_foreach_function_impl(impl, shader) {
-      /* We need divergence info for culling shaders. */
-      nir_metadata_require(impl, nir_metadata_divergence);
+   /* We need workgroup divergence info for culling shaders. */
+   nir_custom_divergence_analysis(shader, nir_divergence_across_subgroups);
 
+   nir_foreach_function_impl(impl, shader) {
       nir_foreach_block(block, impl) {
          nir_foreach_instr(instr, block) {
             instr->pass_flags = 0;
@@ -751,12 +750,6 @@ save_reusable_variables(nir_builder *b, lower_ngg_nogs_state *s)
 {
    ASSERTED int vec_ok = u_vector_init(&s->reusable_nondeferred_variables, 4, sizeof(reusable_nondeferred_variable));
    assert(vec_ok);
-
-   /* Subgroup ops make divergence information useless for our purpose,
-    * we would need workgroup divergence.
-    */
-   if (b->shader->info.uses_wide_subgroup_intrinsics)
-      return;
 
    /* Upper limit on reusable uniforms in order to reduce SGPR spilling. */
    unsigned remaining_reusable_uniforms = 48;
@@ -877,9 +870,23 @@ cull_primitive_accepted(nir_builder *b, void *state)
 
    nir_store_var(b, s->gs_accepted_var, nir_imm_true(b), 0x1u);
 
-   /* Store the accepted state to LDS for ES threads */
-   for (unsigned vtx = 0; vtx < s->options->num_vertices_per_primitive; ++vtx)
-      nir_store_shared(b, nir_imm_intN_t(b, 1, 8), s->vtx_addr[vtx], .base = lds_es_vertex_accepted);
+   /* Store the accepted state to LDS for ES threads.
+    * The accepted state is a 1-bit flag in the per-vertex structure,
+    * but the full byte is reserved for this flag.
+    *
+    * On Navi 10, we've seen power management related GPU hangs
+    * which are fixed by using an atomic OR instead, see:
+    * https://gitlab.freedesktop.org/mesa/mesa/-/work_items/15926
+    * although it shouldn't be necessary to use atomics here.
+    */
+   for (unsigned vtx = 0; vtx < s->options->num_vertices_per_primitive; ++vtx) {
+      if (s->ac->gfx_level >= GFX10_3)
+         nir_store_shared(b, nir_imm_intN_t(b, 1, 8), s->vtx_addr[vtx], .base = lds_es_vertex_accepted);
+      else
+         nir_shared_atomic(b, 32, s->vtx_addr[vtx], nir_imm_int(b, 1),
+                           .base = lds_es_vertex_accepted,
+                           .atomic_op = nir_atomic_op_ior);
+   }
 }
 
 static void

@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "gfx/si_gfx.h"
 #include "si_pipe.h"
-#include "sid.h"
 #include "util/format/u_format.h"
 #include "util/u_pack_color.h"
 #include "util/u_surface.h"
@@ -1053,7 +1053,7 @@ static void gfx6_clear(struct pipe_context *ctx, unsigned buffers,
       /* TODO: This hack fixes dEQP-GLES[23].functional.fragment_ops.random.* on Navi31.
        * The root cause is unknown.
        */
-      if (sctx->gfx_level == GFX11 || sctx->gfx_level == GFX11_5)
+      if (sctx->gfx_level >= GFX11 && sctx->gfx_level < GFX12)
          si_set_barrier_flags(sctx, SI_BARRIER_SYNC_VS);
    }
 

@@ -72,6 +72,7 @@ SUPPORTED_FEATURES = [
     "VK_EXT_load_store_op_none",
     "VK_EXT_swapchain_colorspace",
     "VK_EXT_custom_border_color",
+    "VK_EXT_border_color_swizzle",
     "VK_EXT_shader_stencil_export",
     "VK_KHR_image_format_list",
     "VK_KHR_incremental_present",
@@ -158,6 +159,14 @@ SUPPORTED_FEATURES = [
     # b/349122558 Zink
     "VK_EXT_color_write_enable",
     "VK_EXT_primitives_generated_query",
+
+    # Android requirements
+    "VK_EXT_pipeline_protected_access",
+    "VK_KHR_maintenance6",
+    "VK_KHR_maintenance7",
+    "VK_KHR_maintenance8",
+    "VK_KHR_maintenance9",
+    "VK_KHR_swapchain_maintenance1",
 ]
 
 HOST_MODULES = ["goldfish_vk_extension_structs", "goldfish_vk_marshaling",
@@ -189,6 +198,7 @@ SUPPORTED_MODULES = {
     "VK_ANDROID_external_memory_android_hardware_buffer": ["goldfish_vk_dispatch", "func_table"],
     "VK_KHR_android_surface": ["func_table"],
     "VK_EXT_swapchain_maintenance1" : HOST_MODULES,
+    "VK_KHR_swapchain_maintenance1" : HOST_MODULES,
     "VK_KHR_swapchain" : HOST_MODULES,
     "VK_NV_device_diagnostic_checkpoints": ["goldfish_vk_dispatch"],
     "VK_KHR_ray_tracing_pipeline": ["goldfish_vk_dispatch"],
@@ -851,6 +861,9 @@ class BumpPool;
     def beginFeature(self, interface, emit):
         # Start processing in superclass
         OutputGenerator.beginFeature(self, interface, emit)
+
+        self.featureSupported = False
+        self.supportedModules = None
 
         for supportedFeature in SUPPORTED_FEATURES:
             if self.featureName == supportedFeature:

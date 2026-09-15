@@ -85,7 +85,7 @@ optimize(nir_shader *nir)
       NIR_PASS(progress, nir, nir_opt_deref);
       NIR_PASS(progress, nir, nir_opt_copy_prop_vars);
       NIR_PASS(progress, nir, nir_opt_undef);
-      NIR_PASS(progress, nir, nir_lower_undef_to_zero);
+      NIR_PASS(progress, nir, nir_lower_undef_to_zero, NULL);
 
       NIR_PASS(progress, nir, nir_opt_shrink_vectors, true);
       NIR_PASS(progress, nir, nir_opt_loop_unroll);
@@ -99,8 +99,8 @@ compile(void *memctx, const uint32_t *spirv, size_t spirv_size, unsigned arch)
    const nir_shader_compiler_options *nir_options = get_compiler_options(arch);
 
    nir_shader *nir =
-      spirv_to_nir(spirv, spirv_size / 4, NULL, 0, MESA_SHADER_KERNEL,
-                   "library", &spirv_options, nir_options);
+      spirv_to_nir(spirv, spirv_size / 4, NULL, MESA_SHADER_KERNEL, "library",
+                   &spirv_options, nir_options);
    nir_validate_shader(nir, "after spirv_to_nir");
    nir_validate_ssa_dominance(nir, "after spirv_to_nir");
    ralloc_steal(memctx, nir);
@@ -275,7 +275,7 @@ main(int argc, const char **argv)
 
    unsigned target_arch = atoi(target_arch_str);
 
-   if (target_arch < 4 || target_arch > 13) {
+   if (target_arch < 4 || target_arch > 14) {
       fprintf(stderr, "Unsupported target arch %d\n", target_arch);
       return 1;
    }
@@ -348,16 +348,31 @@ main(int argc, const char **argv)
 
       nir_precomp_print_layout_struct(fp_h, &opt, libfunc);
 
+      struct nir_precomp_layout layout =
+         nir_precomp_derive_layout(&opt, libfunc);
+      unsigned fau_reserved =
+         DIV_ROUND_UP(BIFROST_PRECOMPILED_KERNEL_ARGS_OFFSET + layout.size_B, 4);
+
       for (unsigned v = 0; v < nr_vars; ++v) {
          nir_shader *s = nir_precompiled_build_variant(
             libfunc, MESA_SHADER_COMPUTE, v, get_compiler_options(target_arch),
             &opt, load_kernel_input);
+
+         blake3_hasher blake3_ctx;
+         _mesa_blake3_init(&blake3_ctx);
+         _mesa_blake3_update(&blake3_ctx, &nir->info.source_blake3,
+                             sizeof(nir->info.source_blake3));
+         _mesa_blake3_update(&blake3_ctx, &libfunc->name,
+                             strlen(libfunc->name));
+         _mesa_blake3_update(&blake3_ctx, &v, sizeof(v));
+         _mesa_blake3_final(&blake3_ctx, s->info.source_blake3);
 
          uint64_t target_gpu_id = (target_arch & 0xf) << 28;
 
          struct pan_compile_inputs inputs = {
             .gpu_id = target_gpu_id,
             .gpu_variant = 0,
+            .fau.reserved = fau_reserved,
          };
 
          nir_link_shader_functions(s, nir);
@@ -428,7 +443,12 @@ main(int argc, const char **argv)
                      nir_var_mem_shared | nir_var_mem_global,
                   nir_address_format_62bit_generic);
 
-         pan_postprocess_nir(s, inputs.gpu_id);
+         struct pan_shader_info shader_info = {0};
+         if (target_arch >= 9)
+            shader_info.cs.allow_merging_workgroups =
+               valhall_can_merge_workgroups(s);
+
+         pan_postprocess_nir(s, &inputs, &shader_info);
 
          NIR_PASS(_, s, nir_shader_intrinsics_pass, lower_sysvals,
                   nir_metadata_control_flow, NULL);
@@ -436,16 +456,11 @@ main(int argc, const char **argv)
          nir_shader *clone = nir_shader_clone(NULL, s);
 
          struct util_dynarray shader_binary;
-         struct pan_shader_info shader_info = {0};
          shader_binary = UTIL_DYNARRAY_INIT;
-
-         if (target_arch >= 9)
-            shader_info.cs.allow_merging_workgroups =
-               valhall_can_merge_workgroups(s);
 
          pan_shader_compile(clone, &inputs, &shader_binary, &shader_info);
 
-         assert(shader_info.push.count * 4 <=
+         assert(shader_info.fau.count * 4 <=
                    BIFROST_PRECOMPILED_KERNEL_ARGS_SIZE &&
                 "Too many kernel arguments!");
 

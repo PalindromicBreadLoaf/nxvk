@@ -1088,13 +1088,11 @@ bi_block_add_successor(bi_block *block, bi_block *successor)
 
 /* Subset of pan_shader_info needed per-variant, in order to support IDVS */
 struct bi_shader_info {
-   struct pan_ubo_push *push;
+   struct pan_fau_layout *fau;
    struct bifrost_shader_info *bifrost;
    struct pan_stats stats;
    unsigned tls_size;
    unsigned work_reg_count;
-   unsigned push_offset;
-   unsigned init_fau_consts_count;
    bool has_ld_gclk_instr;
 };
 
@@ -1286,14 +1284,16 @@ typedef struct {
     */
    bi_index preloaded[BI_MAX_REGS];
 
-   uint32_t fau_consts_count;
-
    /* For creating temporaries */
    unsigned ssa_alloc;
    unsigned reg_alloc;
 
    /* Mask of UBOs that need to be uploaded */
    uint32_t ubo_mask;
+   struct {
+      unsigned start;
+      unsigned end;
+   } ubo_reloc;
 
    /* During instruction selection, map from vector bi_index to its scalar
     * components, populated by a split.

@@ -12,6 +12,10 @@ dEQP-VK.api.driver_properties.conformance_version
 # Exclude this test which might fail when a new extension is implemented.
 dEQP-VK.info.device_extensions
 
+# Times out on all supported drivers
+# https://gitlab.khronos.org/Tracker/vk-gl-cts/-/issues/6728
+dEQP-VK.synchronization2.internally_synchronized_queues.direct_wsi_wsi
+
 # These are tremendously slow (pushing toward a minute), and aren't
 # reliable to be run in parallel with other tests due to CPU-side timing.
 dEQP-GLES[0-9]*.functional.flush_finish.*
@@ -25,11 +29,6 @@ glx@glx_arb_sync_control@timing.*
 
 # This test is not built with waffle, while we do build tests with waffle
 spec@!opengl 1.1@windowoverlap
-
-# These test the loader more than the implementation and are broken because the
-# Vulkan loader in Debian is too old
-dEQP-VK.api.get_device_proc_addr.non_enabled
-dEQP-VK.api.version_check.unavailable_entry_points
 
 # These tests are flaking too much recently on almost all drivers, so better skip them until the cause is identified
 spec@arb_program_interface_query@arb_program_interface_query-getprogramresourceindex
@@ -50,7 +49,3 @@ spec@!opengl 1.1@read-front
 # Also, individually, it was disabled in most of the tests as it is
 # either too slow or results in an OOM
 spec@!opengl 1.1@streaming-texture-leak
-
-# Fails everywhere, invalid test: https://gitlab.khronos.org/Tracker/vk-gl-cts/-/issues/6317
-dEQP-VK.spirv_assembly.instruction.*.float_controls2.*.input_args.mat_det_testedWithout_NotNaN_arg1_nan_arg2_one_res_nan*
-dEQP-VK.spirv_assembly.instruction.*.float_controls2.*.input_args.cross_testedWithout_NotNaN_arg1_nan_arg2_one_res_nan*

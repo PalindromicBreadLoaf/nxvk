@@ -572,6 +572,11 @@ nvk_TransitionImageLayoutEXT(VkDevice device,
                              uint32_t transitionCount,
                              const VkHostImageLayoutTransitionInfoEXT *transitions)
 {
-   /* Nothing to do here */
+   for (uint32_t t = 0; t < transitionCount; t++) {
+      VK_FROM_HANDLE(nvk_image, image, transitions[t].image);
+
+      /* Zcull is disabled for VK_IMAGE_USAGE_HOST_TRANSFER_BIT */
+      assert(image->zcull.nil.size_B == 0);
+   }
    return VK_SUCCESS;
 }

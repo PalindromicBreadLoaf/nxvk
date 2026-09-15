@@ -51,67 +51,6 @@ ir3_nir_lower_64b_undef(nir_shader *shader)
 }
 
 /*
- * Lowering for load_global/store_global with 64b addresses to ir3 variants,
- * which have an additional arg that is a 32-bit offset to the 64-bit base
- * address.  It's stuffed with a 0 in this path currently, but other generators
- * of global loads in the backend will have nonzero values.
- */
-
-static bool
-lower_64b_global_filter(const nir_instr *instr, const void *unused)
-{
-   (void)unused;
-
-   if (instr->type != nir_instr_type_intrinsic)
-      return false;
-
-   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-   switch (intr->intrinsic) {
-   case nir_intrinsic_load_global:
-   case nir_intrinsic_load_global_constant:
-   case nir_intrinsic_store_global:
-      return true;
-   default:
-      return false;
-   }
-}
-
-static nir_def *
-lower_64b_global(nir_builder *b, nir_instr *instr, void *unused)
-{
-   (void)unused;
-
-   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-   if (intr->intrinsic != nir_intrinsic_store_global) {
-      unsigned num_comp = nir_intrinsic_dest_components(intr);
-
-      /* load_global_constant is redundant and should be removed, because we can
-       * express the same thing with extra access flags, but for now translate
-       * it to load_global_ir3 with those extra flags.
-       */
-      enum gl_access_qualifier access = nir_intrinsic_access(intr);
-      if (intr->intrinsic == nir_intrinsic_load_global_constant)
-         access |= ACCESS_NON_WRITEABLE | ACCESS_CAN_REORDER;
-
-      return nir_load_global_ir3(b, num_comp, intr->def.bit_size,
-                                 intr->src[0].ssa, nir_imm_int(b, 0),
-                                 .access = access);
-   } else {
-      nir_store_global_ir3(b, intr->src[0].ssa, intr->src[1].ssa,
-                           nir_imm_int(b, 0));
-      return NIR_LOWER_INSTR_PROGRESS_REPLACE;
-   }
-}
-
-bool
-ir3_nir_lower_64b_global(nir_shader *shader)
-{
-   return nir_shader_lower_instructions(
-         shader, lower_64b_global_filter,
-         lower_64b_global, NULL);
-}
-
-/*
  * Lowering for 64b registers:
  * - @decl_reg -> split in two 32b ones
  * - @store_reg -> unpack_64_2x32_split_x/y and two separate stores
@@ -129,7 +68,7 @@ lower_64b_reg(nir_builder *b, nir_intrinsic_instr *reg)
 
    nir_foreach_reg_store_safe (store_reg_src, reg) {
       nir_intrinsic_instr *store =
-         nir_instr_as_intrinsic(nir_src_parent_instr(store_reg_src));
+         nir_instr_as_intrinsic(nir_src_use_instr(store_reg_src));
       b->cursor = nir_before_instr(&store->instr);
 
       nir_def *packed = store->src[0].ssa;
@@ -153,7 +92,7 @@ lower_64b_reg(nir_builder *b, nir_intrinsic_instr *reg)
 
    nir_foreach_reg_load_safe (load_reg_src, reg) {
       nir_intrinsic_instr *load =
-         nir_instr_as_intrinsic(nir_src_parent_instr(load_reg_src));
+         nir_instr_as_intrinsic(nir_src_use_instr(load_reg_src));
       b->cursor = nir_before_instr(&load->instr);
 
       int base = nir_intrinsic_base(load);

@@ -43,29 +43,77 @@ enum nvk_debug {
    /* Force all memory allocations to go to GART */
    NVK_DEBUG_FORCE_COHERENT = 1ull << 8,
 
+   /* Disable image compression */
+   NVK_DEBUG_NO_COMPRESSION = 1ull << 9,
+
    /* Log vk_error*() messages.
     *
     * A release build drops them unless the instance opts into debug logging
     */
-   NVK_DEBUG_ERRORS = 1ull << 9,
+   NVK_DEBUG_ERRORS = 1ull << 10,
 
    /* Map every allocation GPU-uncached */
-   NVK_DEBUG_GPU_UNCACHED = 1ull << 10,
+   NVK_DEBUG_GPU_UNCACHED = 1ull << 11,
 
    /* Service GPU waits with a CPU block instead of an engine wait */
-   NVK_DEBUG_CPU_WAIT = 1ull << 11,
+   NVK_DEBUG_CPU_WAIT = 1ull << 12,
 
    /* Tear down every memory allocation instead of recycling its backing store */
-   NVK_DEBUG_NO_MEM_CACHE = 1ull << 12,
+   NVK_DEBUG_NO_MEM_CACHE = 1ull << 13,
 
    /* Flush whole mem arenas on submit instead of only their dirty ranges */
-   NVK_DEBUG_FULL_ARENA_FLUSH = 1ull << 13,
+   NVK_DEBUG_FULL_ARENA_FLUSH = 1ull << 14,
 
    /* Log the WSI present path and its per-frame counters */
-   NVK_DEBUG_WSI = 1ull << 14,
+   NVK_DEBUG_WSI = 1ull << 15,
 
    /* Block the CPU on the render fence and dequeue through libnx. */
-   NVK_DEBUG_CPU_PRESENT = 1ull << 15,
+   NVK_DEBUG_CPU_PRESENT = 1ull << 16,
+
+   /* Flush whole command buffer mems on end. */
+   NVK_DEBUG_FULL_CMD_FLUSH = 1ull << 17,
+
+   /* Run copies through vk_meta instead of the copy engine */
+   NVK_DEBUG_META_COPY = 1ull << 18,
+
+   /* Fill the channel warmup ramp with fence cmdlists rather than no-ops */
+   NVK_DEBUG_DENSE_WARMUP = 1ull << 19,
+
+   /* Issue one copy engine launch per line instead of one per copy */
+   NVK_DEBUG_SPLIT_CE_COPY = 1ull << 20,
+
+   /* Do not promote block-linear sector fetches on texture headers */
+   NVK_DEBUG_NO_SECTOR_PROMOTION = 1ull << 21,
+
+   /* Do not bind descriptor-set UBOs as constant buffers pre-Turing */
+   NVK_DEBUG_NO_UBO_CBUF = 1ull << 22,
+
+   /* Re-upload the whole push descriptor set on every draw and dispatch */
+   NVK_DEBUG_FULL_PUSH_DESC = 1ull << 23,
+
+   /* Do not report the kernel's ZCULL geometry */
+   NVK_DEBUG_NO_ZCULL = 1ull << 24,
+
+   /* Map every allocation CPU-uncached, while leaving the GPU mapping cacheable */
+   NVK_DEBUG_CPU_UNCACHED = 1ull << 25,
+
+   /* Keep write-only maps CPU-cached and flush them by hand */
+   NVK_DEBUG_NO_CPU_UNCACHED = 1ull << 26,
+
+   /* Partition the SPM for fragment shaders the way a discrete GPU does */
+   NVK_DEBUG_NO_T210_SUBTILING = 1ull << 27,
+};
+
+enum nvk_experimental {
+   /* Enable dlss support */
+   NVK_EXPERIMENTAL_DLSS = 1ull << 0,
+
+   /* Enable dlss backwards compat
+    *
+    * Allow using a SASS binary with a matching major version number, but
+    * smaller minor number than the device.
+    */
+   NVK_EXPERIMENTAL_DLSS_BACK_COMPAT = 1ull << 1,
 };
 
 #endif /* NVK_DEBUG_H */

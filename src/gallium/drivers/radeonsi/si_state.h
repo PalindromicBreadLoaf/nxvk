@@ -9,18 +9,12 @@
 
 #include "si_pm4.h"
 #include "util/format/u_format.h"
-#include "util/bitset.h"
-
-#include "common/ac_cmdbuf.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#ifndef HAVE_GFX_COMPUTE
-#define __U_STUB__
-#endif
-#include "u_stub.h"
+#include "util/u_stub_gfx_compute.h"
 
 #define SI_NUM_GRAPHICS_SHADERS (MESA_SHADER_FRAGMENT + 1)
 #define SI_NUM_SHADERS          (MESA_SHADER_MESH + 1)
@@ -475,39 +469,33 @@ void si_ps_key_update_framebuffer(struct si_context *sctx);
 void si_update_ps_iter_samples(struct si_context *sctx);
 void si_save_qbo_state(struct si_context *sctx, struct si_qbo_state *st);
 void si_restore_qbo_state(struct si_context *sctx, struct si_qbo_state *st);
+bool si_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
+                            enum pipe_texture_target target, unsigned sample_count,
+                            unsigned storage_sample_count, unsigned usage);
 
 /* si_state_binning.c */
 void si_emit_dpbb_state(struct si_context *sctx, unsigned index);
 
 /* si_state_shaders.cpp */
-void si_get_ir_cache_key(struct si_shader_selector *sel, bool ngg, bool es,
-                         unsigned wave_size, unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN]);
-bool si_shader_cache_load_shader(struct si_screen *sscreen, unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN],
-                                 struct si_shader *shader);
-void si_shader_cache_insert_shader(struct si_screen *sscreen, unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN],
-                                   struct si_shader *shader, bool insert_into_disk_cache);
 bool si_shader_mem_ordered(struct si_shader *shader);
-PROC void si_init_screen_live_shader_cache(struct si_screen *sscreen) TAILV;
 void si_init_shader_functions(struct si_context *sctx);
-PROC bool si_init_shader_cache(struct si_screen *sscreen) TAILBT;
-PROC void si_destroy_shader_cache(struct si_screen *sscreen) TAILV;
 void si_schedule_initial_compile(struct si_context *sctx, mesa_shader_stage stage,
                                  struct util_queue_fence *ready_fence,
                                  struct si_compiler_ctx_state *compiler_ctx_state, void *job,
                                  util_queue_execute_func execute);
 int si_shader_select(struct pipe_context *ctx, struct si_shader_ctx_state *state);
-PROC void si_vs_key_update_inputs(struct si_context *sctx) TAILV;
+MESAPROC void si_vs_key_update_inputs(struct si_context *sctx) TAILV;
 void si_update_ps_inputs_read_or_disabled(struct si_context *sctx);
 void si_update_vrs_flat_shading(struct si_context *sctx);
 unsigned si_get_input_prim(const struct si_shader_selector *gs, const union si_shader_key *key,
                            bool return_unknown);
 unsigned si_get_num_vertices_per_output_prim(struct si_shader *shader);
-PROC bool si_update_ngg(struct si_context *sctx) TAILB;
+MESAPROC bool si_update_ngg(struct si_context *sctx) TAILB;
 void si_vs_ps_key_update_rast_prim_smooth_stipple(struct si_context *sctx);
 void si_ps_key_update_framebuffer_blend_dsa_rasterizer(struct si_context *sctx);
 void si_ps_key_update_rasterizer(struct si_context *sctx);
 void si_ps_key_update_dsa(struct si_context *sctx);
-PROC void si_ps_key_update_sample_shading(struct si_context *sctx) TAILV;
+MESAPROC void si_ps_key_update_sample_shading(struct si_context *sctx) TAILV;
 void si_ps_key_update_framebuffer_rasterizer_sample_shading(struct si_context *sctx);
 void si_init_tess_factor_ring(struct si_context *sctx);
 bool si_update_gs_ring_buffers(struct si_context *sctx);
@@ -516,13 +504,16 @@ bool si_set_tcs_to_fixed_func_shader(struct si_context *sctx);
 void si_update_tess_io_layout_state(struct si_context *sctx);
 void si_update_common_shader_state(struct si_context *sctx, struct si_shader_selector *sel,
                                    mesa_shader_stage type);
+void *si_create_shader_selector(struct pipe_context *ctx,
+                                const struct pipe_shader_state *state);
+void si_destroy_shader_selector(struct pipe_context *ctx, void *cso);
 
 /* si_state_draw.cpp */
 void si_cp_dma_prefetch(struct radeon_cmdbuf *cs,
                         enum amd_gfx_level gfx_level,
                         struct pipe_resource *buf,
                         unsigned offset, unsigned size);
-PROC void si_set_vertex_buffer_descriptor(struct si_screen *sscreen, struct si_vertex_elements *velems,
+MESAPROC void si_set_vertex_buffer_descriptor(struct si_screen *sscreen, struct si_vertex_elements *velems,
                                           const struct pipe_vertex_buffer *vb, unsigned element_index,
                                           uint32_t *out) TAILV;
 void si_emit_buffered_compute_sh_regs(struct si_context *sctx, struct radeon_cmdbuf *cs);
@@ -537,6 +528,7 @@ void si_init_draw_functions_GFX10(struct si_context *sctx);
 void si_init_draw_functions_GFX10_3(struct si_context *sctx);
 void si_init_draw_functions_GFX11(struct si_context *sctx);
 void si_init_draw_functions_GFX11_5(struct si_context *sctx);
+void si_init_draw_functions_GFX11_7(struct si_context *sctx);
 void si_init_draw_functions_GFX12(struct si_context *sctx);
 
 /* si_state_msaa.c */

@@ -35,9 +35,10 @@ kk_CreateBuffer(VkDevice device, const VkBufferCreateInfo *pCreateInfo,
                 const VkAllocationCallbacks *pAllocator, VkBuffer *pBuffer)
 {
    VK_FROM_HANDLE(kk_device, dev, device);
+   struct kk_physical_device *pdev = kk_device_physical(dev);
    struct kk_buffer *buffer;
 
-   if (pCreateInfo->size > KK_MAX_BUFFER_SIZE)
+   if (pCreateInfo->size > pdev->info.max_buffer_size)
       return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
    buffer =
@@ -128,6 +129,10 @@ kk_GetPhysicalDeviceExternalBufferProperties(
       pExternalBufferProperties->externalMemoryProperties =
          kk_mtlheap_mem_props;
       return;
+   case VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT:
+   case VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_MAPPED_FOREIGN_MEMORY_BIT_EXT:
+      pExternalBufferProperties->externalMemoryProperties = kk_host_mem_props;
+      return;
    default:
       goto unsupported;
    }
@@ -150,9 +155,20 @@ kk_bind_buffer_memory(struct kk_device *dev, const VkBindBufferMemoryInfo *info)
    VK_FROM_HANDLE(kk_device_memory, mem, info->memory);
    VK_FROM_HANDLE(kk_buffer, buffer, info->buffer);
 
-   buffer->mtl_handle = mtl_new_buffer_with_length(
-      mem->bo->mtl_handle, buffer->vk.size, info->memoryOffset);
-   buffer->vk.device_address = mtl_buffer_get_gpu_address(buffer->mtl_handle);
+   if (mem->bo->mtl_handle) {
+      buffer->mtl_handle = mtl_new_buffer_with_length(
+         mem->bo->mtl_handle, buffer->vk.size, info->memoryOffset);
+      buffer->offset = 0u;
+   } else {
+      /* If the memory is not heap backed, for example if we imported a host
+       * pointer, use the mapped buffer directly and retain a reference */
+      buffer->mtl_handle = mem->bo->map;
+      buffer->offset = info->memoryOffset;
+      mtl_retain(buffer->mtl_handle);
+   }
+
+   buffer->vk.device_address =
+      mtl_buffer_get_gpu_address(buffer->mtl_handle) + buffer->offset;
    /* We need Metal to give us a CPU mapping so it correctly captures the
     * data in the GPU debugger... */
    mtl_get_contents(buffer->mtl_handle);

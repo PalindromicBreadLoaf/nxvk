@@ -9,7 +9,8 @@
 
 #include "nir/radv_meta_nir.h"
 #include "radv_meta.h"
-#include "sid.h"
+
+#include "vk_shader_module.h"
 
 struct radv_htile_expand_key {
    enum radv_meta_object_key_type type;
@@ -155,9 +156,9 @@ radv_process_depth_image_layer(struct radv_cmd_buffer *cmd_buffer, struct radv_i
    width = u_minify(image->vk.extent.width, range->baseMipLevel + level);
    height = u_minify(image->vk.extent.height, range->baseMipLevel + level);
 
-   const VkImageViewUsageCreateInfo iview_usage_info = {
-      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
-      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+   const VkImageViewUsage2CreateInfoKHR iview_usage_info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_2_CREATE_INFO_KHR,
+      .usage = VK_IMAGE_USAGE_2_DEPTH_STENCIL_ATTACHMENT_BIT_KHR,
    };
 
    radv_image_view_init(&iview, device,
@@ -233,7 +234,7 @@ radv_process_depth_stencil(struct radv_cmd_buffer *cmd_buffer, struct radv_image
    radv_meta_bind_graphics_pipeline(cmd_buffer, pipeline);
 
    if (sample_locs) {
-      assert(image->vk.create_flags & VK_IMAGE_CREATE_SAMPLE_LOCATIONS_COMPATIBLE_DEPTH_BIT_EXT);
+      assert(image->vk.create_flags & VK_IMAGE_CREATE_2_SAMPLE_LOCATIONS_COMPATIBLE_DEPTH_BIT_EXT);
 
       /* Set the sample locations specified during explicit or
        * automatic layout transitions, otherwise the depth decompress
@@ -374,9 +375,9 @@ radv_expand_depth_stencil_compute(struct radv_cmd_buffer *cmd_buffer, struct rad
       height = u_minify(image->vk.extent.height, subresourceRange->baseMipLevel + l);
 
       for (uint32_t s = 0; s < vk_image_subresource_layer_count(&image->vk, subresourceRange); s++) {
-         const VkImageViewUsageCreateInfo src_iview_usage_info = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
-            .usage = VK_IMAGE_USAGE_STORAGE_BIT,
+         const VkImageViewUsage2CreateInfoKHR src_iview_usage_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_2_CREATE_INFO_KHR,
+            .usage = VK_IMAGE_USAGE_2_STORAGE_BIT_KHR,
          };
 
          radv_image_view_init(&load_iview, device,
@@ -395,9 +396,9 @@ radv_expand_depth_stencil_compute(struct radv_cmd_buffer *cmd_buffer, struct rad
                               },
                               &(struct radv_image_view_extra_create_info){.enable_compression = true});
 
-         const VkImageViewUsageCreateInfo dst_iview_usage_info = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
-            .usage = VK_IMAGE_USAGE_STORAGE_BIT,
+         const VkImageViewUsage2CreateInfoKHR dst_iview_usage_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_2_CREATE_INFO_KHR,
+            .usage = VK_IMAGE_USAGE_2_STORAGE_BIT_KHR,
          };
 
          radv_image_view_init(&store_iview, device,
@@ -461,7 +462,8 @@ radv_expand_depth_stencil(struct radv_cmd_buffer *cmd_buffer, struct radv_image 
 
       cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_FLUSH_AND_INV_DB | RADV_CMD_FLAG_FLUSH_AND_INV_DB_META;
    } else {
-      assert(cmd_buffer->qf == RADV_QUEUE_COMPUTE);
+      assert(cmd_buffer->qf == RADV_QUEUE_COMPUTE ||
+             (cmd_buffer->qf == RADV_QUEUE_TRANSFER && cmd_buffer->gang.cs->hw_ip == AMD_IP_COMPUTE));
       radv_expand_depth_stencil_compute(cmd_buffer, image, subresourceRange);
 
       cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_CS_PARTIAL_FLUSH | RADV_CMD_FLAG_INV_VCACHE |

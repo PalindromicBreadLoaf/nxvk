@@ -50,6 +50,7 @@ EPHEMERAL=(
     patch
     pkgconf
     python-is-python3
+    spirv-headers
     xz-utils
 )
 
@@ -93,6 +94,10 @@ PIGLIT_OPTS="-DPIGLIT_USE_WAFFLE=ON
 	     -DPIGLIT_BUILD_VK_TESTS=ON
 	     -DPIGLIT_BUILD_DMA_BUF_TESTS=ON" \
   . .gitlab-ci/container/build-piglit.sh
+
+############### Build OpenCL-CTS
+
+. .gitlab-ci/container/build-opencl-cts.sh
 
 ############### Build dEQP GL
 

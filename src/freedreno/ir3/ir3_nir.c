@@ -321,9 +321,9 @@ ir3_optimize_loop(struct ir3_compiler *compiler,
       if (gcm == -1)
          gcm = debug_get_num_option("GCM", 0);
       if (gcm == 1)
-         progress |= OPT(s, nir_opt_gcm, true);
+         progress |= OPT(s, nir_opt_gcm, true, true);
       else if (gcm == 2)
-         progress |= OPT(s, nir_opt_gcm, false);
+         progress |= OPT(s, nir_opt_gcm, false, true);
       nir_opt_peephole_select_options peephole_select_options = {
          .limit = 16,
          .indirect_load_ok = true,
@@ -594,7 +594,8 @@ lower_shader_clock(struct nir_builder *b, nir_intrinsic_instr *instr, void *data
    if (instr->intrinsic != nir_intrinsic_shader_clock)
       return false;
 
-   uint64_t uche_trap_base = *(uint64_t *)data;
+   struct ir3_compiler *compiler = data;
+   uint64_t uche_trap_base = compiler->options.uche_trap_base;
 
    b->cursor = nir_before_instr(&instr->instr);
    nir_def *clock, *undef;
@@ -603,11 +604,22 @@ lower_shader_clock(struct nir_builder *b, nir_intrinsic_instr *instr, void *data
    {
       /* ALWAYSON counter is mapped to this address. */
       nir_def *base_addr = nir_imm_int64(b, uche_trap_base);
-      /* Reading _LO first presumably latches _HI making the read atomic. */
-      nir_def *clock_lo =
-         nir_load_global_ir3(b, 1, 32, base_addr, nir_imm_int(b, 0));
-      nir_def *clock_hi =
-         nir_load_global_ir3(b, 1, 32, base_addr, nir_imm_int(b, 1));
+
+      nir_io_offset offset_lo =
+         ir3_nir_get_global_offset(b, compiler, nir_imm_int(b, 0), 2);
+      nir_io_offset offset_hi =
+         ir3_nir_get_global_offset(b, compiler, nir_imm_int(b, 1), 2);
+
+      /* Reading _LO first presumably latches _HI making the read atomic. Note
+       * that we mark the accesses volatile to prevent vectorization and
+       * reordering.
+       */
+      nir_def *clock_lo = nir_load_global_offset(
+         b, 1, 32, base_addr, offset_lo.def, .offset_shift = offset_lo.shift,
+         .access = ACCESS_VOLATILE);
+      nir_def *clock_hi = nir_load_global_offset(
+         b, 1, 32, base_addr, offset_hi.def, .offset_shift = offset_hi.shift,
+         .access = ACCESS_VOLATILE);
       clock = nir_vec2(b, clock_lo, clock_hi);
    }
    nir_push_else(b, NULL);
@@ -622,10 +634,10 @@ lower_shader_clock(struct nir_builder *b, nir_intrinsic_instr *instr, void *data
 }
 
 static bool
-ir3_nir_lower_shader_clock(nir_shader *shader, uint64_t uche_trap_base)
+ir3_nir_lower_shader_clock(nir_shader *shader, struct ir3_compiler *compiler)
 {
    return nir_shader_intrinsics_pass(shader, lower_shader_clock,
-                                     nir_metadata_none, &uche_trap_base);
+                                     nir_metadata_none, compiler);
 }
 
 static bool
@@ -728,8 +740,11 @@ ir3_finalize_nir(struct ir3_compiler *compiler,
     * more optimal at the top.
     */
    if (s->info.stage == MESA_SHADER_VERTEX ||
-       s->info.stage == MESA_SHADER_FRAGMENT)
-      NIR_PASS(_, s, nir_opt_move_to_top, nir_move_to_top_input_loads);
+       s->info.stage == MESA_SHADER_FRAGMENT) {
+      NIR_PASS(_, s, nir_opt_move_to_top,
+               nir_move_to_top_input_loads_simple |
+               nir_move_to_top_input_loads_complex_baryc);
+   }
 
    if (s->info.stage == MESA_SHADER_GEOMETRY) {
       /* nir_unlower_io_to_vars expects constant indirect offsets to be folded
@@ -773,7 +788,7 @@ ir3_finalize_nir(struct ir3_compiler *compiler,
    OPT(s, ir3_nir_lower_image_processing);
 
    if (compiler->gen >= 6) {
-      OPT(s, ir3_nir_lower_shader_clock, compiler->options.uche_trap_base);
+      OPT(s, ir3_nir_lower_shader_clock, compiler);
    }
 
    OPT(s, nir_lower_is_helper_invocation);
@@ -1038,7 +1053,7 @@ ir3_nir_post_finalize(struct ir3_shader *shader)
       nir_lower_subgroups_options options = {
             .subgroup_size = subgroup_size,
             .ballot_bit_size = 32,
-            .ballot_components = max_subgroup_size / 32,
+            .ballot_components = MAX2(1, max_subgroup_size / 32),
             .lower_to_scalar = true,
             .lower_vote_feq = true,
             .lower_vote_ieq = true,
@@ -1271,7 +1286,14 @@ variable_size_sort(const void *a, const void *b)
    uint32_t size_b, align_b;
    ir3_get_ra_size_align_bytes(var_b->type, &size_b, &align_b);
 
-   return size_a - size_b;
+   if (size_a != size_b) {
+      return size_a - size_b;
+   }
+
+   /* Use the unique index as a tiebreaker to ensure a stable sort for
+    * determinism.
+    */
+   return var_a->index - var_b->index;
 }
 
 /* Filters out variables from the set that might go to ir3 RA, in order to avoid
@@ -1282,7 +1304,8 @@ variable_size_sort(const void *a, const void *b)
  * unspilling)
  */
 static void
-ir3_filter_vars_to_scratch_single_instr_limit(struct set *set, uint32_t limit,
+ir3_filter_vars_to_scratch_single_instr_limit(struct util_dynarray *vars,
+                                              uint32_t limit,
                                               bool limit_for_half)
 {
    struct util_dynarray candidate_nonspilled;
@@ -1291,8 +1314,12 @@ ir3_filter_vars_to_scratch_single_instr_limit(struct set *set, uint32_t limit,
    /* Create an array of vars to potentially not spill sorted by increasing
     * size.
     */
-   set_foreach(set, entry) {
-      const nir_variable *var = entry->key;
+   util_dynarray_foreach (vars, nir_variable *, var_ptr) {
+      const nir_variable *var = *var_ptr;
+
+      if (var->data.pass_flags) {
+         continue;
+      }
 
       /* If it's definitely a 32/64-bit array that will be stored in full regs,
        * then don't consider it while we're limiting for half-reg accesses. This
@@ -1340,21 +1367,29 @@ ir3_filter_vars_to_scratch_single_instr_limit(struct set *set, uint32_t limit,
 
       nir_variable *var =
          util_dynarray_pop(&candidate_nonspilled, nir_variable *);
-      _mesa_set_remove_key(set, var);
+      var->data.pass_flags = true;
    }
 
    util_dynarray_fini(&candidate_nonspilled);
 }
 
 static void
-ir3_vars_to_scratch_cb(struct set *set, void *data)
+ir3_vars_to_scratch_cb(struct util_dynarray *vars, void *data)
 {
    struct ir3_pressure *limit_pressure = data;
 
-   struct set *nonspilled = _mesa_pointer_set_create(NULL);
-   set_foreach(set, entry) {
-      _mesa_set_add(nonspilled, entry->key);
+   struct util_dynarray nonspilled;
+   util_dynarray_init(&nonspilled, NULL);
+
+   util_dynarray_foreach(vars, nir_variable *, var_ptr) {
+      nir_variable *var = *var_ptr;
+
+      if (var->data.pass_flags) {
+         util_dynarray_append(&nonspilled, var);
+         var->data.pass_flags = false;
+      }
    }
+
    /* Filter for the half vars first, which may let the full limit (which
     * considers all vars) succeed on vars it wouldn't otherwise.
     *
@@ -1363,17 +1398,11 @@ ir3_vars_to_scratch_cb(struct set *set, void *data)
     * present, so we can't have the whole register file taken up by an array.
     */
    ir3_filter_vars_to_scratch_single_instr_limit(
-      nonspilled, (limit_pressure->half * 2) - 16, true);
+      &nonspilled, (limit_pressure->half * 2) - 16, true);
    ir3_filter_vars_to_scratch_single_instr_limit(
-      nonspilled, (limit_pressure->full * 2) - 16, false);
+      &nonspilled, (limit_pressure->full * 2) - 16, false);
 
-   set_foreach(set, entry) {
-      const nir_variable *var = entry->key;
-      if (_mesa_set_search(nonspilled, var))
-         _mesa_set_remove_key(set, var);
-   }
-
-   _mesa_set_destroy(nonspilled, NULL);
+   util_dynarray_fini(&nonspilled);
 }
 
 /**
@@ -1530,12 +1559,11 @@ ir3_nir_lower_variant(struct ir3_shader_variant *so,
    nir_lower_mem_access_bit_sizes_options mem_bit_size_options = {
       .modes = nir_var_mem_constant | nir_var_mem_ubo |
                nir_var_mem_global | nir_var_mem_shared |
-               nir_var_function_temp | nir_var_mem_ssbo,
+               nir_var_function_temp | nir_var_mem_ssbo | nir_var_mem_global,
       .callback = ir3_mem_access_size_align,
    };
 
    progress |= OPT(s, nir_lower_mem_access_bit_sizes, &mem_bit_size_options);
-   progress |= OPT(s, ir3_nir_lower_64b_global);
    progress |= OPT(s, ir3_nir_lower_64b_undef);
    progress |= OPT(s, ir3_nir_lower_64b_image);
    progress |= OPT(s, nir_lower_int64);
@@ -1644,8 +1672,7 @@ ir3_nir_lower_variant(struct ir3_shader_variant *so,
     */
    bool more_late_algebraic = true;
    while (more_late_algebraic) {
-      more_late_algebraic = OPT(s, nir_opt_algebraic_late) ||
-         OPT(s, ir3_nir_opt_algebraic_late);
+      more_late_algebraic = OPT(s, nir_opt_algebraic_late);
       if (!more_late_algebraic && so->compiler->gen >= 5) {
          /* Lowers texture operations that have only f2f16 or u2u16 called on
           * them to have a 16-bit destination.  Also, lower 16-bit texture
@@ -2051,4 +2078,21 @@ ir3_nir_intrinsic_barycentric_sysval(nir_intrinsic_instr *intr)
    }
 
    return sysval;
+}
+
+nir_io_offset
+ir3_nir_get_global_offset(nir_builder *b, struct ir3_compiler *compiler,
+                          nir_def *offset, unsigned offset_shift)
+{
+   if (compiler->gen >= 7) {
+      return (nir_io_offset){
+         .def = nir_ishl_imm(b, offset, offset_shift),
+         .shift = 0,
+      };
+   }
+
+   return (nir_io_offset){
+      .def = offset,
+      .shift = offset_shift,
+   };
 }

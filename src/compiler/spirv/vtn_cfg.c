@@ -429,6 +429,7 @@ vtn_cfg_handle_prepass_instruction(struct vtn_builder *b, SpvOp opcode,
    case SpvOpReturn:
    case SpvOpReturnValue:
    case SpvOpUnreachable:
+   case SpvOpAbortKHR:
       if (b->wa_ignore_return_after_emit_mesh_tasks &&
           opcode == SpvOpReturn && !b->block) {
             /* At this point block was already reset by
@@ -618,7 +619,7 @@ vtn_emit_ret_store(struct vtn_builder *b, const struct vtn_block *block)
 static struct nir_block *
 vtn_new_unstructured_block(struct vtn_builder *b, struct vtn_function *func)
 {
-   struct nir_block *n = nir_block_create(b->shader);
+   struct nir_block *n = nir_block_create(func->nir_func->impl);
    exec_list_push_tail(&func->nir_func->impl->body, &n->cf_node.node);
    n->cf_node.parent = &func->nir_func->impl->cf_node;
    return n;

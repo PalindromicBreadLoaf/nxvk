@@ -91,7 +91,7 @@ public:
              m_boxedHandleCreateMapping(m_state),
              m_boxedHandleUnwrapMapping(m_state),
              m_prevSeqno(std::nullopt),
-             m_queueSubmitWithCommandsEnabled(m_state->getFeatures().VulkanQueueSubmitWithCommands.enabled),
+             m_queueSubmitWithCommandsEnabled(m_state->getFeatures().VulkanQueueSubmitWithCommands.enabled()),
              m_snapshotsEnabled(m_state->snapshotsEnabled()) {}
     %s* stream() { return &m_vkStream; }
     VulkanMemReadingStream* readStream() { return &m_vkMemReadingStream; }
@@ -591,8 +591,20 @@ def decode_vkFlushMappedMemoryRanges(typeInfo: VulkanTypeInfo, api, cgen):
     cgen.stmt("return ptr - (unsigned char*)buf")
     cgen.endIf()
     cgen.stmt("sizeLeft -= readStream")
+    cgen.stmt("auto memorySize = m_state->getDeviceMemorySize(memory)")
+    cgen.beginIf("offset > memorySize || readStream > memorySize - offset")
+    cgen.stmt(
+        "GFXSTREAM_ERROR("
+        "\"vkFlushMappedMemoryRanges: dropping out-of-bounds guest range \""
+        "\"[offset %llu, size %llu] for memory size %llu\", "
+        "(unsigned long long)offset, (unsigned long long)readStream, "
+        "(unsigned long long)memorySize)")
+    cgen.endIf()
+    cgen.beginElse()
     cgen.stmt("uint8_t* targetRange = hostPtr + offset")
-    cgen.stmt("memcpy(targetRange, *readStreamPtrPtr, readStream); *readStreamPtrPtr += readStream")
+    cgen.stmt("memcpy(targetRange, *readStreamPtrPtr, readStream)")
+    cgen.endElse()
+    cgen.stmt("*readStreamPtrPtr += readStream")
     cgen.stmt("packetLen += 8 + readStream")
     cgen.endFor()
     cgen.endIf()
@@ -618,9 +630,21 @@ def decode_vkInvalidateMappedMemoryRanges(typeInfo, api, cgen):
     cgen.stmt("auto size = range.size")
     cgen.stmt("auto offset = range.offset")
     cgen.stmt("auto hostPtr = m_state->getMappedHostPointer(memory)")
-    cgen.stmt("auto actualSize = size == VK_WHOLE_SIZE ? m_state->getDeviceMemorySize(memory) : size")
+    cgen.stmt("auto memorySize = m_state->getDeviceMemorySize(memory)")
+    cgen.stmt("auto actualSize = size == VK_WHOLE_SIZE ? "
+              "(offset <= memorySize ? memorySize - offset : 0) : size")
     cgen.stmt("uint64_t writeStream = 0")
     cgen.stmt("if (!hostPtr) { %s->write(&writeStream, sizeof(uint64_t)); continue; }" % WRITE_STREAM)
+    cgen.beginIf("offset > memorySize || actualSize > memorySize - offset")
+    cgen.stmt(
+        "GFXSTREAM_ERROR("
+        "\"vkInvalidateMappedMemoryRanges: dropping out-of-bounds guest range \""
+        "\"[offset %llu, size %llu] for memory size %llu\", "
+        "(unsigned long long)offset, (unsigned long long)actualSize, "
+        "(unsigned long long)memorySize)")
+    cgen.stmt("%s->write(&writeStream, sizeof(uint64_t))" % WRITE_STREAM)
+    cgen.stmt("continue")
+    cgen.endIf()
     cgen.stmt("uint8_t* targetRange = hostPtr + offset")
     cgen.stmt("writeStream = actualSize")
     cgen.stmt("%s->write(&writeStream, sizeof(uint64_t))" % WRITE_STREAM)
@@ -639,6 +663,9 @@ def decode_unsupported_api(typeInfo, api, cgen):
     cgen.stmt("__builtin_trap()")
 
 custom_decodes = {
+    "vkGetInstanceProcAddr" : emit_global_state_wrapped_decoding,
+    "vkGetDeviceProcAddr" : emit_global_state_wrapped_decoding,
+
     "vkEnumerateInstanceVersion" : emit_global_state_wrapped_decoding,
     "vkCreateInstance" : emit_global_state_wrapped_decoding,
     "vkDestroyInstance" : emit_global_state_wrapped_decoding,
@@ -692,9 +719,11 @@ custom_decodes = {
 
     "vkCreateImage" : emit_global_state_wrapped_decoding,
     "vkCreateImageView" : emit_global_state_wrapped_decoding,
+    "vkCreateBufferView" : emit_global_state_wrapped_decoding,
     "vkCreateSampler" : emit_global_state_wrapped_decoding,
     "vkDestroyImage" : emit_global_state_wrapped_decoding,
     "vkDestroyImageView" : emit_global_state_wrapped_decoding,
+    "vkDestroyBufferView" : emit_global_state_wrapped_decoding,
     "vkDestroySampler" : emit_global_state_wrapped_decoding,
     "vkCmdCopyBufferToImage" : emit_global_state_wrapped_decoding_with_context,
     "vkCmdCopyImage" : emit_global_state_wrapped_decoding,
@@ -750,6 +779,9 @@ custom_decodes = {
     "vkResetCommandPool" : emit_global_state_wrapped_decoding,
     "vkCmdPipelineBarrier" : emit_global_state_wrapped_decoding,
     "vkCmdPipelineBarrier2" : emit_global_state_wrapped_decoding,
+    "vkCmdWaitEvents" : emit_global_state_wrapped_decoding,
+    "vkCmdWaitEvents2" : emit_global_state_wrapped_decoding,
+    "vkCmdWaitEvents2KHR" : emit_global_state_wrapped_decoding,
     "vkCmdBindPipeline" : emit_global_state_wrapped_decoding,
     "vkCmdBindDescriptorSets" : emit_global_state_wrapped_decoding,
 

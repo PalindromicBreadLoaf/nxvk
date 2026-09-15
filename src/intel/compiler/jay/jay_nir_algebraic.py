@@ -30,10 +30,6 @@ lower_fsign = [
 
     (('pack_half_2x16_split', a, b),
      ('pack_32_2x16_split', ('f2f16', a), ('f2f16', b))),
-
-    # Allows us to use more modifiers
-    (('bcsel', a, ('iadd(is_used_once)', b, c), b),
-     ('iadd', ('bcsel', a, c, 0), b)),
 ]
 
 
@@ -43,11 +39,22 @@ lower_bool = [
      ('ieq', ('iand', ('inot', a), b), 0)),
     (('ine', ('iand(is_used_once)', a, b), b),
      ('ine', ('iand', ('inot', a), b), 0)),
+
+    # Clean up after 1-bit phi lowering
+    (('b2b32', ('b2b1', 'a@32')), a),
+
+    # Turn boolean ops into bitwise logic to simplify the backend
+    (('ine', 'a@1', 'b@1'), ('ixor', a, b)),
+    (('ieq', 'a@1', 'b@1'), ('ixor', ('inot', a), b)),
+    (('bcsel', 'a', 'b@1', 'c@1'), ('ior', ('iand', a, b), ('iand', ('inot', a), c))),
+
+    # We do not support 64-bit bcsel, so lower special
+    ((f'b2i64', 'a@1'), ('pack_64_2x32_split', ('bcsel', a, 1, 0), 0)),
 ]
 
 for T, sizes, one in [('f', [16, 32], 1.0),
                       ('i', [8, 16, 32], 1),
-                      ('b', [8, 16, 32], -1)]:
+                      ('b', [32], -1)]:
     for sz in sizes:
         if T in ['f', 'i']:
             lower_bool.extend([
@@ -61,13 +68,10 @@ for T, sizes, one in [('f', [16, 32], 1.0),
             ((f'b2{T}{sz}', 'a@1'), ('bcsel', a, one, 0)),
         ])
 
-lower_bool.extend([
-    ((f'b2i64', 'a@1'), ('pack_64_2x32_split', ('bcsel', a, 1, 0), 0)),
-])
 
-opt_sel_zero = [
-    (('bcsel@32', a, 0, 1), ('iadd', ('bcsel', a, 0xffffffff, 0), 1)),
-    (('bcsel@32', a, 1, 0), ('ineg', ('bcsel', a, 0xffffffff, 0))),
+lower_bfloat_ops = [
+    (('bfmul', a, b), ('bfmul_mixed_intel', a, ('bf2f', b))),
+    (('bffma', a, b, c), ('bffma_mixed_intel', ('bf2f', a), b, c)),
 ]
 
 
@@ -88,7 +92,7 @@ def main() -> None:
         f.write(nir_algebraic.AlgebraicPass(
             "jay_nir_lower_bool", lower_bool).render())
         f.write(nir_algebraic.AlgebraicPass(
-            "jay_nir_opt_sel_zero", opt_sel_zero).render())
+            "jay_nir_lower_bfloat_math", lower_bfloat_ops).render())
 
 
 if __name__ == '__main__':

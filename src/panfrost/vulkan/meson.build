@@ -14,9 +14,23 @@ panvk_entrypoints = custom_target(
     '--device-prefix', 'panvk_v6', '--device-prefix', 'panvk_v7',
     '--device-prefix', 'panvk_v9', '--device-prefix', 'panvk_v10',
     '--device-prefix', 'panvk_v12', '--device-prefix', 'panvk_v13',
+    '--device-prefix', 'panvk_v14',
     '--beta', with_vulkan_beta.to_string()
   ],
   depend_files : vk_entrypoints_gen_depend_files,
+)
+
+panvk_drirc = custom_target(
+  'panvk_drirc',
+  input  : [files('panvk_drirc_gen.py'), drirc_gen, '00-panvk-defaults.conf'],
+  output : ['panvk_drirc.c', 'panvk_drirc.h'],
+  command : [
+    prog_python, '@INPUT0@',
+    '--import-path', join_paths(dir_source_root, 'src/util'),
+    '--drirc-src', '@OUTPUT0@',
+    '--drirc-hdr', '@OUTPUT1@',
+    '--validate', '@INPUT2@',
+  ],
 )
 
 panvk_tracepoints = custom_target(
@@ -43,9 +57,9 @@ libpanvk_files = files(
   'panvk_image.c',
   'panvk_instance.c',
   'panvk_mempool.c',
+  'panvk_nir_lower_tile_image.c',
   'panvk_physical_device.c',
   'panvk_priv_bo.c',
-  'panvk_sparse.c',
   'panvk_utrace.c',
   'panvk_wsi.c',
 )
@@ -65,7 +79,7 @@ valhall_archs = [9, 10]
 valhall_inc_dir = ['valhall']
 valhall_files = []
 
-fifthgen_archs = [12, 13]
+fifthgen_archs = [12, 13, 14]
 fifthgen_inc_dir = ['fifthgen']
 fifthgen_files = []
 
@@ -83,7 +97,7 @@ jm_files = [
   'jm/panvk_vX_gpu_queue.c',
 ]
 
-csf_archs = [10, 12, 13]
+csf_archs = [10, 12, 13, 14]
 csf_inc_dir = ['csf']
 csf_files = [
   'csf/panvk_vX_bind_queue.c',
@@ -104,6 +118,7 @@ csf_files = [
 common_per_arch_files = [
   panvk_entrypoints[0],
   panvk_tracepoints[0],
+  panvk_drirc[1],
   'panvk_vX_blend.c',
   'panvk_vX_buffer_view.c',
   'panvk_vX_cmd_desc_state.c',
@@ -126,7 +141,7 @@ common_per_arch_files = [
   sha1_h,
 ]
 
-foreach arch : [6, 7, 10, 12, 13]
+foreach arch : [6, 7, 10, 12, 13, 14]
   per_arch_files = common_per_arch_files
   inc_panvk_per_arch = []
 
@@ -169,7 +184,7 @@ foreach arch : [6, 7, 10, 12, 13]
       dep_valgrind,
       idep_libpan_per_arch[arch.to_string()],
     ],
-    c_args : [no_override_init_args, panvk_flags, '-DPAN_ARCH=@0@'.format(arch)],
+    c_args : [no_override_init_args, panvk_flags, soong_compat_c_args, '-DPAN_ARCH=@0@'.format(arch)],
     gnu_symbol_visibility : 'hidden',
   )
 endforeach
@@ -189,7 +204,7 @@ endif
 
 libvulkan_panfrost = shared_library(
   'vulkan_panfrost',
-  [libpanvk_files, panvk_entrypoints, panvk_tracepoints],
+  [libpanvk_files, panvk_entrypoints, panvk_tracepoints, panvk_drirc],
   include_directories : [
     inc_include,
     inc_src,
@@ -217,12 +232,13 @@ libvulkan_panfrost = shared_library(
     idep_vulkan_wsi,
     idep_mesautil,
   ],
-  c_args : [no_override_init_args, panvk_flags],
+  c_args : [no_override_init_args, panvk_flags, soong_compat_c_args],
   link_args : [vulkan_icd_link_args, ld_args_bsymbolic, ld_args_gc_sections, ld_args_build_id],
   gnu_symbol_visibility : 'hidden',
   install : true,
 )
 
+# TODO: Re-enable the symbol check with Kraid
 if with_symbols_check
   test(
     'panvk symbols check',

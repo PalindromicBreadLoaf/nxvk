@@ -17,6 +17,8 @@
 extern "C" {
 #endif
 
+#define AC_MULTIVIEW_MAX_VIEWS 8
+
 enum
 {
    /* SPI_PS_INPUT_CNTL_i.OFFSET[0:4] */
@@ -69,7 +71,7 @@ ac_nir_set_options(const struct ac_compiler_info *info, bool use_llvm,
 
 nir_def *
 ac_nir_load_arg_at_offset(nir_builder *b, const struct ac_shader_args *ac_args,
-                          struct ac_arg arg, unsigned relative_index);
+                          struct ac_arg arg, unsigned relative_index, bool scalar_wg_div);
 
 nir_def *
 ac_nir_load_arg(nir_builder *b, const struct ac_shader_args *ac_args, struct ac_arg arg);
@@ -84,6 +86,10 @@ void ac_nir_store_arg(nir_builder *b, const struct ac_shader_args *ac_args, stru
 nir_def *
 ac_nir_unpack_arg(nir_builder *b, const struct ac_shader_args *ac_args, struct ac_arg arg,
                   unsigned rshift, unsigned bitwidth);
+
+nir_def *
+ac_nir_unpack_arg_wg_div(nir_builder *b, const struct ac_shader_args *ac_args, struct ac_arg arg,
+                         unsigned rshift, unsigned bitwidth);
 
 nir_def *
 ac_nir_load_smem(nir_builder *b, unsigned num_components, nir_def *addr, nir_def *offset,
@@ -177,6 +183,9 @@ ac_nir_lower_gs_inputs_to_mem(nir_shader *shader,
                               bool triangle_strip_adjacency_fix);
 
 bool
+ac_nir_lower_indirect_derefs_early(nir_shader *shader);
+
+bool
 ac_nir_lower_indirect_derefs(nir_shader *shader);
 
 typedef struct {
@@ -258,7 +267,7 @@ bool
 ac_nir_lower_mesh_inputs_to_mem(nir_shader *shader, bool has_task_shader);
 
 bool
-ac_nir_lower_global_access(nir_shader *shader);
+ac_nir_lower_global_access(nir_shader *shader, enum amd_gfx_level gfx_level);
 
 bool ac_nir_lower_resinfo(nir_shader *nir, enum amd_gfx_level gfx_level);
 bool ac_nir_lower_image_opcodes(nir_shader *nir);
@@ -301,40 +310,19 @@ ac_nir_lower_legacy_gs(nir_shader *nir, ac_nir_lower_legacy_gs_options *options,
 typedef struct {
    /* System values. */
    bool msaa_disabled; /* true if MSAA is disabled, false may mean that the state is unknown */
-   bool uses_vrs_coarse_shading;
-   bool load_sample_positions_always_loads_current_ones;
-   bool dynamic_rasterization_samples;
+   bool load_sample_positions_always_loads_current_ones; /* TODO: unify with RADV or remove */
+   bool dynamic_rasterization_samples; /* TODO: unify with RADV or remove */
    int force_front_face; /* 0 -> keep, 1 -> set to true, -1 -> set to false */
-   bool optimize_frag_coord; /* TODO: remove this after RADV can handle it */
-   bool frag_coord_is_center; /* GL requirement for sample shading */
+   bool sample_shading;
 
-   /* frag_coord/pixel_coord:
-    *    allow_pixel_coord && (frag_coord_is_center || ps_iter_samples == 1 || msaa_disabled ||
-    *                          the fractional part of frag_coord.xy isn't used):
-    *       * frag_coord.xy is replaced by u2f(pixel_coord) + 0.5.
-    *    else:
-    *       * pixel_coord is replaced by f2u16(frag_coord.xy)
-    *       * ps_iter_samples == 0 means the state is unknown.
-    *
-    * barycentrics:
+   /* barycentrics:
     *    msaa_disabled:
     *       * All barycentrics including at_sample but excluding at_offset are changed to
     *         barycentric_pixel
-    *    ps_iter_samples >= 2:
+    *    sample_shading:
     *       * All barycentrics are changed to per-sample interpolation except at_offset/at_sample.
     *       * barycentric_at_sample(sample_id) is replaced by barycentric_sample.
-    *
-    * sample_mask_in:
-    *    msaa_disabled && !uses_vrs_coarse_shading:
-    *       * sample_mask_in is replaced by b2i32(!helper_invocation)
-    *    ps_iter_samples == 2, 4:
-    *       * sample_mask_in is changed to (sample_mask_in & (ps_iter_mask << sample_id))
-    *    ps_iter_samples == 8:
-    *       * sample_mask_in is replaced by 1 << sample_id.
-    *
-    * When ps_iter_samples is equal to rasterization samples, set ps_iter_samples = 8 for this pass.
     */
-   unsigned ps_iter_samples;
 
    /* fbfetch_output */
    bool fbfetch_is_1D;
@@ -358,6 +346,53 @@ typedef struct {
 
 bool
 ac_nir_lower_ps_early(nir_shader *nir, const ac_nir_lower_ps_early_options *options);
+
+typedef enum {
+   /* sample_mask_in is replaced with b2i32(inot(load_helper_invocation)).
+    *
+    * If fragmentShadingRateWithSampleMask == VK_FALSE, pass this flag to the pass even if VRS is
+    * enabled.
+    */
+   ac_nir_lower_samplemask_1sample_no_vrs,
+
+   /* sample_mask_in is replaced with:
+    *    nir_load_use_sample_mask_in_amd ? load_sample_mask_in : b2i32(inot(load_helper_invocation))
+    *
+    * Sample shading can't use this.
+    */
+   ac_nir_lower_samplemask_unknown_states_no_sample_shading,
+
+   /* ps_iter_samples == 0 means that the value is unknown (dependent on dynamic rasterization
+    * samples), and the real value is one of: 1, 2, 4. That requires loading PS_ITER_MASK from
+    * a user SGPR to compute sample_mask_in.
+    *
+    * If (ps_iter_samples)
+    *    sample_mask_in is ANDed with (nir_imm_int(ac_get_ps_iter_mask(num_samples)) << sample_id);
+    * else
+    *    sample_mask_in is ANDed with (load_ps_iter_mask_amd << sample_id);
+    *
+    * This is only used with min_sample_shading < 1.
+    */
+   ac_nir_lower_samplemask_sample_shading_partial,
+
+   /* sample_mask_in is replaced with b2i32(inot(load_helper_invocation)) << sample_id.
+    *
+    * This is only used with min_sample_shading == 1.
+    */
+   ac_nir_lower_samplemask_sample_shading_max,
+} ac_nir_lower_sample_mask_in_behavior;
+
+typedef struct {
+   ac_nir_lower_sample_mask_in_behavior behavior;
+
+   /* The number of sample shading samples. Only for ac_nir_lower_samplemask_sample_shading_partial.
+    * Set to 0 if unknown.
+    */
+   unsigned ps_iter_samples;
+} ac_nir_lower_sample_mask_in_options;
+
+bool
+ac_nir_lower_sample_mask_in(nir_shader *nir, const ac_nir_lower_sample_mask_in_options *options);
 
 /* This is a post-link pass. It shouldn't eliminate any code and it shouldn't affect shader_info
  * (those should be done in the early pass).
@@ -407,6 +442,13 @@ typedef struct {
     */
    bool fix_derivs_in_divergent_cf;
    unsigned max_wqm_vgprs;
+} ac_nir_lower_tex_coords_options;
+
+bool
+ac_nir_lower_tex_coords(nir_shader *nir, const ac_nir_lower_tex_coords_options *options);
+
+typedef struct {
+   enum amd_gfx_level gfx_level;
 } ac_nir_lower_image_tex_options;
 
 bool
@@ -468,6 +510,15 @@ ac_nir_op_supports_packed_math_16bit(const nir_alu_instr* alu);
 
 uint8_t
 ac_nir_opt_vectorize_cb(const nir_instr *instr, const void *data);
+
+unsigned
+ac_nir_get_io_driver_location(const nir_shader *nir, unsigned location, bool is_input);
+
+bool
+ac_nir_assign_fs_input_locations(nir_shader *nir);
+
+bool
+ac_nir_fixup_smem_loads_null_prt(nir_shader *shader, uint8_t address_prt_wa_control_bit);
 
 #ifdef __cplusplus
 }

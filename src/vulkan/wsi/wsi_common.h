@@ -96,6 +96,7 @@ struct wsi_device {
 
    bool has_import_memory_host;
    bool has_timeline_semaphore;
+   bool has_host_query_reset;
 
    /** Whether the device uses 32bpp formats for 24bpp
     *
@@ -150,11 +151,6 @@ struct wsi_device {
        * driver in VkSurfaceCapabilitiesKHR::minImageCount.
        */
       bool ensure_minImageCount;
-
-      /* Wait for fences before submitting buffers to Xwayland. Defaults to
-       * true.
-       */
-      bool xwaylandWaitReady;
 
       /* adds an extra minImageCount when running under xwayland */
       bool extra_xwayland_image;
@@ -249,6 +245,7 @@ struct wsi_device {
    WSI_CB(CmdCopyImage);
    WSI_CB(CmdCopyImageToBuffer);
    WSI_CB(CmdResetQueryPool);
+   WSI_CB(ResetQueryPoolEXT);
    WSI_CB(CmdWriteTimestamp);
    WSI_CB(CreateBuffer);
    WSI_CB(CreateCommandPool);
@@ -372,7 +369,23 @@ VkImageUsageFlags
 wsi_caps_get_image_usage(void);
 
 bool
+wsi_instance_supports_google_display_timing(const struct vk_instance *instance,
+                                            const struct driOptionCache *dri_options);
+
+bool
 wsi_device_supports_explicit_sync(struct wsi_device *device);
+
+static inline VkImageUsageFlags2KHR
+vk_swapchain_usage_flags(const VkSwapchainCreateInfoKHR *info)
+{
+   const VkImageUsageFlags2CreateInfoKHR *usage2 =
+      vk_find_struct_const(info->pNext,
+                           IMAGE_USAGE_FLAGS_2_CREATE_INFO_KHR);
+   if (usage2)
+      return usage2->usage;
+   else
+      return info->imageUsage;
+}
 
 #define wsi_common_vk_warn_once(warning) \
    do { \

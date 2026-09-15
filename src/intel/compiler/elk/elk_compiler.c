@@ -86,10 +86,15 @@ elk_compiler_create(void *mem_ctx, const struct intel_device_info *devinfo)
       /* Prior to Gfx6, there are no three source operations, and Gfx11 loses
        * LRP.
        */
-      nir_options->lower_ffma16 = devinfo->ver < 6;
-      nir_options->lower_ffma32 = devinfo->ver < 6;
-      nir_options->lower_ffma64 = devinfo->ver < 6;
       nir_options->lower_flrp32 = devinfo->ver < 6;
+
+      if (devinfo->ver >= 6) {
+         nir_options->float_mul_add32 = nir_float_muladd_support_has_ffma;
+         nir_options->float_mul_add64 = nir_float_muladd_support_has_ffma;
+      }
+
+      if (devinfo->ver >= 8)
+         nir_options->float_mul_add16 = nir_float_muladd_support_has_ffma;
 
       nir_options->has_bfe = devinfo->ver >= 7;
       nir_options->has_bfm = devinfo->ver >= 7;
@@ -141,7 +146,6 @@ elk_get_compiler_config_value(const struct elk_compiler *compiler)
       DEBUG_SPILL_FS,
       DEBUG_SPILL_VEC4,
       DEBUG_NO_COMPACTION,
-      DEBUG_DO32,
       DEBUG_SOFT64,
       DEBUG_NO_SEND_GATHER,
    };
@@ -155,6 +159,11 @@ elk_get_compiler_config_value(const struct elk_compiler *compiler)
 
    u_foreach_bit64(bit, mask)
       insert_u64_bit(&config, (intel_simd & (1ULL << bit)) != 0);
+
+   for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
+      insert_u64_bit(&config, (intel_simd_overridden & (1 << i)) != 0);
+      bits++;
+   }
 
    mask = 3;
    bits += util_bitcount64(mask);

@@ -11,8 +11,6 @@
 #include "ac_gpu_info.h"
 #include "ac_surface.h"
 
-#include "util/format/u_format.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -201,6 +199,9 @@ typedef union {
    .vrs_x = 0, /* VRS = 1x1 (0-based) */ \
    .vrs_y = 0)
 
+void
+ac_print_htile_dword(uint32_t htile_code, bool has_stencil, bool vrs, bool zrange_precision, FILE *f);
+
 unsigned
 ac_map_swizzle(unsigned swizzle);
 
@@ -326,6 +327,7 @@ struct ac_buffer_state {
    uint32_t index_stride : 2;
    uint32_t add_tid : 1;
    uint32_t gfx10_oob_select : 2;
+   uint32_t has_desc_resource_level : 1;
 
    struct {
       uint32_t compression_en : 1;
@@ -345,12 +347,14 @@ ac_build_buffer_descriptor(const enum amd_gfx_level gfx_level,
 
 void
 ac_build_raw_buffer_descriptor(const enum amd_gfx_level gfx_level,
+                               bool has_desc_resource_level,
                                uint64_t va,
                                uint32_t size,
                                uint32_t desc[4]);
 
 void
 ac_build_attr_ring_descriptor(const enum amd_gfx_level gfx_level,
+                              bool has_desc_resource_level,
                               uint64_t va,
                               uint32_t size,
                               uint32_t stride,

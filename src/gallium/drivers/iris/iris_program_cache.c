@@ -15,12 +15,14 @@
 #include "pipe/p_state.h"
 #include "pipe/p_context.h"
 #include "pipe/p_screen.h"
+#include "util/ralloc.h"
 #include "util/u_atomic.h"
 #include "util/u_upload_mgr.h"
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
+#include "compiler/gen/gen.h"
+#include "compiler/shader_enums.h"
 #include "intel/compiler/brw/brw_compiler.h"
-#include "intel/compiler/brw/brw_disasm.h"
 #include "intel/compiler/brw/brw_nir.h"
 #ifdef INTEL_USE_ELK
 #include "intel/compiler/elk/elk_compiler.h"
@@ -28,6 +30,36 @@
 #endif
 #include "iris_context.h"
 #include "iris_resource.h"
+
+static int
+gen_dump_shader_with_lineno(FILE *out,
+                            const struct intel_device_info *devinfo,
+                            uint32_t stage,
+                            uint32_t src_hash,
+                            const void *assembly,
+                            int max_size,
+                            uint64_t address_base)
+{
+   const int size = gen_find_shader_size(devinfo, assembly, 0, max_size);
+   if (size <= 0)
+      return size;
+
+   fprintf(out, "\nDumping shader asm for %s (src_hash 0x%x):\n\n",
+           _mesa_shader_stage_to_abbrev(stage), src_hash);
+
+   gen_print_params print = {
+      .devinfo = devinfo,
+      .fp = out,
+      .flags = GEN_PRINT_BYTE_OFFSETS,
+      .raw_bytes = assembly,
+      .raw_bytes_size = size,
+      .validate = true,
+      .address_base = address_base,
+   };
+   gen_print(&print);
+
+   return size;
+}
 
 struct keybox {
    uint16_t size;
@@ -194,12 +226,15 @@ iris_upload_shader(struct iris_screen *screen,
          int start = 0;
          /* dump each simd variant of shader */
          while (start < shader->brw_prog_data->program_size) {
-            brw_disassemble_with_lineno(&screen->brw->isa, shader->stage, -1,
-                                        ish ? ish->source_hash : 0, assembly, start,
-                                        res->bo->address + shader->assembly.offset,
-                                        stderr);
-            start += align64(brw_disassemble_find_end(&screen->brw->isa,
-                                                      assembly, start), 64);
+            const uint8_t *variant = (const uint8_t *)assembly + start;
+            const int size = gen_dump_shader_with_lineno(
+               stderr, screen->brw->isa.devinfo, shader->stage,
+               ish ? ish->source_hash : 0, variant,
+               (int)(shader->brw_prog_data->program_size - start),
+               res->bo->address + shader->assembly.offset + start);
+            if (size <= 0)
+               break;
+            start += align64(size, 64);
          }
       }
    }
@@ -360,7 +395,7 @@ iris_ensure_indirect_generation_shader(struct iris_batch *batch)
 
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
    NIR_PASS(_, nir, nir_opt_cse);
-   NIR_PASS(_, nir, nir_opt_gcm, true);
+   NIR_PASS(_, nir, nir_opt_gcm, true, true);
 
    nir_opt_peephole_select_options peephole_select_options = {
       .limit = 1,
@@ -403,9 +438,13 @@ iris_ensure_indirect_generation_shader(struct iris_batch *batch)
    /* Do vectorizing here. For some reason when trying to do it in the back
     * this just isn't working.
     */
+   struct brw_nir_vectorize_mem_cb_data cb_data = {
+      .devinfo = screen->devinfo,
+   };
    nir_load_store_vectorize_options options = {
       .modes = nir_var_mem_ubo | nir_var_mem_ssbo | nir_var_mem_global,
       .callback = brw_nir_should_vectorize_mem,
+      .cb_data = &cb_data,
       .robust_modes = (nir_variable_mode)0,
    };
    NIR_PASS(_, nir, nir_opt_load_store_vectorize, &options);
@@ -431,15 +470,15 @@ iris_ensure_indirect_generation_shader(struct iris_batch *batch)
       struct brw_compile_fs_params params = {
          .base = {
             .nir = nir,
+            .key = &prog_key.fs.base,
+            .prog_data = (struct brw_stage_prog_data *)prog_data,
             .log_data = &ice->dbg,
             .debug_flag = DEBUG_WM,
             .stats = stats,
             .mem_ctx = nir,
          },
-         .key = &prog_key.fs,
-         .prog_data = prog_data,
       };
-      program = brw_compile_fs(screen->brw, &params);
+      program = brw_compile(screen->brw, &params.base);
       assert(program);
       iris_apply_brw_prog_data(shader, &prog_data->base, NULL);
    } else {

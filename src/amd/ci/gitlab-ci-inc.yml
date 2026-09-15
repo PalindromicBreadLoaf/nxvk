@@ -1,6 +1,22 @@
+.enforce-hw-jobs-radeonsi-rules:
+  rules:
+    - if: '$INPUT_HW_JOBS !~ /"(all|radeonsi|amdgpu.ko)"/i'
+      when: never
+
+.enforce-hw-jobs-radv-rules:
+  rules:
+    - if: '$INPUT_HW_JOBS !~ /"(all|radv|amdgpu.ko)"/i'
+      when: never
+
+.enforce-hw-jobs-radeonsi-radv-rules:
+  rules:
+    - if: '$INPUT_HW_JOBS !~ /"(all|radeonsi|radv|amdgpu.ko)"/i'
+      when: never
+
 .radeonsi-collabora-rules:
   stage: amd
   rules:
+    - !reference [.enforce-hw-jobs-radeonsi-rules, rules]
     - !reference [.test, rules]
     - !reference [.collabora-farm-rules, rules]
     - !reference [.gl-rules, rules]
@@ -18,6 +34,7 @@
         - src/amd/ci/$GALLIUM_DRIVER-skips.txt
         - src/amd/ci/$DRIVER_NAME-skips.txt
         - src/amd/ci/$PIGLIT_TRACES_FILE
+        - src/amd/ci/$REPLAY_CONFIG
         - src/amd/ci/$GPU_VERSION-vkd3d-fails.txt
         - src/amd/ci/$GPU_VERSION-vkd3d-flakes.txt
         - src/amd/ci/$GPU_VERSION-vkd3d-skips.txt
@@ -38,6 +55,7 @@
   stage: amd-nightly
   extends: .no-auto-retry
   rules:
+    - !reference [.enforce-hw-jobs-radeonsi-rules, rules]
     - !reference [.test, rules]
     - !reference [.collabora-farm-manual-rules, rules]
     - !reference [.gl-manual-rules, rules]
@@ -51,6 +69,7 @@
 .radv-rules:
   stage: amd
   rules:
+    - !reference [.enforce-hw-jobs-radv-rules, rules]
     - !reference [.test, rules]
     - !reference [.vulkan-rules, rules]
     - changes:
@@ -65,6 +84,7 @@
 .radv-manual-rules:
   stage: amd-nightly
   rules:
+    - !reference [.enforce-hw-jobs-radv-rules, rules]
     - !reference [.test, rules]
     - !reference [.vulkan-manual-rules, rules]
     - changes:
@@ -77,6 +97,7 @@
 .radv-collabora-rules:
   stage: amd
   rules:
+    - !reference [.enforce-hw-jobs-radv-rules, rules]
     - !reference [.test, rules]
     - !reference [.collabora-farm-rules, rules]
     - !reference [.radv-rules, rules]
@@ -84,6 +105,7 @@
 .radv-collabora-restricted-rules:
   stage: amd
   rules:
+    - !reference [.enforce-hw-jobs-radv-rules, rules]
     - !reference [.test, rules]
     - !reference [.restricted-rules, rules]
     - !reference [.radv-collabora-rules, rules]
@@ -92,6 +114,7 @@
   stage: amd-nightly
   extends: .no-auto-retry
   rules:
+    - !reference [.enforce-hw-jobs-radv-rules, rules]
     - !reference [.test, rules]
     - !reference [.collabora-farm-manual-rules, rules]
     - !reference [.radv-manual-rules, rules]
@@ -99,6 +122,7 @@
 .radv-valve-rules:
   stage: amd
   rules:
+    - !reference [.enforce-hw-jobs-radv-rules, rules]
     - !reference [.test, rules]
     - !reference [.valve-farm-rules, rules]
     - !reference [.radv-rules, rules]
@@ -107,6 +131,7 @@
   stage: amd-nightly
   extends: .no-auto-retry
   rules:
+    - !reference [.enforce-hw-jobs-radv-rules, rules]
     - !reference [.test, rules]
     - !reference [.valve-farm-manual-rules, rules]
     - !reference [.radv-manual-rules, rules]
@@ -114,6 +139,7 @@
 .radeonsi+radv-rules:
   stage: amd
   rules:
+    - !reference [.enforce-hw-jobs-radeonsi-radv-rules, rules]
     - !reference [.test, rules]
     - !reference [.radeonsi-collabora-rules, rules]
     - !reference [.radv-rules, rules]
@@ -121,6 +147,7 @@
 .radeonsi-vaapi-rules:
   stage: amd
   rules:
+    - !reference [.enforce-hw-jobs-radeonsi-rules, rules]
     - !reference [.test, rules]
     - !reference [.radeonsi-collabora-rules, rules]
     - changes: &radeon_vcn_file_list
@@ -131,6 +158,7 @@
 .radeonsi-vaapi-manual-rules:
   stage: amd-nightly
   rules:
+    - !reference [.enforce-hw-jobs-radeonsi-rules, rules]
     - !reference [.test, rules]
     - !reference [.collabora-farm-manual-rules, rules]
     - !reference [.gl-manual-rules, rules]
@@ -141,6 +169,7 @@
 .radeonsi-valve-rules:
   stage: amd
   rules:
+    - !reference [.enforce-hw-jobs-radeonsi-rules, rules]
     - !reference [.test, rules]
     - !reference [.valve-farm-rules, rules]
     - !reference [.radeonsi-collabora-rules, rules]
@@ -149,6 +178,7 @@
   stage: amd-nightly
   extends: .no-auto-retry
   rules:
+    - !reference [.enforce-hw-jobs-radeonsi-rules, rules]
     - !reference [.test, rules]
     - !reference [.valve-farm-manual-rules, rules]
     - !reference [.gl-manual-rules, rules]
@@ -288,6 +318,7 @@
     GPU_VERSION: radeonsi-stoney
     DRIVER_NAME: radeonsi
     PIGLIT_PLATFORM: mixed_glx_egl
+    ACO_DEBUG: validateir,validatera
 
 .radv-stoney-test:x86_64:
   extends:
@@ -305,6 +336,7 @@
     GPU_VERSION: radeonsi-raven
     DRIVER_NAME: radeonsi
     LAVA_FIRMWARE: amdgpu-lava
+    ACO_DEBUG: validateir,validatera
 
 .radv-raven-test:x86_64:
   extends:
@@ -323,6 +355,7 @@
     GPU_VERSION: amd-raven
     VK_DRIVER: radeon
     LAVA_FIRMWARE: amdgpu-lava
+    ACO_DEBUG: validateir,validatera
 
 .radv-cezanne-test:x86_64:
   extends:
@@ -370,6 +403,12 @@
     - .ci-tron-test-radv
   variables:
     DEQP_SUITE: radv
+
+.ci-tron-test-radv-vk-asan:
+  extends:
+    - .ci-tron-x86_64-test-vk-asan
+    - .radv-valve-rules
+    - .ci-tron-test-radv
 
 .ci-tron-test-radv-vk-nightly:
   extends:

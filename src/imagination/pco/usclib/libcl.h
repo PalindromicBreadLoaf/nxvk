@@ -112,7 +112,12 @@ uint nir_smp_pco(uint16 data,
                  uint4 tex_state,
                  uint4 smp_state,
                  uint smp_flags,
-                 uint range);
+                 uint range,
+                 enum gl_access_qualifier access);
 
 uint nir_umax(uint a, uint b);
+
+uint32_t nir_interleave(uint32_t a, uint32_t b);
+uint32_t nir_ufind_msb(uint32_t x);
+uint32_t nir_bitfield_insert(uint32_t base, uint32_t insert, uint offset, uint bits);
 #endif /* PCO_LIBCL_H */

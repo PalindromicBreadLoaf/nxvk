@@ -9,6 +9,8 @@
 int main(void)
 {
    nvk_log_open("sdmc:/gl_linktest.log");
-   LOG("=== gl_linktest: GL archive set linked ===");
+   LOG("gl_linktest: GL archive set linked");
+   LOG("=== gl_linktest PASSED ===");
+   if (g_nvk_log) fclose(g_nvk_log);
    return 0;
 }

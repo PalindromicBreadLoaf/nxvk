@@ -111,6 +111,8 @@ void
 tu_blit_subsampled_apron(struct tu_cmd_buffer *cmd,
                          struct tu_cs *cs,
                          const struct tu_image_view *iview,
+                         bool store,
+                         bool store_stencil,
                          unsigned layer,
                          const VkRect2D *dst_coord,
                          const tu_rect2d_float *src_coord,

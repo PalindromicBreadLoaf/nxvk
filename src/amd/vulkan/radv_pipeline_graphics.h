@@ -11,7 +11,7 @@
 #ifndef RADV_PIPELINE_GRAPHICS_H
 #define RADV_PIPELINE_GRAPHICS_H
 
-#include "sid.h"
+#include "amdgfxregs.h"
 
 #include "radv_descriptor_set.h"
 #include "radv_pipeline.h"
@@ -19,7 +19,6 @@
 #include "radv_shader.h"
 
 #include "vk_graphics_state.h"
-#include "vk_meta.h"
 
 #define VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO_RADV (VkStructureType)2000290001
 
@@ -73,7 +72,6 @@ struct radv_vertex_input_state {
    uint8_t format_align_req_minus_1[MAX_VERTEX_ATTRIBS];
    uint8_t component_align_req_minus_1[MAX_VERTEX_ATTRIBS];
    uint8_t format_sizes[MAX_VERTEX_ATTRIBS];
-   uint32_t attrib_index_offset[MAX_VERTEX_ATTRIBS]; /* Only used with static strides. */
    uint32_t non_trivial_format[MAX_VERTEX_ATTRIBS];
 
    uint32_t vbo_misaligned_mask;
@@ -147,14 +145,8 @@ struct radv_graphics_pipeline {
    /* Whether the pipeline uses out-of-order rasterization. */
    bool uses_out_of_order_rast;
 
-   /* Whether the pipeline uses VRS. */
-   bool uses_vrs;
-
    /* Whether the pipeline uses a VRS attachment. */
    bool uses_vrs_attachment;
-
-   /* Whether the pipeline uses VRS coarse shading internally. */
-   bool uses_vrs_coarse_shading;
 
    /* For relocation of shaders with RGP. */
    struct radv_sqtt_shaders_reloc *sqtt_shaders_reloc;
@@ -332,9 +324,9 @@ radv_vgt_outprim_is_line(unsigned vgt_outprim_type)
 }
 
 static inline bool
-radv_vgt_outprim_is_point_or_line(unsigned vgt_outprim_type)
+radv_vgt_outprim_is_triangle(unsigned vgt_outprim_type)
 {
-   return radv_vgt_outprim_is_point(vgt_outprim_type) || radv_vgt_outprim_is_line(vgt_outprim_type);
+   return vgt_outprim_type == V_028A6C_TRISTRIP;
 }
 
 static inline bool
@@ -347,12 +339,6 @@ static inline bool
 radv_polygon_mode_is_line(unsigned polygon_mode)
 {
    return polygon_mode == V_028814_X_DRAW_LINES;
-}
-
-static inline bool
-radv_polygon_mode_is_points_or_lines(unsigned polygon_mode)
-{
-   return radv_polygon_mode_is_point(polygon_mode) || radv_polygon_mode_is_line(polygon_mode);
 }
 
 static inline bool
@@ -651,13 +637,12 @@ struct radv_ps_epilog_state {
    uint8_t need_src_alpha;
 };
 
-struct radv_ps_epilog_key radv_generate_ps_epilog_key(const struct radv_device *device,
+struct radv_ps_epilog_key radv_generate_ps_epilog_key(const struct radv_compiler_info *compiler_info,
                                                       const struct radv_ps_epilog_state *state);
 
-void radv_graphics_shaders_compile(struct radv_device *device, struct vk_pipeline_cache *cache,
+void radv_graphics_shaders_compile(const struct radv_compiler_info *compiler_info, struct vk_pipeline_cache *cache,
                                    struct radv_shader_stage *stages, const struct radv_graphics_state_key *gfx_state,
-                                   bool keep_executable_info, bool keep_statistic_info, bool is_internal,
-                                   struct radv_retained_shaders *retained_shaders, bool noop_fs,
+                                   bool is_internal, struct radv_retained_shaders *retained_shaders, bool noop_fs,
                                    struct radv_shader_debug_info *debug, struct radv_shader_binary **binaries,
                                    struct radv_shader_debug_info *gs_copy_debug,
                                    struct radv_shader_binary **gs_copy_binary);

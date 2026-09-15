@@ -11,17 +11,18 @@
 #include <stdbool.h>
 #include <string.h>
 
-#include "bvh/bvh.h"
+#include "bvh/bvh_defines.h"
 #include "meta/radv_meta.h"
 #include "nir/nir_builder.h"
 #include "nir/radv_meta_nir.h"
+#include "tools/radv_rmv.h"
 #include "util/u_atomic.h"
 #include "vulkan/vulkan_core.h"
+#include "ac_cmdbuf_video.h"
 #include "radv_cs.h"
 #include "radv_entrypoints.h"
 #include "radv_perfcounter.h"
 #include "radv_query.h"
-#include "radv_rmv.h"
 #include "radv_sdma.h"
 #include "sid.h"
 #include "vk_acceleration_structure.h"
@@ -648,7 +649,7 @@ radv_begin_pipeline_stat_query(struct radv_cmd_buffer *cmd_buffer, struct radv_q
       }
 
       /* Record that the command buffer needs GDS. */
-      cmd_buffer->gds_needed = true;
+      cmd_buffer->queue_state.gds_needed = true;
 
       if (!cmd_buffer->state.active_emulated_pipeline_queries)
          cmd_buffer->state.dirty |= RADV_CMD_DIRTY_SHADER_QUERY;
@@ -674,7 +675,7 @@ radv_begin_pipeline_stat_query(struct radv_cmd_buffer *cmd_buffer, struct radv_q
          ac_emit_cp_write_data_imm(ace_cs->b, V_371_MICRO_ENGINE, va + task_invoc_offset + 4, 0x80000000);
 
          /* Record that the command buffer needs GDS. */
-         cmd_buffer->gds_needed = true;
+         cmd_buffer->queue_state.gds_needed = true;
 
          if (!cmd_buffer->state.active_pipeline_ace_queries)
             cmd_buffer->state.dirty |= RADV_CMD_DIRTY_SHADER_QUERY;
@@ -967,7 +968,7 @@ radv_begin_tfb_query(struct radv_cmd_buffer *cmd_buffer, uint64_t va, uint32_t i
    const struct radv_physical_device *pdev = radv_device_physical(device);
    struct radv_cmd_stream *cs = cmd_buffer->cs;
 
-   if (pdev->use_ngg_streamout) {
+   if (pdev->info.gfx_level >= GFX11) {
       /* generated prim counter */
       gfx10_copy_shader_query_gfx(cmd_buffer, false, RADV_SHADER_QUERY_PRIM_GEN_OFFSET(index), va);
       ac_emit_cp_write_data_imm(cs->b, V_371_MICRO_ENGINE, va + 4, 0x80000000);
@@ -996,7 +997,7 @@ radv_end_tfb_query(struct radv_cmd_buffer *cmd_buffer, uint64_t va, uint32_t ind
    const struct radv_physical_device *pdev = radv_device_physical(device);
    struct radv_cmd_stream *cs = cmd_buffer->cs;
 
-   if (pdev->use_ngg_streamout) {
+   if (pdev->info.gfx_level >= GFX11) {
       /* generated prim counter */
       gfx10_copy_shader_query_gfx(cmd_buffer, false, RADV_SHADER_QUERY_PRIM_GEN_OFFSET(index), va + 16);
       ac_emit_cp_write_data_imm(cs->b, V_371_MICRO_ENGINE, va + 20, 0x80000000);
@@ -1366,7 +1367,7 @@ radv_begin_pg_query(struct radv_cmd_buffer *cmd_buffer, struct radv_query_pool *
          ac_emit_cp_write_data_imm(cs->b, V_371_MICRO_ENGINE, va + 36, 0x80000000);
 
          /* Record that the command buffer needs GDS. */
-         cmd_buffer->gds_needed = true;
+         cmd_buffer->queue_state.gds_needed = true;
 
          if (!cmd_buffer->state.active_emulated_prims_gen_queries)
             cmd_buffer->state.dirty |= RADV_CMD_DIRTY_SHADER_QUERY;
@@ -1593,7 +1594,7 @@ radv_begin_ms_prim_query(struct radv_cmd_buffer *cmd_buffer, uint64_t va)
       ac_emit_cp_write_data_imm(cs->b, V_371_MICRO_ENGINE, va + 4, 0x80000000);
 
       /* Record that the command buffer needs GDS. */
-      cmd_buffer->gds_needed = true;
+      cmd_buffer->queue_state.gds_needed = true;
 
       if (!cmd_buffer->state.active_emulated_prims_gen_queries)
          cmd_buffer->state.dirty |= RADV_CMD_DIRTY_SHADER_QUERY;
@@ -2367,7 +2368,8 @@ radv_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool, uint32_t first
          break;
       }
       case VK_QUERY_TYPE_VIDEO_ENCODE_FEEDBACK_KHR: {
-         const bool write_memory = radv_video_write_memory_supported(pdev) == RADV_VIDEO_WRITE_MEMORY_SUPPORT_FULL;
+         const bool write_memory =
+            pdev->info.video_caps.queue[AMD_IP_VCN_ENC].write_memory == AC_VIDEO_WRITE_MEMORY_SUPPORT_FULL;
          uint32_t *src32 = (uint32_t *)src;
          uint32_t ready_idx = write_memory ? RADV_ENC_FEEDBACK_STATUS_IDX : 1;
          uint32_t value;
@@ -2749,8 +2751,6 @@ radv_CmdWriteTimestamp2(VkCommandBuffer commandBuffer, VkPipelineStageFlags2 sta
 
    radv_cs_add_buffer(device->ws, cs->b, pool->bo);
 
-   assert(cmd_buffer->qf != RADV_QUEUE_VIDEO_DEC && cmd_buffer->qf != RADV_QUEUE_VIDEO_ENC);
-
    if (cmd_buffer->qf == RADV_QUEUE_TRANSFER) {
       if (instance->drirc.debug.flush_before_timestamp_write) {
          radv_sdma_emit_nop(device, cs);
@@ -2759,6 +2759,14 @@ radv_CmdWriteTimestamp2(VkCommandBuffer commandBuffer, VkPipelineStageFlags2 sta
       for (unsigned i = 0; i < num_queries; ++i, query_va += pool->stride) {
          radeon_check_space(device->ws, cs->b, 3);
          ac_emit_sdma_write_timestamp(cs->b, query_va);
+      }
+      return;
+   }
+
+   if (cmd_buffer->qf == RADV_QUEUE_VIDEO_DEC || cmd_buffer->qf == RADV_QUEUE_VIDEO_ENC) {
+      for (unsigned i = 0; i < num_queries; ++i, query_va += pool->stride) {
+         radeon_check_space(device->ws, cs->b, 8);
+         ac_emit_video_write_timestamp(cs->b, cs->hw_ip, query_va);
       }
       return;
    }

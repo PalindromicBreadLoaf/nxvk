@@ -36,6 +36,7 @@
  */
 
 #include "si_pipe.h"
+#include "gfx/si_gfx.h"
 #include "si_build_pm4.h"
 #include "sid.h"
 #include "util/format/u_format.h"
@@ -993,6 +994,7 @@ static void si_init_buffer_resources(struct si_context *sctx,
             PIPE_SWIZZLE_W,
          },
       .gfx10_oob_select = V_008F0C_OOB_SELECT_RAW,
+      .has_desc_resource_level = sctx->screen->info.compiler_info.has_desc_resource_level,
    };
 
    /* Initialize buffer descriptors, so that we don't have to do it at bind time. */
@@ -1440,6 +1442,7 @@ void si_set_ring_buffer(struct si_context *sctx, uint slot, struct pipe_resource
          .stride = stride,
          .swizzle_enable = swizzle_enable,
          .gfx10_oob_select = V_008F0C_OOB_SELECT_DISABLED,
+         .has_desc_resource_level = sctx->screen->info.compiler_info.has_desc_resource_level,
          .index_stride = index_stride,
          .element_size = element_size,
          .add_tid = add_tid,
@@ -1713,7 +1716,7 @@ void si_rebind_buffer(struct si_context *sctx, struct pipe_resource *buf)
 
    /* Shader images */
    if (!buffer || buffer->bind_history & SI_BIND_IMAGE_BUFFER_ALL) {
-      unsigned mask = buffer ? (buffer->bind_history & SI_BIND_IMAGE_BUFFER_SHIFT) >>
+      unsigned mask = buffer ? (buffer->bind_history & SI_BIND_IMAGE_BUFFER_ALL) >>
                                SI_BIND_IMAGE_BUFFER_SHIFT : BITFIELD_MASK(SI_NUM_SHADERS);
       u_foreach_bit(shader, mask) {
          struct si_images *images = &sctx->images[shader];

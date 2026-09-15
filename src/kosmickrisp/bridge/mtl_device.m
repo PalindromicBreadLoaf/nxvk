@@ -10,25 +10,24 @@
 #include "kk_image_layout.h"
 #include "kk_private.h"
 
-#include <Metal/MTLDevice.h>
+#include <Metal/MTL4Counters.h>
 #include <Metal/MTLCaptureManager.h>
+#include <Metal/MTLDevice.h>
 
 /* Device creation */
 mtl_device *
 mtl_device_create()
 {
-   mtl_device *device = 0u;
+   mtl_device *device = nil;
 
    @autoreleasepool {
       NSArray<id<MTLDevice>> *devs = [MTLCopyAllDevices() autorelease];
       uint32_t device_count = [devs count];
       
       for (uint32_t i = 0u; i < device_count; ++i) {
-         if (@available(macOS 10.15, *)) {
-            if (!device && [devs[i] supportsFamily:MTLGPUFamilyMetal3]) {
-               device = (mtl_device *)[devs[i] retain];
-               break;
-            }
+         if ([devs[i] supportsFamily:MTLGPUFamilyMetal4]) {
+            device = (mtl_device *)[devs[i] retain];
+            break;
          }
       }
    }
@@ -91,21 +90,18 @@ mtl_device_get_architecture_name(mtl_device *dev, char buffer[256])
    }
 }
 
-uint64_t
-mtl_device_get_peer_group_id(mtl_device *dev)
-{
-   @autoreleasepool {
-      id<MTLDevice> device = (id<MTLDevice>)dev;
-      return device.peerGroupID;
-   }
-}
-
 uint32_t
-mtl_device_get_peer_index(mtl_device *dev)
+mtl_device_get_gpu_apple_family(mtl_device *dev)
 {
    @autoreleasepool {
       id<MTLDevice> device = (id<MTLDevice>)dev;
-      return device.peerIndex;
+      uint32_t gpu_family = 0u;
+      MTLGPUFamily family = MTLGPUFamilyApple1;
+      while([device supportsFamily:family]) {
+         family += 1u;
+         gpu_family += 1u;
+      }
+      return gpu_family;
    }
 }
 
@@ -115,6 +111,15 @@ mtl_device_get_registry_id(mtl_device *dev)
    @autoreleasepool {
       id<MTLDevice> device = (id<MTLDevice>)dev;
       return device.registryID;
+   }
+}
+
+bool
+mtl_device_supports_sample_count(mtl_device *dev, uint32_t sample_count)
+{
+   @autoreleasepool {
+      id<MTLDevice> device = (id<MTLDevice>)dev;
+      return [device supportsTextureSampleCount:sample_count];
    }
 }
 
@@ -129,6 +134,42 @@ mtl_device_max_threads_per_threadgroup(mtl_device *dev)
    }
 }
 
+uint32_t
+mtl_device_max_threadgroup_memory_length(mtl_device *dev)
+{
+   @autoreleasepool {
+      id<MTLDevice> device = (id<MTLDevice>)dev;
+      return device.maxThreadgroupMemoryLength;
+   }
+}
+
+uint64_t
+mtl_device_max_buffer_length(mtl_device *dev)
+{
+   @autoreleasepool {
+      id<MTLDevice> device = (id<MTLDevice>)dev;
+      return device.maxBufferLength;
+   }
+}
+
+uint64_t
+mtl_device_recommended_max_working_set_size(mtl_device *dev)
+{
+   @autoreleasepool {
+      id<MTLDevice> device = (id<MTLDevice>)dev;
+      return device.recommendedMaxWorkingSetSize;
+   }
+}
+
+uint64_t
+mtl_device_current_allocated_size(mtl_device *dev)
+{
+   @autoreleasepool {
+      id<MTLDevice> device = (id<MTLDevice>)dev;
+      return device.currentAllocatedSize;
+   }
+}
+
 /* Timestamp query */
 uint64_t
 mtl_device_get_gpu_timestamp(mtl_device *dev)
@@ -140,6 +181,40 @@ mtl_device_get_gpu_timestamp(mtl_device *dev)
       [device sampleTimestamps:&cpu_ts gpuTimestamp:&gpu_ts];
 
       return (uint64_t)gpu_ts;
+   }
+}
+
+uint64_t
+mtl_device_timestamp_frequency(mtl_device *dev)
+{
+   @autoreleasepool {
+      id<MTLDevice> device = (id<MTLDevice>)dev;
+      return [device queryTimestampFrequency];
+   }
+}
+
+mtl_counter_heap *
+mtl_new_timestamp_counter_heap(mtl_device *dev, uint32_t count)
+{
+   @autoreleasepool {
+      id<MTLDevice> device = (id<MTLDevice>)dev;
+      MTL4CounterHeapDescriptor *desc =
+         [[MTL4CounterHeapDescriptor alloc] init];
+      desc.type = MTL4CounterHeapTypeTimestamp;
+      desc.count = count;
+
+      NSError *error = nil;
+      id<MTL4CounterHeap> heap = [device newCounterHeapWithDescriptor:desc
+                                                                error:&error];
+      [desc release];
+
+      if (heap == nil) {
+         fprintf(stderr, "Failed to create timestamp counter heap: %s\n",
+                 error ? error.localizedDescription.UTF8String : "unknown");
+         return NULL;
+      }
+
+      return (mtl_counter_heap *)heap;
    }
 }
 
@@ -179,21 +254,98 @@ mtl_new_texture_descriptor(const struct kk_image_layout *layout)
    }
 }
 
-void
-mtl_heap_texture_size_and_align_with_descriptor(mtl_device *device,
-                                                struct kk_image_layout *layout)
+uint64_t
+mtl_minimum_linear_texture_alignment_for_pixel_format(
+   mtl_device *device, enum mtl_pixel_format format)
 {
    @autoreleasepool {
       id<MTLDevice> dev = (id<MTLDevice>)device;
-      if (layout->optimized_layout) {
-         MTLTextureDescriptor *descriptor = [mtl_new_texture_descriptor(layout) autorelease];
-         descriptor.resourceOptions = KK_MTL_RESOURCE_OPTIONS;
-         MTLSizeAndAlign size_align = [dev heapTextureSizeAndAlignWithDescriptor:descriptor];
-         layout->size_B = size_align.size;
-         layout->align_B = size_align.align;
-      } else {
-         /* Linear textures have different alignment since they are allocated on top of MTLBuffers */
-         layout->align_B = [dev minimumLinearTextureAlignmentForPixelFormat:layout->format.mtl];
-      }
+      return [dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)format];
+   }
+}
+
+void
+mtl_heap_texture_size_and_align_with_descriptor(mtl_device *device,
+                                                struct kk_image_layout *layout,
+                                                uint64_t *size_B,
+                                                uint64_t *align_B)
+{
+   @autoreleasepool {
+      id<MTLDevice> dev = (id<MTLDevice>)device;
+      MTLTextureDescriptor *descriptor = [mtl_new_texture_descriptor(layout) autorelease];
+      descriptor.resourceOptions = KK_MTL_RESOURCE_OPTIONS;
+
+      MTLSizeAndAlign size_align = [dev heapTextureSizeAndAlignWithDescriptor:descriptor];
+      if (size_B)
+         *size_B = size_align.size;
+      if (align_B)
+         *align_B = size_align.align;
+   }
+}
+
+uint32_t
+mtl_sparse_tile_size_in_bytes(mtl_device *device) {
+   @autoreleasepool {
+      id<MTLDevice> dev = (id<MTLDevice>)device;
+      return [dev sparseTileSizeInBytes];
+   }
+}
+
+struct mtl_size
+mtl_sparse_tile_size(mtl_device *device, struct kk_image_layout *layout) {
+   @autoreleasepool {
+      id<MTLDevice> dev = (id<MTLDevice>)device;
+      MTLSize tile_size = [dev sparseTileSizeWithTextureType:(MTLTextureType)layout->type
+                                                 pixelFormat:layout->format.mtl
+                                                 sampleCount:layout->sample_count_sa];
+      return (struct mtl_size){tile_size.width, tile_size.height, tile_size.depth};
+   }
+}
+
+struct mtl_size
+mtl_sparse_tile_count(mtl_device *device, struct kk_image_layout *layout,
+                      struct mtl_size tile_size) {
+   @autoreleasepool {
+      id<MTLDevice> dev = (id<MTLDevice>)device;
+      MTLRegion pixel_region = MTLRegionMake3D(
+          0, 0, 0, layout->width_px, layout->height_px, layout->depth_px);
+      MTLRegion tile_region;
+      [dev convertSparsePixelRegions:&pixel_region
+                       toTileRegions:&tile_region
+                        withTileSize:MTLSizeMake(tile_size.x, tile_size.y, tile_size.z)
+                       alignmentMode:MTLSparseTextureRegionAlignmentModeOutward
+                          numRegions:1];
+
+      return (struct mtl_size){tile_region.size.width, tile_region.size.height,
+                               tile_region.size.depth};
+   }
+}
+
+/* Resource creation */
+mtl_buffer *
+mtl_new_buffer_with_bytes_no_copy(mtl_device *device, void* ptr,
+                                  uint64_t size_B)
+{
+   @autoreleasepool {
+      id<MTLDevice> dev = (id<MTLDevice>)device;
+      return [dev newBufferWithBytesNoCopy:ptr length:size_B options:KK_MTL_RESOURCE_OPTIONS deallocator:nil];
+   }
+}
+
+mtl_command_allocator *
+mtl_new_command_allocator(mtl_device *device)
+{
+   @autoreleasepool {
+      id<MTLDevice> dev = (id<MTLDevice>)device;
+      return [dev newCommandAllocator];
+   }
+}
+
+mtl_command_buffer *
+mtl_new_command_buffer(mtl_device *device)
+{
+   @autoreleasepool {
+      id<MTLDevice> dev = (id<MTLDevice>)device;
+      return [dev newCommandBuffer];
    }
 }

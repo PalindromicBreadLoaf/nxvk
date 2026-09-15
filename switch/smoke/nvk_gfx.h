@@ -151,6 +151,8 @@ struct nvk_target {
    struct nvk_buffer readback;  /* w*h*4 bytes */
 };
 
+static bool nvk_gfx_force_dedicated;
+
 static VkResult nvk_alloc_bind_image(struct nvk_ctx *c, VkImage img,
                                      VkDeviceMemory *mem)
 {
@@ -162,8 +164,13 @@ static VkResult nvk_alloc_bind_image(struct nvk_ctx *c, VkImage img,
    uint32_t mt = nvk_pick_mem_type(&c->memp, mr.memoryTypeBits,
                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
    if (mt == UINT32_MAX) mt = nvk_pick_mem_type(&c->memp, mr.memoryTypeBits, 0);
+   const VkMemoryDedicatedAllocateInfo dedicated = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+      .image = img,
+   };
    VkMemoryAllocateInfo mai = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .pNext = nvk_gfx_force_dedicated ? &dedicated : NULL,
       .allocationSize = mr.size, .memoryTypeIndex = mt,
    };
    VkResult r = AllocateMemory(c->dev, &mai, NULL, mem);
@@ -297,6 +304,34 @@ static void nvk_target_copy_to_host(struct nvk_ctx *c, VkCommandBuffer cb,
    };
    CmdCopyImageToBuffer(cb, t->color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                         t->readback.buf, 1, &region);
+}
+
+static void nvk_free_buffer(struct nvk_ctx *c, struct nvk_buffer *b)
+{
+   LOAD_DEV(c, DestroyBuffer);
+   LOAD_DEV(c, FreeMemory);
+   if (b->buf) DestroyBuffer(c->dev, b->buf, NULL);
+   if (b->mem) FreeMemory(c->dev, b->mem, NULL);
+   memset(b, 0, sizeof(*b));
+}
+
+static void nvk_free_target(struct nvk_ctx *c, struct nvk_target *t)
+{
+   LOAD_DEV(c, DestroyFramebuffer);
+   LOAD_DEV(c, DestroyRenderPass);
+   LOAD_DEV(c, DestroyImageView);
+   LOAD_DEV(c, DestroyImage);
+   LOAD_DEV(c, FreeMemory);
+   if (t->fb) DestroyFramebuffer(c->dev, t->fb, NULL);
+   if (t->rp) DestroyRenderPass(c->dev, t->rp, NULL);
+   if (t->color_view) DestroyImageView(c->dev, t->color_view, NULL);
+   if (t->depth_view) DestroyImageView(c->dev, t->depth_view, NULL);
+   if (t->color) DestroyImage(c->dev, t->color, NULL);
+   if (t->depth) DestroyImage(c->dev, t->depth, NULL);
+   if (t->color_mem) FreeMemory(c->dev, t->color_mem, NULL);
+   if (t->depth_mem) FreeMemory(c->dev, t->depth_mem, NULL);
+   nvk_free_buffer(c, &t->readback);
+   memset(t, 0, sizeof(*t));
 }
 
 /* Read a pixel from the readback buffer after submit. */

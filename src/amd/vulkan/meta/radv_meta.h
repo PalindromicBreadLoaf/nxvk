@@ -9,6 +9,7 @@
 #ifndef RADV_META_H
 #define RADV_META_H
 
+#include "tools/radv_sqtt.h"
 #include "radv_buffer.h"
 #include "radv_buffer_view.h"
 #include "radv_cmd_buffer.h"
@@ -20,14 +21,8 @@
 #include "radv_physical_device.h"
 #include "radv_pipeline.h"
 #include "radv_pipeline_compute.h"
-#include "radv_pipeline_graphics.h"
 #include "radv_queue.h"
 #include "radv_shader.h"
-#include "radv_shader_object.h"
-#include "radv_sqtt.h"
-
-#include "vk_render_pass.h"
-#include "vk_shader_module.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -90,7 +85,7 @@ enum radv_meta_object_key_type {
    RADV_META_OBJECT_KEY_QUERY_PRIMS_GEN,
    RADV_META_OBJECT_KEY_QUERY_MESH_PRIMS_GEN,
    RADV_META_OBJECT_KEY_BVH_COPY,
-   RADV_META_OBJECT_KEY_BVH_COPY_BLAS_ADDRS_GFX12,
+   RADV_META_OBJECT_KEY_BVH_COPY_BLAS_ADDRS,
    RADV_META_OBJECT_KEY_BVH_ENCODE,
    RADV_META_OBJECT_KEY_BVH_ENCODE_TRIANGLES_GFX12,
    RADV_META_OBJECT_KEY_BVH_UPDATE,
@@ -108,6 +103,10 @@ void radv_meta_begin(struct radv_cmd_buffer *cmd_buffer);
 void radv_meta_save(struct radv_cmd_buffer *cmd_buffer, uint32_t flags);
 
 void radv_meta_end(struct radv_cmd_buffer *cmd_buffer);
+
+/* Simlar to radv_meta_begin/radv_meta_end, but for meta ops which use an application renderpass instance. */
+void radv_meta_begin_rendering(struct radv_cmd_buffer *cmd_buffer);
+void radv_meta_end_rendering(struct radv_cmd_buffer *cmd_buffer);
 
 /* Helpers that save the correct state. */
 static inline void
@@ -253,6 +252,11 @@ void radv_gfx_copy_image(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_bl
                          struct radv_meta_blit2d_surf *dst, const VkOffset3D *src_offset, const VkOffset3D *dst_offset,
                          const VkExtent3D *extent);
 
+void radv_meta_msrtss_replicate_attachment(struct radv_cmd_buffer *cmd_buffer, struct radv_image_view *src_iview,
+                                           VkImageLayout src_layout, struct radv_image_view *dst_iview,
+                                           VkImageLayout dst_layout, VkImageAspectFlags aspect_mask,
+                                           const VkRect2D *area, uint32_t layer_count);
+
 void radv_gfx_copy_memory_to_image(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_buffer *src,
                                    struct radv_meta_blit2d_surf *dst, const VkOffset3D *offset,
                                    const VkExtent3D *extent);
@@ -286,7 +290,8 @@ void radv_fmask_color_expand(struct radv_cmd_buffer *cmd_buffer, struct radv_ima
                              const VkImageSubresourceRange *subresourceRange);
 
 void radv_copy_vrs_htile(struct radv_cmd_buffer *cmd_buffer, struct radv_image_view *vrs_iview, const VkRect2D *rect,
-                         struct radv_image *dst_image, uint64_t htile_va, bool read_htile_value);
+                         struct radv_image *dst_image, uint32_t base_array_layer, uint64_t htile_va,
+                         bool read_htile_value);
 
 bool radv_can_use_fmask_copy(struct radv_cmd_buffer *cmd_buffer, const struct radv_image *src_image,
                              const struct radv_image *dst_image, const VkOffset3D *src_offset,

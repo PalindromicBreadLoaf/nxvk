@@ -25,12 +25,17 @@ OUT="${OUTPUT_DIR:-$SMOKE/out}"
 OBJ="$OUT/obj"
 mkdir -p "$OBJ"
 
+NO_DRIVER=0
+case "$APP" in
+nvk_runner) NO_DRIVER=1 ;;
+esac
+
 DKP=/opt/devkitpro
 GCC=$DKP/devkitA64/bin/aarch64-none-elf-gcc
 GXX=$DKP/devkitA64/bin/aarch64-none-elf-g++
 STRIP=$DKP/devkitA64/bin/aarch64-none-elf-strip
 
-[ -f "$BUILD/src/nouveau/vulkan/libnvk.a" ] || {
+[ "$NO_DRIVER" = 1 ] || [ -f "$BUILD/src/nouveau/vulkan/libnvk.a" ] || {
    echo "ERROR: $BUILD/src/nouveau/vulkan/libnvk.a not found" >&2
    exit 1
 }
@@ -67,7 +72,13 @@ esac
 
 echo "=== compiling $APP.c ==="
 $GCC -c "$APP_SOURCE"       -o "$OBJ/$APP.o"        $ARCH $SECTIONS $DEFS $GL_DEFS $EXTRA_DEFS $INC $GL_INC -O2 -Wall -Wno-unused-function
-$GCC -c "$SMOKE/nvk_compat.c" -o "$OBJ/nvk_compat.o" $ARCH $SECTIONS $DEFS $INC -O2 -Wall
+
+APP_OBJS="$OBJ/$APP.o"
+if [ "$NO_DRIVER" = 0 ]; then
+  $GCC -c "$SMOKE/nvk_compat.c" -o "$OBJ/nvk_compat.o" $ARCH $SECTIONS $DEFS $INC -O2 -Wall
+  $GCC -c "$SMOKE/nvk_chain.c"  -o "$OBJ/nvk_chain.o"  $ARCH $SECTIONS $DEFS $INC -O2 -Wall
+  APP_OBJS="$APP_OBJS $OBJ/nvk_compat.o $OBJ/nvk_chain.o"
+fi
 
 # Support archives libnvk.a pulls in, in dependency order.
 cd "$BUILD"
@@ -106,18 +117,27 @@ gl_*|gles*)
 esac
 
 echo "=== linking ELF ==="
+if [ "$NO_DRIVER" = 1 ]; then
+$GXX -specs="$DKP/libnx/switch.specs" $ARCH \
+  -L$DKP/portlibs/switch/lib -L$DKP/libnx/lib \
+  -o "$OBJ/$APP.elf" \
+  -Wl,--gc-sections \
+  $APP_OBJS \
+  -lnx -lc -lm -pthread
+else
 # libnvk.a (and the GL set for gl_* apps) must be whole-archived
 $GXX -specs="$DKP/libnx/switch.specs" $ARCH \
   -L$DKP/portlibs/switch/lib -L$DKP/libnx/lib \
   -o "$OBJ/$APP.elf" \
   -Wl,--gc-sections \
   -Wl,-u,vk_icdGetInstanceProcAddr \
-  "$OBJ/$APP.o" "$OBJ/nvk_compat.o" \
+  $APP_OBJS \
   -Wl,--whole-archive $GL_WHOLE src/nouveau/vulkan/libnvk.a -Wl,--no-whole-archive \
   -Wl,--start-group \
     $ARCHIVES $PORTLIBS \
     -lnx -lc -lm -lstdc++ -pthread \
   -Wl,--end-group
+fi
 
 echo "=== packaging NRO ==="
 "$STRIP" "$OBJ/$APP.elf" -o "$OBJ/$APP.stripped.elf"

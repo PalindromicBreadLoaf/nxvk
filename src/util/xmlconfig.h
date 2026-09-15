@@ -107,7 +107,7 @@ typedef struct driOptionDescription {
 
    driOptionInfo info;
    driOptionValue value;
-   driEnumDescription enums[5];
+   driEnumDescription enums[20];
 } driOptionDescription;
 
 /** Returns an XML string describing the options for the driver. */
@@ -128,16 +128,33 @@ driGetOptionsXml(const driOptionDescription *configOptions, unsigned numOptions)
 void driParseOptionInfo(driOptionCache *info,
                         const driOptionDescription *configOptions,
                         unsigned numOptions);
+
+typedef void (*driShaderOptionCallback)(const void *hash_data,
+                                        uint32_t hash_size,
+                                        const driOptionInfo *option,
+                                        const driOptionValue *value,
+                                        void *shaderOptionCallbackData);
+
+typedef struct {
+   int screenNum;
+   const char *driverName;
+   const char *kernelDriverName;
+   const char *deviceName;
+   const char *applicationName;
+   uint32_t applicationVersion;
+   const char *engineName;
+   uint32_t engineVersion;
+
+   driShaderOptionCallback shaderOptionCallback;
+   void *shaderOptionCallbackData;
+} driConfigFileParseParams;
+
 /** \brief Initialize option cache from info and parse configuration files
  *
- * To be called in <driver>CreateContext. screenNum, driverName,
- * kernelDriverName, applicationName and engineName select device sections. */
+ * To be called in <driver>CreateContext. Fields in driConfigFileParseParams
+ * select which device/application/engine sections apply. */
 void driParseConfigFiles(driOptionCache *cache, const driOptionCache *info,
-                         int screenNum, const char *driverName,
-                         const char *kernelDriverName,
-                         const char *deviceName,
-                         const char *applicationName, uint32_t applicationVersion,
-                         const char *engineName, uint32_t engineVersion);
+                         const driConfigFileParseParams *params);
 /** \brief Destroy option info
  *
  * To be called in <driver>DestroyScreen */

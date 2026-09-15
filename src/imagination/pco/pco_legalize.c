@@ -164,7 +164,12 @@ static inline bool xfer_op_mods(pco_instr *dest, pco_instr *src)
 static bool legalize_fence(pco_instr *instr)
 {
    pco_builder b =
-      pco_builder_create(instr->parent_func, pco_cursor_before_instr(instr));
+      pco_builder_create(instr->parent_func, pco_cursor_after_instr(instr));
+
+   if (pco_is_last_instr(instr)) {
+      pco_nop(&b);
+      b.cursor = pco_cursor_after_instr(instr);
+   }
 
    pco_flush_p0(&b);
    pco_br_next(&b, .exec_cnd = PCO_EXEC_CND_E1_Z1);
@@ -175,7 +180,7 @@ static bool legalize_fence(pco_instr *instr)
    return true;
 }
 
-static bool legalize_pseudo(pco_instr *instr)
+static bool legalize_pseudo_post_ra(pco_instr *instr)
 {
    switch (instr->op) {
    case PCO_OP_FENCE:
@@ -209,7 +214,11 @@ static bool legalize_pseudo(pco_instr *instr)
       else
          dest = pco_ref_hwreg_idx_from(idx_reg_num, dest);
 
-      pco_instr *mbyp = pco_mbyp(&b, dest, src);
+      pco_instr *mbyp =
+         pco_ref_is_reg(src) && pco_ref_get_reg_class(src) == PCO_REG_CLASS_SPEC ?
+            pco_movs1(&b, dest, src) :
+            pco_mbyp(&b, dest, src);
+
       xfer_op_mods(mbyp, instr);
 
       pco_instr_delete(instr);
@@ -349,11 +358,120 @@ static bool legalize_pseudo(pco_instr *instr)
       return true;
    }
 
+   case PCO_OP_FLUSH_DMA: {
+      pco_builder b =
+         pco_builder_create(instr->parent_func, pco_cursor_before_instr(instr));
+
+      pco_ref dest = instr->dest[0];
+      pco_ref addr = instr->src[0];
+
+      unsigned chans = pco_ref_get_chans(dest);
+      assert(chans == 1);
+
+      pco_ld(&b, dest, pco_ref_drc(PCO_DRC_0), pco_ref_imm8(chans), addr);
+      pco_wdf(&b, pco_ref_drc(PCO_DRC_0));
+
+      pco_instr_delete(instr);
+      return true;
+   }
+
    default:
       break;
    }
 
    return false;
+}
+
+static bool legalize_vote(pco_instr *instr)
+{
+   ASSERTED enum pco_exec_cnd exec_cnd = pco_instr_get_exec_cnd(instr);
+   assert(exec_cnd == PCO_EXEC_CND_E1_ZX);
+
+   enum pco_vote_op vote_op = pco_instr_get_vote_op(instr);
+   bool is_all = vote_op == PCO_VOTE_OP_ALL;
+
+   pco_ref dest = instr->dest[0];
+   pco_ref value = instr->src[0];
+
+   pco_func *func = instr->parent_func;
+   pco_ref result = pco_ref_new_vreg(func);
+
+   pco_builder b =
+      pco_builder_create(func, pco_cursor_after_instr(instr));
+
+   /* result = false */
+   pco_mbyp(&b, result, pco_false);
+
+   /* p0 = !value */
+   pco_tstz(&b,
+            pco_ref_null(),
+            pco_ref_pred(PCO_PRED_P0),
+            value,
+            .tst_type_main = PCO_TST_TYPE_MAIN_U32);
+
+   pco_ref emc = pco_emc_ref(func, &b);
+
+   /* Mask instance if (all ? value : !value) */
+   pco_cndst(&b,
+             pco_ref_pred(PCO_PRED_PE),
+             emc,
+             emc,
+             pco_ref_imm8(1),
+             .exec_cnd = PCO_EXEC_CND_EX_ZX,
+             .cnd = is_all ? PCO_CND_P0_TRUE : PCO_CND_P0_FALSE);
+
+   /* all: if no instances are running, i.e. value is true for all of them
+    * any: if at least one instance is running, i.e. value is true for at least
+    *      one of them
+    *
+    * If the condition is true, skip to result = true instruction.
+    */
+   pco_br_skip_next(&b, .branch_cnd = is_all ? PCO_BRANCH_CND_ALLINST : PCO_BRANCH_CND_ANYINST);
+
+   /* Skip the result = true instruction (if the above branch isn't taken). */
+   pco_br_skip_next(&b);
+
+   /* result = true
+    * Execute even if the instance is masked out (for the all case).
+    * This will only not execute if the instruction is skipped by a branch.
+    */
+   pco_mbyp(&b, result, pco_true, .exec_cnd = PCO_EXEC_CND_EX_ZX);
+
+   /* Restore emc. */
+   pco_cndend(&b,
+              pco_ref_pred(PCO_PRED_PE),
+              emc,
+              emc,
+              pco_ref_imm8(1),
+              .exec_cnd = PCO_EXEC_CND_EX_ZX);
+
+   /* Copy the result to the destination. */
+   /* TODO: just replace it in its users instead. */
+   pco_mbyp(&b, dest, result);
+
+   pco_instr_delete(instr);
+
+   return true;
+}
+
+static bool legalize_pseudo_pre_ra(pco_instr *instr)
+{
+   switch (instr->op) {
+   case PCO_OP_VOTE:
+      return legalize_vote(instr);
+
+   default:
+      break;
+   }
+
+   return false;
+}
+
+static bool legalize_pseudo(pco_instr *instr, bool pre_ra)
+{
+   return pre_ra ?
+      legalize_pseudo_pre_ra(instr) :
+      legalize_pseudo_post_ra(instr);
 }
 
 static bool try_legalize_large_hwreg_offsets(pco_instr *instr,
@@ -476,8 +594,10 @@ bool pco_pre_ra_legalize(pco_shader *shader)
    pco_foreach_func_in_shader (func, shader) {
       pco_foreach_instr_in_func_safe (instr, func) {
          info = &pco_op_info[instr->op];
-         if (info->type != PCO_OP_TYPE_PSEUDO) 
+         if (info->type != PCO_OP_TYPE_PSEUDO)
             progress |= try_legalize_src_mappings(instr, info);
+         else
+            progress |= legalize_pseudo(instr, true);
       }
    }
 
@@ -493,12 +613,12 @@ bool pco_pre_ra_legalize(pco_shader *shader)
 bool pco_post_ra_legalize(pco_shader *shader)
 {
    assert(!shader->is_grouped);
- 
+
    bool progress = false;
 
    pco_foreach_func_in_shader (func, shader) {
       pco_foreach_instr_in_func_safe (instr, func) {
-         progress |= try_legalize(instr);   
+         progress |= try_legalize(instr);
       }
    }
 
@@ -507,8 +627,8 @@ bool pco_post_ra_legalize(pco_shader *shader)
    pco_foreach_func_in_shader (func, shader) {
       pco_foreach_instr_in_func_safe (instr, func) {
          info = &pco_op_info[instr->op];
-         if (info->type == PCO_OP_TYPE_PSEUDO) 
-            progress |= legalize_pseudo(instr);       
+         if (info->type == PCO_OP_TYPE_PSEUDO)
+            progress |= legalize_pseudo(instr, false);
       }
    }
 

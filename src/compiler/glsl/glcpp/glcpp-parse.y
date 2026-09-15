@@ -1978,11 +1978,8 @@ _glcpp_parser_expand_function(glcpp_parser_t *parser, token_node_t *node,
          prev_paste_token = node->token->type == PASTE;
    }
 
-   /* After argument substitution, and before further expansion
-    * below, implement token pasting. */
-
+   /* Implement token pasting. */
    _token_list_trim_trailing_space(substituted);
-
    _glcpp_parser_apply_pastes(parser, substituted);
 
    return substituted;

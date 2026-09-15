@@ -490,6 +490,7 @@ ac_prepare_cs_clear_copy_buffer(const struct ac_cs_clear_copy_buffer_options *op
       case GFX10_3:
       case GFX11:
       case GFX11_5:
+      case GFX11_7:
          /* Optimal for Navi31, Navi21, Navi10. */
          break;
 
@@ -586,7 +587,7 @@ ac_prepare_cs_clear_copy_buffer(const struct ac_cs_clear_copy_buffer_options *op
    out->shader_key.src_align_offset = src_align_offset;
    out->shader_key.dst_align_offset = dst_align_offset;
 
-   if ((dst_align_offset + info->size) % 4)
+   if ((dst_align_offset + info->size) % (dwords_per_thread * 4))
       out->shader_key.dst_last_thread_bytes = (dst_align_offset + info->size) % (dwords_per_thread * 4);
 
    unsigned num_threads = DIV_ROUND_UP(dst_align_offset + info->size, dwords_per_thread * 4);

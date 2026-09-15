@@ -403,7 +403,8 @@ ac_emit_cp_acquire_mem(struct ac_cmdbuf *cs, enum amd_gfx_level gfx_level,
                        enum amd_ip_type ip_type, uint32_t engine,
                        uint32_t gcr_cntl)
 {
-   assert(ip_type != AMD_IP_GFX || (engine == V_581B_CP_PFP || engine == V_581B_CP_ME));
+   assert(ip_type != AMD_IP_GFX ||
+          (engine == V_581A_PREFETCH_PARSER || engine == V_581A_MICRO_ENGINE));
    assert(gcr_cntl);
 
    ac_cmdbuf_begin(cs);
@@ -411,7 +412,7 @@ ac_emit_cp_acquire_mem(struct ac_cmdbuf *cs, enum amd_gfx_level gfx_level,
    if (gfx_level >= GFX10) {
       /* ACQUIRE_MEM in PFP is implemented as ACQUIRE_MEM in ME + PFP_SYNC_ME. */
       const uint32_t engine_flag =
-         ip_type == AMD_IP_GFX && engine == V_581B_CP_ME ? BITFIELD_BIT(31) : 0;
+         ip_type == AMD_IP_GFX ? S_581A_ENGINE_SEL(engine) : 0;
       const uint32_t coher_size_hi =
          gfx_level >= GFX11 && ip_type == AMD_IP_GFX ? 0xffffff : 0xff;
 

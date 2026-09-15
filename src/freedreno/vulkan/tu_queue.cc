@@ -109,7 +109,7 @@ get_vis_stream_patchpoint_cs(struct tu_cmd_buffer *cmd,
    util_dynarray_foreach (&cmd->vis_stream_cs_bos,
                           struct tu_vis_stream_patchpoint_cs,
                           patchpoint_cs) {
-      uint32_t *fence = (uint32_t *)patchpoint_cs->fence_bo.bo->map;
+      uint32_t *fence = (uint32_t *)tu_suballoc_bo_map(&patchpoint_cs->fence_bo);
       if (*fence == 1) {
          *fence = 0;
          tu_cs_init_suballoc(cs, cmd->device, &patchpoint_cs->cs_bo);
@@ -182,7 +182,7 @@ resolve_vis_stream_patchpoints(struct tu_queue *queue,
     * streams and therefore should be avoided.
     */
    uint32_t min_vis_stream_count =
-      (!dev->instance->allow_concurrent_binning || dev->physical_device->info->chip < 7) ?
+      (!dev->instance->drirc.perf.allow_concurrent_binning || dev->physical_device->info->chip < 7) ?
       1 : MIN2(MAX2(rp_count, 1), TU_MAX_VIS_STREAMS);
    uint32_t vis_stream_count;
 
@@ -548,7 +548,7 @@ queue_submit(struct vk_queue *_queue, struct vk_queue_submit *vk_submit)
 #ifdef HAVE_PERFETTO
    if (u_trace_should_process(&device->trace_context)) {
       for (int i = 0; i < vk_submit->command_buffer_count; i++)
-         tu_perfetto_refresh_debug_utils_object_name(
+         tu_perfetto_refresh_debug_utils_object_name(device,
             &vk_submit->command_buffers[i]->base);
    }
 #endif
@@ -609,7 +609,8 @@ tu_queue_init(struct tu_device *device,
               enum tu_queue_type type,
               const VkQueueGlobalPriorityKHR global_priority,
               int idx,
-              const VkDeviceQueueCreateInfo *create_info)
+              const VkDeviceQueueCreateInfo *create_info,
+              struct tu_queue *shared_queue)
 {
    const int priority = tu_get_submitqueue_priority(
          device->physical_device, global_priority, type,
@@ -624,10 +625,26 @@ tu_queue_init(struct tu_device *device,
       return result;
 
    queue->device = device;
+   queue->type = type;
+   queue->fence = -1;
+   queue->priority = -1;
+   queue->msm_queue_id = 0;
+
+   if (shared_queue) {
+      /* Emulated queue: submissions are redirected to the real queue by
+       * the common runtime, so no kernel submitqueue is needed. The real
+       * queue's priority is what actually takes effect on the hardware;
+       * the priority requested for the alias has already been validated
+       * above.
+       */
+      assert(shared_queue->type == type);
+      vk_queue_set_emulated(&queue->vk, &shared_queue->vk);
+      return VK_SUCCESS;
+   }
+
    queue->priority = priority;
    queue->vk.driver_submit =
       (type == TU_QUEUE_SPARSE) ? queue_submit_sparse : queue_submit;
-   queue->type = type;
 
    int ret = tu_drm_submitqueue_new(device, queue);
    if (ret) {
@@ -636,15 +653,15 @@ tu_queue_init(struct tu_device *device,
                                "submitqueue create failed");
    }
 
-   queue->fence = -1;
-
    return VK_SUCCESS;
 }
 
 void
 tu_queue_finish(struct tu_queue *queue)
 {
+   bool emulated = vk_queue_is_emulated(&queue->vk);
    vk_queue_finish(&queue->vk);
-   tu_drm_submitqueue_close(queue->device, queue);
+   if (!emulated)
+      tu_drm_submitqueue_close(queue->device, queue);
 }
 

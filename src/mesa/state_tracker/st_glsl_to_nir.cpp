@@ -349,7 +349,8 @@ st_glsl_to_nir_post_opts(struct st_context *st, struct gl_program *prog,
 
    nir_remove_dead_variables(nir, nir_var_function_temp, NULL);
 
-   if (!st->has_hw_atomics && !screen->caps.nir_atomics_as_deref) {
+   if (st->screen->shader_caps[MESA_SHADER_FRAGMENT].max_hw_atomic_counters == 0
+       && !screen->caps.nir_atomics_as_deref) {
       unsigned align_offset_state = 0;
       if (st->ctx->Const.ShaderStorageBufferOffsetAlignment > 4) {
          struct gl_program_parameter_list *params = prog->Parameters;
@@ -368,7 +369,7 @@ st_glsl_to_nir_post_opts(struct st_context *st, struct gl_program *prog,
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
    st_update_state_param_locations(st->ctx, prog, nir);
 
-   if (st->allow_st_finalize_nir_twice) {
+   if (st->screen->caps.call_finalize_nir_in_linker) {
       st_serialize_base_nir(prog, nir);
       st_finalize_nir(st, prog, shader_program, nir, true, false);
 
@@ -684,13 +685,13 @@ st_nir_lower_samplers(struct pipe_screen *screen, nir_shader *nir,
    }
 }
 
-static int
+static unsigned
 st_packed_uniforms_type_size(const struct glsl_type *type, bool bindless)
 {
    return glsl_count_dword_slots(type, bindless);
 }
 
-static int
+static unsigned
 st_unpacked_uniforms_type_size(const struct glsl_type *type, bool bindless)
 {
    return glsl_count_vec4_slots(type, false, bindless);
@@ -730,9 +731,9 @@ st_finalize_nir(struct st_context *st, struct gl_program *prog,
    const bool lower_tg4_offsets =
       !is_draw_shader && !st->screen->caps.texture_gather_offsets;
 
-   if (!is_draw_shader && (st->lower_rect_tex || lower_tg4_offsets)) {
+   if (!is_draw_shader && (!st->screen->caps.texrect || lower_tg4_offsets)) {
       struct nir_lower_tex_options opts = {0};
-      opts.lower_rect = !!st->lower_rect_tex;
+      opts.lower_rect = !st->screen->caps.texrect;
       opts.lower_tg4_offsets = lower_tg4_offsets;
 
       NIR_PASS(_, nir, nir_lower_tex, &opts);
@@ -755,7 +756,7 @@ st_finalize_nir(struct st_context *st, struct gl_program *prog,
 
    st_nir_lower_samplers(screen, nir, shader_program, prog);
    if (!is_draw_shader && !screen->caps.nir_images_as_deref)
-      NIR_PASS(_, nir, gl_nir_lower_images, false);
+      NIR_PASS(_, nir, gl_nir_lower_images, NULL, false);
 }
 
 /**

@@ -7,7 +7,8 @@
 #include "nir/radv_meta_nir.h"
 #include "ac_surface.h"
 #include "radv_meta.h"
-#include "vk_format.h"
+#include "radv_tracepoints.h"
+#include "vk_shader_module.h"
 
 static VkResult
 get_pipeline(struct radv_device *device, struct radv_image *image, VkPipeline *pipeline_out,
@@ -35,7 +36,7 @@ get_pipeline(struct radv_device *device, struct radv_image *image, VkPipeline *p
 
    const VkPushConstantRange pc_range = {
       .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-      .size = 28,
+      .size = 32,
    };
 
    result = vk_meta_get_pipeline_layout(&device->vk, &device->meta_state.device, &desc_info, &pc_range, &key,
@@ -76,7 +77,8 @@ get_pipeline(struct radv_device *device, struct radv_image *image, VkPipeline *p
 
 void
 radv_copy_vrs_htile(struct radv_cmd_buffer *cmd_buffer, struct radv_image_view *vrs_iview, const VkRect2D *rect,
-                    struct radv_image *dst_image, uint64_t htile_va, bool read_htile_value)
+                    struct radv_image *dst_image, uint32_t base_array_layer, uint64_t htile_va,
+                    bool read_htile_value)
 {
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    VkPipelineLayout layout;
@@ -88,6 +90,8 @@ radv_copy_vrs_htile(struct radv_cmd_buffer *cmd_buffer, struct radv_image_view *
       vk_command_buffer_set_error(&cmd_buffer->vk, result);
       return;
    }
+
+   radv_utrace_begin_copy_vrs_htile(cmd_buffer);
 
    cmd_buffer->state.flush_bits |= radv_src_access_flush(cmd_buffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                                          VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, 0, NULL, NULL);
@@ -105,7 +109,7 @@ radv_copy_vrs_htile(struct radv_cmd_buffer *cmd_buffer, struct radv_image_view *
                                                              },
                                                           }}});
 
-   const unsigned constants[7] = {
+   const unsigned constants[8] = {
       htile_va,
       htile_va >> 32,
       rect->offset.x,
@@ -113,6 +117,7 @@ radv_copy_vrs_htile(struct radv_cmd_buffer *cmd_buffer, struct radv_image_view *
       dst_image->planes[0].surface.meta_pitch,
       dst_image->planes[0].surface.meta_slice_size,
       read_htile_value,
+      base_array_layer,
    };
 
    radv_meta_push_constants(cmd_buffer, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants), constants);
@@ -125,4 +130,6 @@ radv_copy_vrs_htile(struct radv_cmd_buffer *cmd_buffer, struct radv_image_view *
    cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_CS_PARTIAL_FLUSH | RADV_CMD_FLAG_INV_VCACHE |
                                    radv_src_access_flush(cmd_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                                                          VK_ACCESS_2_SHADER_WRITE_BIT, 0, NULL, NULL);
+
+   radv_utrace_end_copy_vrs_htile(cmd_buffer);
 }

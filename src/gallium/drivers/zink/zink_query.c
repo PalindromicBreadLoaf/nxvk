@@ -10,16 +10,19 @@
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 
-#define NUM_QUERIES 500
+#define MAX_NUM_QUERIES 512
 #define NOWAIT_CHECK_THRESHOLD 10 //prevent spinning
 
 #define ZINK_QUERY_RENDER_PASSES (PIPE_QUERY_DRIVER_SPECIFIC + 0)
+
+static unsigned NUM_QUERIES = 16;
 
 struct zink_query_pool {
    struct list_head list;
    VkQueryType vk_query_type;
    VkQueryPipelineStatisticFlags pipeline_stats;
    VkQueryPool query_pool;
+   unsigned num_results;
    unsigned last_range;
    unsigned refcount;
 };
@@ -224,6 +227,7 @@ find_or_allocate_qp(struct zink_context *ctx, struct zink_query *q, unsigned idx
       FREE(new_pool);
       return NULL;
    }
+   new_pool->num_results = pool_create.queryCount;
 
    list_addtail(&new_pool->list, &ctx->query_pools);
    return new_pool;
@@ -479,8 +483,10 @@ query_pool_get_range(struct zink_context *ctx, struct zink_query *q)
          vkq->pool->refcount++;
       } else {
          struct zink_query_pool *pool = find_or_allocate_qp(ctx, q, pool_idx, &vkq_needs_reset);
-         if (pool->last_range == NUM_QUERIES) {
+         if (pool->last_range == pool->num_results) {
             list_del(&pool->list);
+            if (pool->num_results == NUM_QUERIES && NUM_QUERIES < MAX_NUM_QUERIES)
+               NUM_QUERIES *= 2;
             pool = find_or_allocate_qp(ctx, q, pool_idx, &vkq_needs_reset);
          }
          vkq = CALLOC_STRUCT(zink_vk_query);
@@ -781,7 +787,7 @@ copy_pool_results_to_buffer(struct zink_context *ctx, struct zink_query *query, 
    zink_batch_no_rp(ctx);
    /* if it's a single query that doesn't need special handling, we can copy it and be done */
    zink_batch_reference_resource_rw(ctx, res, true);
-   res->obj->unordered_read = res->obj->unordered_write = false;
+   zink_resource_disable_unordered(res, true);
    zink_resource_buffer_transfer_dst_barrier(ctx, res, offset, result_size);
    util_range_add(&res->base.b, &res->valid_buffer_range, offset, offset + result_size);
    assert(query_id < NUM_QUERIES);
@@ -1062,6 +1068,10 @@ zink_end_query(struct pipe_context *pctx,
    struct zink_context *ctx = zink_context(pctx);
    struct zink_query *query = (struct zink_query *)q;
 
+   if (query->suspended) {
+      list_delinit(&query->active_list);
+      query->suspended = false;
+   }
    if (query->type == PIPE_QUERY_TIMESTAMP_DISJOINT || query->type >= PIPE_QUERY_DRIVER_SPECIFIC)
       return true;
 
@@ -1084,10 +1094,6 @@ zink_end_query(struct pipe_context *pctx,
 
    if (list_is_linked(&query->stats_list))
       list_delinit(&query->stats_list);
-   if (query->suspended) {
-      list_delinit(&query->active_list);
-      query->suspended = false;
-   }
    if (is_time_query(query)) {
       update_query_id(ctx, query);
       if (query->needs_reset)
@@ -1327,7 +1333,7 @@ zink_start_conditional_render(struct zink_context *ctx)
    begin_info.sType = VK_STRUCTURE_TYPE_CONDITIONAL_RENDERING_BEGIN_INFO_EXT;
    begin_info.buffer = ctx->render_condition.query->predicate->obj->buffer;
    begin_info.flags = begin_flags;
-   ctx->render_condition.query->predicate->obj->unordered_read = false;
+   zink_resource_disable_unordered(ctx->render_condition.query->predicate, false);
    VKCTX(CmdBeginConditionalRenderingEXT)(ctx->bs->cmdbuf, &begin_info);
    zink_batch_reference_resource_rw(ctx, ctx->render_condition.query->predicate, false);
    ctx->render_condition.active = true;

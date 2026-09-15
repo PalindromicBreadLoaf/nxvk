@@ -9,6 +9,8 @@
 #include "vk_nir_convert_ycbcr.h"
 #include "vk_pipeline.h"
 
+#include "nir/nir_builtin_builder.h"
+
 #include "common/intel_compute_slm.h"
 #include "common/intel_l3_config.h"
 
@@ -26,23 +28,6 @@ struct game_wa_entry {
    game_wa_callback cb;
    uint32_t shader_blake3s[16][BLAKE3_OUT_LEN32];
 };
-
-/* Workaround for a shader in Horizon Forbidden West that causes
- * visual corruption.  The shader writes the result of fsqrt to
- * storage images with a 16-bit image format and misrendering
- * occurs when those values are denormal for an unknown reason.
- *
- * This clamps the image writes to the smallest fp16 normalized
- * value.  (Pattern matching against fsqrt is easy to do in a one
- * line algebraic pass, while matching image stores is harder.)
- *
- * See https://gitlab.freedesktop.org/mesa/mesa/-/issues/12555
- */
-static void
-wa_forbidden_west(nir_shader *nir)
-{
-   NIR_PASS(_, nir, brw_nir_apply_sqrt_workarounds);
-}
 
 /* Try to detect shaders relying on 32-wide subgroups. Usually they have a
  * pattern like this:
@@ -99,7 +84,7 @@ static bool is_simd32_shuffle(nir_intrinsic_instr *intrin)
 static bool is_alu_used_for_umod_subgroup_size(nir_alu_instr *in_alu)
 {
    nir_foreach_use(src, &in_alu->def) {
-      nir_instr *instr = nir_src_parent_instr(src);
+      nir_instr *instr = nir_src_use_instr(src);
       if (instr->type != nir_instr_type_alu)
          continue;
 
@@ -127,7 +112,7 @@ static bool
 is_local_invoc_id_used_with_simd32_assumption(nir_intrinsic_instr *subgroup_inv)
 {
    nir_foreach_use(src, &subgroup_inv->def) {
-      nir_instr *instr = nir_src_parent_instr(src);
+      nir_instr *instr = nir_src_use_instr(src);
       if (instr->type != nir_instr_type_alu)
          continue;
 
@@ -177,12 +162,6 @@ detect_simd32_requirement(nir_builder *b,
  * Add new workarounds here as needed.
  */
 static const struct game_wa_entry game_was[] = {
-   {
-      .cb = wa_forbidden_west,
-      .shader_blake3s = {
-         {0x51683151, 0xe044f0ce, 0xc210a762, 0xb12b2da4, 0x4e69ddc0, 0x237b1cc1, 0xc84bcf09, 0x31cfe883},
-      },
-   },
 };
 
 /* Apply game-specific workarounds based on the shader's BLAKE3 hash */
@@ -239,7 +218,11 @@ anv_shader_init_uuid(struct anv_physical_device *device)
    blake3_hasher ctx;
    _mesa_blake3_init(&ctx);
 
-   const bool always_bindless = unlikely(device->instance->debug & ANV_DEBUG_BINDLESS);
+   _mesa_blake3_update(&ctx, device->driver_build_sha1,
+                       sizeof(device->driver_build_sha1));
+   brw_device_blake3_update(&ctx, &device->info);
+
+   const bool always_bindless = !!ANV_DEBUG(BINDLESS);
    _mesa_blake3_update(&ctx, &always_bindless, sizeof(always_bindless));
 
    const bool indirect_descriptors = device->indirect_descriptors;
@@ -248,33 +231,42 @@ anv_shader_init_uuid(struct anv_physical_device *device)
    const int spilling_rate = device->compiler->spilling_rate;
    _mesa_blake3_update(&ctx, &spilling_rate, sizeof(spilling_rate));
 
-   const uint8_t afs = device->instance->assume_full_subgroups;
+   const uint8_t afs = device->instance->drirc.debug.assume_full_subgroups;
    _mesa_blake3_update(&ctx, &afs, sizeof(afs));
 
-   const bool afswb = device->instance->assume_full_subgroups_with_barrier;
+   const bool afswb = device->instance->drirc.debug.assume_full_subgroups_with_barrier;
    _mesa_blake3_update(&ctx, &afswb, sizeof(afswb));
 
-   const bool afs_shm = device->instance->assume_full_subgroups_with_shared_memory;
+   const bool afs_shm = device->instance->drirc.debug.assume_full_subgroups_with_shared_memory;
    _mesa_blake3_update(&ctx, &afs_shm, sizeof(afs_shm));
 
-   const bool erwf = device->instance->emulate_read_without_format;
-   _mesa_blake3_update(&ctx, &erwf, sizeof(erwf));
+   const bool rwfe = device->instance->drirc.debug.read_without_format_emu;
+   _mesa_blake3_update(&ctx, &rwfe, sizeof(rwfe));
 
-   const bool lttd = device->instance->lower_terminate_to_discard;
+   const bool lttd = device->instance->drirc.debug.lower_terminate_to_discard;
    _mesa_blake3_update(&ctx, &lttd, sizeof(lttd));
 
    const bool large_wg_wa =
-      device->instance->large_workgroup_non_coherent_image_workaround;
+      device->instance->drirc.debug.large_workgroup_non_coherent_image_workaround;
    _mesa_blake3_update(&ctx, &large_wg_wa, sizeof(large_wg_wa));
 
-   const bool lto_disable = device->instance->disable_lto;
+   const bool lto_disable = device->instance->drirc.debug.disable_lto;
    _mesa_blake3_update(&ctx, &lto_disable, sizeof(lto_disable));
 
    const bool btp_bti_rcc = device->rt_change_needs_flush;
    _mesa_blake3_update(&ctx, &btp_bti_rcc, sizeof(btp_bti_rcc));
 
-   const bool slm_robust = device->instance->slm_robust_vectorization;
+   const bool cbv_push_buffer = device->instance->drirc.perf.promote_cbv_push_buffer;
+   _mesa_blake3_update(&ctx, &cbv_push_buffer, sizeof(cbv_push_buffer));
+
+   const bool fs_sample_d_wa = device->instance->drirc.debug.fs_sampler_undef_derivatives_workaround;
+   _mesa_blake3_update(&ctx, &fs_sample_d_wa, sizeof(fs_sample_d_wa));
+
+   const bool slm_robust = device->instance->drirc.debug.slm_robust_vectorization;
    _mesa_blake3_update(&ctx, &slm_robust, sizeof(slm_robust));
+
+   const bool r11g11b10_wa = device->instance->drirc.debug.r11g11b10_atomic_swap_wa;
+   _mesa_blake3_update(&ctx, &r11g11b10_wa, sizeof(r11g11b10_wa));
 
    uint8_t blake3[BLAKE3_KEY_LEN];
    _mesa_blake3_final(&ctx, blake3);
@@ -309,7 +301,7 @@ anv_shader_get_spirv_options(struct vk_physical_device *device,
       .phys_ssbo_addr_format = nir_address_format_64bit_global,
       .push_const_addr_format = nir_address_format_logical,
 
-      .printf = INTEL_DEBUG(DEBUG_SHADER_PRINT),
+      .printf = ANV_DEBUG(SHADER_PRINT),
 
       /* TODO: Consider changing this to an address format that has the NULL
        * pointer equals to 0.  That might be a better format to play nice
@@ -321,8 +313,10 @@ anv_shader_get_spirv_options(struct vk_physical_device *device,
       .min_ssbo_alignment = ANV_SSBO_ALIGNMENT,
 
       .workarounds = {
-         .lower_terminate_to_discard = pdevice->instance->lower_terminate_to_discard,
+         .lower_terminate_to_discard = pdevice->instance->drirc.debug.lower_terminate_to_discard,
       },
+
+      .store_dxbc_dxil_hashes = true,
    };
 }
 
@@ -360,7 +354,7 @@ anv_shader_preprocess_nir(struct vk_physical_device *device,
    NIR_PASS(_, nir, nir_opt_barrier_modes);
    NIR_PASS(_, nir, nir_opt_acquire_release_barriers, SCOPE_QUEUE_FAMILY);
 
-   if (INTEL_DEBUG(DEBUG_SHADER_PRINT)) {
+   if (ANV_DEBUG(SHADER_PRINT)) {
       const nir_lower_printf_options printf_opts = {
          .ptr_bit_size = 64,
          .hash_format_strings = true,
@@ -384,8 +378,8 @@ populate_base_prog_key(struct brw_base_prog_key *key,
     */
    if (rs != NULL)
       key->robust_flags = anv_get_robust_flags(rs);
-   key->divergent_atomics_flags = pdevice->instance->enable_opt_divergent_atomics;
-   key->limit_trig_input_range = pdevice->instance->limit_trig_input_range;
+   key->divergent_atomics_flags = pdevice->instance->drirc.perf.opt_divergent_atomics;
+   key->limit_trig_input_range = pdevice->instance->drirc.debug.limit_trig_input_range;
 }
 
 static void
@@ -421,7 +415,7 @@ populate_vs_prog_key(struct brw_vs_prog_key *key,
 
    populate_base_gfx_prog_key(&key->base, device, rs, state, link_stages);
 
-   key->vf_component_packing = pdevice->instance->vf_component_packing;
+   key->vf_component_packing = pdevice->instance->drirc.perf.vf_comp_packing;
 }
 
 static void
@@ -466,7 +460,7 @@ populate_gs_prog_key(struct brw_gs_prog_key *key,
 
    populate_base_gfx_prog_key(&key->base, device, rs, state, link_stages);
 
-   if (pdevice->instance->slm_robust_vectorization)
+   if (pdevice->instance->drirc.debug.slm_robust_vectorization)
       key->base.robust_flags |= BRW_ROBUSTNESS_SLM;
 }
 
@@ -482,8 +476,7 @@ populate_task_prog_key(struct brw_task_prog_key *key,
 
    populate_base_gfx_prog_key(&key->base, device, rs, state, link_stages);
 
-   key->base.uses_inline_push_addr = true;
-   if (pdevice->instance->slm_robust_vectorization)
+   if (pdevice->instance->drirc.debug.slm_robust_vectorization)
       key->base.robust_flags |= BRW_ROBUSTNESS_SLM;
 }
 
@@ -495,8 +488,6 @@ populate_mesh_prog_key(struct brw_mesh_prog_key *key,
                        VkShaderStageFlags link_stages)
 {
    populate_base_gfx_prog_key(&key->base, device, rs, state, link_stages);
-
-   key->base.uses_inline_push_addr = true;
 }
 
 static bool
@@ -615,19 +606,13 @@ populate_fs_prog_key(struct brw_fs_prog_key *key,
          BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES) ?
          INTEL_SOMETIMES :
          state->ms->rasterization_samples > 1 ? INTEL_ALWAYS : INTEL_NEVER;
-      key->persample_interp =
-         BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES) ?
-         INTEL_SOMETIMES :
-         (state->ms->sample_shading_enable &&
-          (state->ms->min_sample_shading * state->ms->rasterization_samples) > 1) ?
-         INTEL_ALWAYS : INTEL_NEVER;
       key->alpha_to_coverage =
          BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_MS_ALPHA_TO_COVERAGE_ENABLE) ?
          INTEL_SOMETIMES :
          (state->ms->alpha_to_coverage_enable ? INTEL_ALWAYS : INTEL_NEVER);
 
       /* TODO: We should make this dynamic */
-      if (pdevice->instance->sample_mask_out_opengl_behaviour)
+      if (pdevice->instance->drirc.debug.sample_mask_out_opengl_behaviour)
          key->ignore_sample_mask_out = !key->multisample_fbo;
    } else {
       /* Consider all inputs as valid until we look at the NIR variables. */
@@ -635,8 +620,27 @@ populate_fs_prog_key(struct brw_fs_prog_key *key,
 
       key->alpha_to_coverage = INTEL_SOMETIMES;
       key->multisample_fbo = INTEL_SOMETIMES;
-      key->persample_interp = INTEL_SOMETIMES;
    }
+
+   /* Per sample interpolation is about the only thing we can also determine
+    * using the create info. With GPL, it is required to be specified if
+    * sample shading is to be enabled. So if we can't to that field, it means
+    * it's disabled.
+    *
+    * In the case where MSAA is dynamic we assume persample interpolation is
+    * active if enabled, otherwise we can double check the number of samples
+    * matches the requirement for it.
+    *
+    * With ESO, there is no way to enable/disable this at the API level, it's
+    * only possible with shader code (the backend will deal with this by
+    * looking at shader_info).
+    */
+   key->persample_interp =
+      key->multisample_fbo != INTEL_NEVER &&
+      state != NULL && state->ms != NULL &&
+      state->ms->sample_shading_enable &&
+      (BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES) ||
+       (state->ms->min_sample_shading * state->ms->rasterization_samples) > 1);
 
    if (pdevice->info.verx10 >= 200) {
       if (state != NULL && state->rs != NULL) {
@@ -655,15 +659,20 @@ populate_fs_prog_key(struct brw_fs_prog_key *key,
       key->provoking_vertex_last = INTEL_NEVER;
    }
 
+   if (state != NULL && state->rs != NULL) {
+      key->conservative_raster =
+         BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_RS_CONSERVATIVE_MODE) ?
+         INTEL_SOMETIMES :
+         state->rs->conservative_mode == VK_CONSERVATIVE_RASTERIZATION_MODE_DISABLED_EXT ?
+         INTEL_NEVER : INTEL_ALWAYS;
+   } else {
+      key->conservative_raster = INTEL_SOMETIMES;
+   }
+
    key->mesh_input =
       (link_stages & VK_SHADER_STAGE_VERTEX_BIT) ? INTEL_NEVER :
       (link_stages & VK_SHADER_STAGE_MESH_BIT_EXT) ? INTEL_ALWAYS :
-      pdevice->info.verx10 >= 125 ? INTEL_SOMETIMES : INTEL_NEVER;
-
-   if (state && state->ms) {
-      key->min_sample_shading = state->ms->min_sample_shading;
-      key->api_sample_shading = state->ms->sample_shading_enable;
-   }
+      pdevice->info.has_mesh_shading ? INTEL_SOMETIMES : INTEL_NEVER;
 
    key->coarse_pixel = pipeline_has_coarse_pixel(state);
 }
@@ -673,15 +682,17 @@ populate_cs_prog_key(struct brw_cs_prog_key *key,
                      const struct vk_physical_device *device,
                      const struct vk_pipeline_robustness_state *rs)
 {
+
    const struct anv_physical_device *pdevice =
       container_of(device, const struct anv_physical_device, vk);
 
    populate_base_prog_key(&key->base, device, rs);
 
-   if (pdevice->instance->slm_robust_vectorization)
+   if (pdevice->instance->drirc.debug.slm_robust_vectorization)
       key->base.robust_flags |= BRW_ROBUSTNESS_SLM;
 
-   key->base.uses_inline_push_addr = pdevice->info.verx10 >= 125;
+   key->base.divergent_atomics_flags |=
+      pdevice->instance->drirc.perf.opt_divergent_atomics_compute_only;
 }
 
 static void
@@ -745,10 +756,13 @@ anv_shader_hash_state(struct vk_physical_device *device,
          populate_mesh_prog_key(&key.mesh, device, NULL, state, stages);
          _mesa_blake3_update(&blake3_ctx, &key.mesh, sizeof(key.mesh));
          break;
-      case VK_SHADER_STAGE_FRAGMENT_BIT:
+      case VK_SHADER_STAGE_FRAGMENT_BIT: {
+         uint32_t color_mask = rp_color_mask(state);
+         _mesa_blake3_update(&blake3_ctx, &color_mask, sizeof(color_mask));
          populate_fs_prog_key(&key.fs, device, NULL, state, stages);
          _mesa_blake3_update(&blake3_ctx, &key.fs, sizeof(key.fs));
          break;
+      }
       case VK_SHADER_STAGE_COMPUTE_BIT:
          populate_cs_prog_key(&key.cs, device, NULL);
          _mesa_blake3_update(&blake3_ctx, &key.cs, sizeof(key.cs));
@@ -838,25 +852,30 @@ lookup_ycbcr_conversion(const void *_stage, uint32_t set,
 {
    const struct vk_shader_compile_info *stage = _stage;
 
-   assert(set < MAX_SETS);
-   const struct anv_descriptor_set_layout *set_layout =
-      container_of(stage->set_layouts[set],
-                   struct anv_descriptor_set_layout, vk);
+   if (set == VK_NIR_YCBCR_SET_IMMUTABLE_SAMPLERS) {
+      assert(binding < stage->embedded_sampler_count);
+      return &stage->embedded_samplers[binding].ycbcr_conversion;
+   } else {
+      assert(set < MAX_SETS);
+      const struct anv_descriptor_set_layout *set_layout =
+         container_of(stage->set_layouts[set],
+                      struct anv_descriptor_set_layout, vk);
 
-   assert(binding < set_layout->binding_count);
-   const struct anv_descriptor_set_binding_layout *bind_layout =
-      &set_layout->binding[binding];
+      assert(binding < set_layout->binding_count);
+      const struct anv_descriptor_set_binding_layout *bind_layout =
+         &set_layout->binding[binding];
 
-   if (bind_layout->samplers == NULL)
-      return NULL;
+      if (bind_layout->samplers == NULL)
+         return NULL;
 
-   array_index = MIN2(array_index, bind_layout->array_size - 1);
+      array_index = MIN2(array_index, bind_layout->array_size - 1);
 
-   const struct anv_descriptor_set_layout_sampler *sampler =
-      &bind_layout->samplers[array_index];
+      const struct anv_descriptor_set_layout_sampler *sampler =
+         &bind_layout->samplers[array_index];
 
-   return sampler->has_ycbcr_conversion ?
-          &sampler->ycbcr_conversion_state : NULL;
+      return sampler->has_ycbcr_conversion ?
+             &sampler->ycbcr_conversion_state : NULL;
+   }
 }
 
 static void
@@ -876,7 +895,7 @@ anv_fixup_subgroup_size(struct anv_device *device, nir_shader *shader)
     * which can cause bugs, as they may expect bigger size of the
     * subgroup than we choose for the execution.
     */
-   if (instance->assume_full_subgroups &&
+   if (instance->drirc.debug.assume_full_subgroups &&
        info->uses_wide_subgroup_intrinsics &&
        info->api_subgroup_size == BRW_SUBGROUP_SIZE &&
        local_size &&
@@ -885,7 +904,7 @@ anv_fixup_subgroup_size(struct anv_device *device, nir_shader *shader)
       info->min_subgroup_size = BRW_SUBGROUP_SIZE;
    }
 
-   if (instance->assume_full_subgroups_with_barrier &&
+   if (instance->drirc.debug.assume_full_subgroups_with_barrier &&
        info->stage == MESA_SHADER_COMPUTE &&
        device->info->verx10 <= 125 &&
        info->uses_control_barrier &&
@@ -899,7 +918,7 @@ anv_fixup_subgroup_size(struct anv_device *device, nir_shader *shader)
    /* Similarly, sometimes games rely on the implicit synchronization of
     * the shared memory accesses, and choosing smaller subgroups than the game
     * expects will cause bugs. */
-   if (instance->assume_full_subgroups_with_shared_memory &&
+   if (instance->drirc.debug.assume_full_subgroups_with_shared_memory &&
        info->shared_size > 0 &&
        info->min_subgroup_size != info->max_subgroup_size &&
        local_size &&
@@ -932,336 +951,98 @@ anv_fixup_subgroup_size(struct anv_device *device, nir_shader *shader)
 }
 
 static void
-anv_shader_compile_vs(struct anv_device *device,
-                      void *mem_ctx,
-                      struct anv_shader_data *shader_data,
-                      char **error_str)
+populate_compile_params_tes(union brw_any_compile_params *params,
+                            struct anv_shader_data *shader_data,
+                            struct anv_shader_data *prev_shader_data)
 {
-   const struct brw_compiler *compiler = device->physical->compiler;
-   const struct intel_device_info *devinfo = compiler->devinfo;
-   nir_shader *nir = shader_data->info->nir;
-
-   shader_data->num_stats = 1;
-
-   struct brw_compile_vs_params params = {
-      .base = {
-         .nir = nir,
-         .stats = shader_data->stats,
-         .log_data = device,
-         .mem_ctx = mem_ctx,
-         .source_hash = shader_data->source_hash,
-         .archiver = shader_data->archiver,
-      },
-      .key = &shader_data->key.vs,
-      .prog_data = &shader_data->prog_data.vs,
-   };
-
-   if (intel_use_jay(devinfo, nir->info.stage)) {
-      struct jay_shader_bin *bin =
-         jay_compile(devinfo, mem_ctx, nir,
-                     (union brw_any_prog_data *) params.prog_data,
-                     (union brw_any_prog_key *) params.key);
-
-      shader_data->code = (void *) bin->kernel;
-   } else {
-      shader_data->code = (void *) brw_compile_vs(compiler, &params);
+   if (prev_shader_data) {
+      shader_data->key.tes.inputs_read =
+         prev_shader_data->info->nir->info.outputs_written;
+      shader_data->key.tes.patch_inputs_read =
+         prev_shader_data->info->nir->info.patch_outputs_written;
    }
 
-   *error_str = params.base.error_str;
-}
-
-static void
-anv_shader_compile_tcs(struct anv_device *device,
-                       void *mem_ctx,
-                       struct anv_shader_data *shader_data,
-                       char **error_str)
-{
-   const struct brw_compiler *compiler = device->physical->compiler;
-   nir_shader *nir = shader_data->info->nir;
-
-   shader_data->key.tcs.outputs_written = nir->info.outputs_written;
-   shader_data->key.tcs.patch_outputs_written = nir->info.patch_outputs_written;
-
-   shader_data->num_stats = 1;
-
-   struct brw_compile_tcs_params params = {
-      .base = {
-         .nir = nir,
-         .stats = shader_data->stats,
-         .log_data = device,
-         .mem_ctx = mem_ctx,
-         .source_hash = shader_data->source_hash,
-         .archiver = shader_data->archiver,
-      },
-      .key = &shader_data->key.tcs,
-      .prog_data = &shader_data->prog_data.tcs,
-   };
-
-   shader_data->code = (void *)brw_compile_tcs(compiler, &params);
-   *error_str = params.base.error_str;
-}
-
-static void
-anv_shader_compile_tes(struct anv_device *device,
-                       void *mem_ctx,
-                       struct anv_shader_data *tes_shader_data,
-                       struct anv_shader_data *tcs_shader_data,
-                       char **error_str)
-{
-   const struct brw_compiler *compiler = device->physical->compiler;
-   nir_shader *nir = tes_shader_data->info->nir;
-
-   if (tcs_shader_data) {
-      tes_shader_data->key.tes.inputs_read =
-         tcs_shader_data->info->nir->info.outputs_written;
-      tes_shader_data->key.tes.patch_inputs_read =
-         tcs_shader_data->info->nir->info.patch_outputs_written;
-   }
-
-   tes_shader_data->num_stats = 1;
-
-   struct brw_compile_tes_params params = {
-      .base = {
-         .nir = nir,
-         .stats = tes_shader_data->stats,
-         .log_data = device,
-         .mem_ctx = mem_ctx,
-         .source_hash = tes_shader_data->source_hash,
-         .archiver = tes_shader_data->archiver,
-      },
-      .key = &tes_shader_data->key.tes,
-      .prog_data = &tes_shader_data->prog_data.tes,
-      .input_vue_map = tcs_shader_data ?
-                       &tcs_shader_data->prog_data.tcs.base.vue_map : NULL,
-   };
-
-   tes_shader_data->code = (void *)brw_compile_tes(compiler, &params);
-   *error_str = params.base.error_str;
-}
-
-static void
-anv_shader_compile_gs(struct anv_device *device,
-                      void *mem_ctx,
-                      struct anv_shader_data *shader_data,
-                      char **error_str)
-{
-   const struct brw_compiler *compiler = device->physical->compiler;
-   nir_shader *nir = shader_data->info->nir;
-
-   shader_data->num_stats = 1;
-
-   struct brw_compile_gs_params params = {
-      .base = {
-         .nir = nir,
-         .stats = shader_data->stats,
-         .log_data = device,
-         .mem_ctx = mem_ctx,
-         .source_hash = shader_data->source_hash,
-         .archiver = shader_data->archiver,
-      },
-      .key = &shader_data->key.gs,
-      .prog_data = &shader_data->prog_data.gs,
-   };
-
-   shader_data->code = (void *)brw_compile_gs(compiler, &params);
-   *error_str = params.base.error_str;
-}
-
-static void
-anv_shader_compile_task(struct anv_device *device,
-                        void *mem_ctx,
-                        struct anv_shader_data *shader_data,
-                        char **error_str)
-{
-   const struct brw_compiler *compiler = device->physical->compiler;
-   nir_shader *nir = shader_data->info->nir;
-
-   shader_data->num_stats = 1;
-
-   struct brw_compile_task_params params = {
-      .base = {
-         .nir = nir,
-         .stats = shader_data->stats,
-         .log_data = device,
-         .mem_ctx = mem_ctx,
-         .source_hash = shader_data->source_hash,
-         .archiver = shader_data->archiver,
-      },
-      .key = &shader_data->key.task,
-      .prog_data = &shader_data->prog_data.task,
-   };
-
-   shader_data->code = (void *)brw_compile_task(compiler, &params);
-   *error_str = params.base.error_str;
+   params->tes.input_vue_map = prev_shader_data ?
+                               &prev_shader_data->prog_data.tcs.base.vue_map :
+                               NULL;
 }
 
 static nir_def *
-mesh_load_provoking_vertex(nir_builder *b, void *data)
+wa_18019110168_load_provoking_vertex(nir_builder *b, void *data)
 {
    const struct anv_pipeline_bind_map *bind_map = data;
+   nir_def *val = NULL;
 
    for (uint32_t i = 0; i < bind_map->inline_dwords_count; i++) {
-      if (bind_map->inline_dwords[i] == anv_drv_const_dword(gfx.mesh_provoking_vertex)) {
-         return nir_load_inline_data_intel(
-            b, 1, 16, nir_imm_int(b, 0),
-            .base = i * 4 + anv_drv_const_offset(gfx.mesh_provoking_vertex) % 4);
-      }
-   }
-
-   return nir_load_push_data_intel(b, 1, 16, nir_imm_int(b, 0),
-                                   .base = anv_drv_const_offset(gfx.mesh_provoking_vertex) -
-                                           bind_map->push_ranges[0].start,
-                                   .range = anv_drv_const_size(gfx.mesh_provoking_vertex));
-}
-
-static void
-anv_shader_compile_mesh(struct anv_device *device,
-                        void *mem_ctx,
-                        struct anv_shader_data *mesh_shader_data,
-                        struct anv_shader_data *task_shader_data,
-                        char **error_str)
-{
-   const struct brw_compiler *compiler = device->physical->compiler;
-   nir_shader *nir = mesh_shader_data->info->nir;
-
-   mesh_shader_data->num_stats = 1;
-
-   struct brw_compile_mesh_params params = {
-      .base = {
-         .nir = nir,
-         .stats = mesh_shader_data->stats,
-         .log_data = device,
-         .mem_ctx = mem_ctx,
-         .source_hash = mesh_shader_data->source_hash,
-         .archiver = mesh_shader_data->archiver,
-      },
-      .key = &mesh_shader_data->key.mesh,
-      .prog_data = &mesh_shader_data->prog_data.mesh,
-      .tue_map = task_shader_data ?
-                 &task_shader_data->prog_data.task.map :
-                 NULL,
-      .load_provoking_vertex = mesh_load_provoking_vertex,
-      .load_provoking_vertex_data = (void *)&mesh_shader_data->bind_map,
-   };
-
-   mesh_shader_data->code = (void *)brw_compile_mesh(compiler, &params);
-   *error_str = params.base.error_str;
-}
-
-static void
-anv_shader_compile_fs(struct anv_device *device,
-                      void *mem_ctx,
-                      struct anv_shader_data *shader_data,
-                      const struct vk_graphics_pipeline_state *state,
-                      char **error_str)
-{
-   const struct brw_compiler *compiler = device->physical->compiler;
-   const struct intel_device_info *devinfo = compiler->devinfo;
-   nir_shader *nir = shader_data->info->nir;
-
-   /* When using Primitive Replication for multiview, each view gets its own
-    * position slot.
-    */
-   uint32_t pos_slots = shader_data->use_primitive_replication ?
-      MAX2(1, util_bitcount(shader_data->key.base.view_mask)) : 1;
-
-   struct intel_vue_map prev_vue_map;
-   brw_compute_vue_map(compiler->devinfo,
-                       &prev_vue_map,
-                       nir->info.inputs_read,
-                       nir->info.separate_shader,
-                       pos_slots);
-
-   struct brw_compile_fs_params params = {
-      .base = {
-         .nir = nir,
-         .stats = shader_data->stats,
-         .log_data = device,
-         .mem_ctx = mem_ctx,
-         .source_hash = shader_data->source_hash,
-         .archiver = shader_data->archiver,
-      },
-      .key = &shader_data->key.fs,
-      .prog_data = &shader_data->prog_data.fs,
-      .mue_map = shader_data->mue_map,
-
-      .allow_spilling = true,
-      .max_polygons = UCHAR_MAX,
-   };
-
-   if (intel_use_jay(devinfo, nir->info.stage)) {
-      struct jay_shader_bin *bin =
-         jay_compile(devinfo, mem_ctx, nir,
-                     (union brw_any_prog_data *) params.prog_data,
-                     (union brw_any_prog_key *) params.key);
-
-      shader_data->code = (void *) bin->kernel;
-   } else {
-      shader_data->code = (void *) brw_compile_fs(compiler, &params);
-   }
-
-   *error_str = params.base.error_str;
-
-   shader_data->num_stats = (uint32_t)!!shader_data->prog_data.fs.dispatch_multi +
-                            (uint32_t)shader_data->prog_data.fs.dispatch_8 +
-                            (uint32_t)shader_data->prog_data.fs.dispatch_16 +
-                            (uint32_t)shader_data->prog_data.fs.dispatch_32;
-   assert(shader_data->num_stats <= ARRAY_SIZE(shader_data->stats));
-
-   /* Update the push constant padding range now that we know the amount of
-    * per-primitive data delivered in the payload.
-    */
-   for (unsigned i = 0; i < ARRAY_SIZE(shader_data->bind_map.push_ranges); i++) {
-      if (shader_data->bind_map.push_ranges[i].set == ANV_DESCRIPTOR_SET_PER_PRIM_PADDING) {
-         shader_data->bind_map.push_ranges[i].length = MAX2(
-            shader_data->prog_data.fs.num_per_primitive_inputs / 2,
-            shader_data->bind_map.push_ranges[i].length);
+      if (bind_map->inline_dwords[i] == anv_drv_const_dword(gfx.wa_18019110168)) {
+         val = nir_load_inline_data_intel(
+            b, 1, 32, nir_imm_int(b, 0),
+            .base = i * 4);
          break;
       }
    }
+
+   if (val == NULL) {
+      val = nir_load_push_data_intel(b, 1, 32, nir_imm_int(b, 0),
+                                     .base = anv_drv_const_offset(gfx.wa_18019110168) -
+                                             bind_map->push_ranges[0].start * 32,
+                                     .range = anv_drv_const_size(gfx.wa_18019110168));
+   }
+
+   return nir_iand_imm(b, val, ANV_WA_18019110168_PROVOKING_VERTEX_MASK);
+}
+
+static nir_def *
+wa_18019110168_load_per_primitive_remap_table(nir_builder *b, void *data)
+{
+   const struct anv_pipeline_bind_map *bind_map = data;
+   nir_def *val = NULL;
+
+   val = nir_load_push_data_intel(b, 1, 32, nir_imm_int(b, 0),
+                                  .base = anv_drv_const_offset(gfx.wa_18019110168) -
+                                          bind_map->push_ranges[0].start * 32,
+                                  .range = anv_drv_const_size(gfx.wa_18019110168));
+
+   return nir_iand_imm(b, val, ANV_WA_18019110168_PER_PRIMITIVE_REMAP_TABLE_OFFSET_MASK);
 }
 
 static void
-anv_shader_compile_cs(struct anv_device *device,
-                      void *mem_ctx,
-                      struct anv_shader_data *shader_data,
-                      char **error_str)
+populate_compile_params_mesh(union brw_any_compile_params *params,
+                             struct anv_shader_data *shader_data,
+                             struct anv_shader_data *prev_shader_data)
 {
-   const struct brw_compiler *compiler = device->physical->compiler;
-   const struct intel_device_info *devinfo = compiler->devinfo;
-   nir_shader *nir = shader_data->info->nir;
+   params->mesh.tue_map = prev_shader_data ?
+                          &prev_shader_data->prog_data.task.map : NULL;
+   params->mesh.wa_18019110168_load_provoking_vertex =
+      wa_18019110168_load_provoking_vertex;
+   params->mesh.wa_18019110168_data = (void *)&shader_data->bind_map;
+}
 
-   shader_data->num_stats = 1;
-
-   struct brw_compile_cs_params params = {
-      .base = {
-         .nir = nir,
-         .stats = shader_data->stats,
-         .log_data = device,
-         .mem_ctx = mem_ctx,
-         .source_hash = shader_data->source_hash,
-         .archiver = shader_data->archiver,
-      },
-      .key = &shader_data->key.cs,
-      .prog_data = &shader_data->prog_data.cs,
-   };
-
-   if (intel_use_jay(devinfo, nir->info.stage)) {
-      struct jay_shader_bin *bin = jay_compile(devinfo, mem_ctx, nir,
-                             (union brw_any_prog_data*)params.prog_data,
-                             (union brw_any_prog_key*)params.key);
-
-       shader_data->code = (void*)bin->kernel;
-       shader_data->stats[0] = bin->stats;
-
-       params.prog_data->local_size[0] = nir->info.workgroup_size[0];
-       params.prog_data->local_size[1] = nir->info.workgroup_size[1];
-       params.prog_data->local_size[2] = nir->info.workgroup_size[2];
-   } else {
-       shader_data->code = (void*)brw_compile_cs(compiler, &params);
+static void
+populate_compile_params_fs(union brw_any_compile_params *params,
+                           struct anv_shader_data *shader_data,
+                           struct anv_shader_data *prev_shader_data)
+{
+   if (prev_shader_data) {
+      switch (prev_shader_data->info->stage) {
+      case MESA_SHADER_VERTEX:
+      case MESA_SHADER_TESS_EVAL:
+      case MESA_SHADER_GEOMETRY:
+         params->fs.vue_map = &prev_shader_data->prog_data.vue.vue_map;
+         break;
+      case MESA_SHADER_MESH:
+         params->fs.mue_map = shader_data->mue_map;
+         break;
+      default:
+         break;
+      }
    }
 
-   *error_str = params.base.error_str;
+   params->fs.max_polygons = UCHAR_MAX;
+
+   params->fs.wa_18019110168_load_per_primitive_remap_table_offset =
+      wa_18019110168_load_per_primitive_remap_table;
+   params->fs.wa_18019110168_data = (void *)&shader_data->bind_map;
 }
 
 static bool
@@ -1274,14 +1055,12 @@ should_remat_cb(nir_instr *instr, void *data)
 }
 
 static void
-anv_shader_compile_bs(struct anv_device *device,
-                      void *mem_ctx,
-                      struct anv_shader_data *shader_data,
-                      char **error_str)
+populate_compile_params_bs(union brw_any_compile_params *params,
+                           const struct intel_device_info *devinfo,
+                           void *mem_ctx,
+                           struct anv_shader_data *shader_data)
 {
-   const struct brw_compiler *compiler = device->physical->compiler;
    nir_shader *nir = shader_data->info->nir;
-   const struct intel_device_info *devinfo = compiler->devinfo;
 
    struct brw_nir_lower_shader_calls_state lowering_state = {
       .devinfo = devinfo,
@@ -1291,12 +1070,15 @@ anv_shader_compile_bs(struct anv_device *device,
    nir_shader **resume_shaders = NULL;
    uint32_t num_resume_shaders = 0;
    if (nir->info.stage != MESA_SHADER_COMPUTE) {
+      struct brw_nir_vectorize_mem_cb_data vectorize_cb_data = {
+         .devinfo = devinfo,
+      };
       const nir_lower_shader_calls_options opts = {
          .address_format = nir_address_format_64bit_global,
          .stack_alignment = BRW_BTD_STACK_ALIGN,
          .localized_loads = true,
          .vectorizer_callback = brw_nir_should_vectorize_mem,
-         .vectorizer_data = NULL,
+         .vectorizer_data = &vectorize_cb_data,
          .should_remat_callback = should_remat_cb,
       };
 
@@ -1315,25 +1097,8 @@ anv_shader_compile_bs(struct anv_device *device,
                &shader_data->key.base, devinfo);
    }
 
-   shader_data->num_stats = 1;
-
-   struct brw_compile_bs_params params = {
-      .base = {
-         .nir = nir,
-         .stats = shader_data->stats,
-         .log_data = device,
-         .mem_ctx = mem_ctx,
-         .source_hash = shader_data->source_hash,
-         .archiver = shader_data->archiver,
-      },
-      .key = &shader_data->key.bs,
-      .prog_data = &shader_data->prog_data.bs,
-      .num_resume_shaders = num_resume_shaders,
-      .resume_shaders = resume_shaders,
-   };
-
-   shader_data->code = (void *)brw_compile_bs(compiler, &params);
-   *error_str = params.base.error_str;
+   params->bs.num_resume_shaders = num_resume_shaders;
+   params->bs.resume_shaders = resume_shaders;
 }
 
 static void
@@ -1356,7 +1121,9 @@ anv_shader_compute_fragment_rts(const struct intel_device_info *devinfo,
    assert(shader_data->bind_map.surface_count == 0);
 
    nir_shader *nir = shader_data->info->nir;
-   const uint64_t rt_mask = nir->info.outputs_written >> FRAG_RESULT_DATA0;
+   const uint64_t rt_mask =
+      (nir->info.outputs_written &
+       ~BITFIELD_BIT(FRAG_RESULT_DUAL_SRC_BLEND)) >> FRAG_RESULT_DATA0;
    const unsigned num_rts = util_last_bit64(rt_mask);
    struct anv_pipeline_binding rt_bindings[MAX_RTS];
 
@@ -1401,6 +1168,8 @@ accept_64bit_atomic_cb(const nir_intrinsic_instr *intrin, const void *data)
 {
    return (intrin->intrinsic == nir_intrinsic_image_atomic ||
            intrin->intrinsic == nir_intrinsic_image_atomic_swap ||
+           intrin->intrinsic == nir_intrinsic_image_heap_atomic ||
+           intrin->intrinsic == nir_intrinsic_image_heap_atomic_swap ||
            intrin->intrinsic == nir_intrinsic_image_deref_atomic ||
            intrin->intrinsic == nir_intrinsic_image_deref_atomic_swap) &&
           intrin->def.bit_size == 64;
@@ -1413,8 +1182,10 @@ lower_non_tg4_non_uniform_offsets(const nir_tex_instr *tex,
    /* HW cannot deal with divergent surfaces/samplers */
    if (tex->src[index].src_type == nir_tex_src_texture_offset ||
        tex->src[index].src_type == nir_tex_src_texture_handle ||
+       tex->src[index].src_type == nir_tex_src_texture_heap_offset ||
        tex->src[index].src_type == nir_tex_src_sampler_offset ||
-       tex->src[index].src_type == nir_tex_src_sampler_handle)
+       tex->src[index].src_type == nir_tex_src_sampler_handle ||
+       tex->src[index].src_type == nir_tex_src_sampler_heap_offset)
       return true;
 
    if (tex->src[index].src_type == nir_tex_src_offset) {
@@ -1504,21 +1275,28 @@ anv_shader_lower_nir(struct anv_device *device,
    nir_shader *nir = shader_data->info->nir;
 
    /* Workaround for apps that need fp64 support */
-   if (device->fp64_nir) {
-      NIR_PASS(_, nir, nir_lower_doubles, device->fp64_nir,
+   if (!devinfo->has_64bit_float && (nir->info.bit_sizes_float & 64) &&
+       pdevice->instance->drirc.debug.fp64_emu) {
+      nir_shader *fp64_nir = anv_ensure_fp64_shader(device);
+
+      NIR_PASS(_, nir, nir_lower_doubles, fp64_nir,
                nir->options->lower_doubles_options);
 
       bool fp_conv = false;
       NIR_PASS(fp_conv, nir, nir_lower_int64_float_conversions);
       if (fp_conv) {
          NIR_PASS(_, nir, nir_opt_algebraic);
-         NIR_PASS(_, nir, nir_lower_doubles, device->fp64_nir,
+         NIR_PASS(_, nir, nir_lower_doubles, fp64_nir,
                   nir->options->lower_doubles_options);
       }
    }
 
+   /* Workaround for R11G11B10 atomic accesses on Xe2+ */
+   if (devinfo->ver >= 20 && pdevice->instance->drirc.debug.r11g11b10_atomic_swap_wa)
+      NIR_PASS(_, nir, anv_nir_xe2_r11g11b10_atomic_swap_wa);
+
    if (nir->info.stage == MESA_SHADER_COMPUTE &&
-       pdevice->instance->large_workgroup_non_coherent_image_workaround) {
+       pdevice->instance->drirc.debug.large_workgroup_non_coherent_image_workaround) {
       const unsigned local_size = nir->info.workgroup_size[0] *
                                   nir->info.workgroup_size[1] *
                                   nir->info.workgroup_size[2];
@@ -1621,7 +1399,7 @@ anv_shader_lower_nir(struct anv_device *device,
                .lower_loads = true,
                .lower_stores_64bit = true,
                .lower_loads_without_formats =
-                  pdevice->instance->emulate_read_without_format,
+                  pdevice->instance->drirc.debug.read_without_format_emu,
             });
 
    if (lower_64bit_atomics) {
@@ -1634,10 +1412,23 @@ anv_shader_lower_nir(struct anv_device *device,
                pdevice->isl_dev.shader_tiling);
    }
 
-   NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global,
-            nir_address_format_64bit_global);
+   /* Lower push constants variables prior to global realignment for CBV
+    * resources, it makes identifying a 64bit pointer from the push constants
+    * easier.
+    */
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const,
             nir_address_format_32bit_offset);
+
+   /* Realign pointers to CBV on stages that can promote to push buffers. */
+   if (pdevice->instance->drirc.perf.promote_cbv_push_buffer &&
+       nir->info.stage <= MESA_SHADER_FRAGMENT) {
+      /* Cleanup for the analysis, we don't want any ALU */
+      cleanup_nir(nir);
+      NIR_PASS(_, nir, anv_nir_realign_cbv);
+   }
+
+   NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global,
+            nir_address_format_64bit_global);
 
    NIR_PASS(_, nir, brw_nir_lower_ray_queries, &pdevice->info);
 
@@ -1648,7 +1439,6 @@ anv_shader_lower_nir(struct anv_device *device,
    /* Need to have render targets placed first in the bind_map */
    if (nir->info.stage == MESA_SHADER_FRAGMENT)
       anv_shader_compute_fragment_rts(devinfo, state, shader_data);
-
 
    uint32_t dynamic_descriptors_offset = 0;
    uint32_t dynamic_descriptors_offsets[MAX_SETS] = {};
@@ -1663,14 +1453,33 @@ anv_shader_lower_nir(struct anv_device *device,
       }
    }
 
-   /* Apply the actual pipeline layout to UBOs, SSBOs, and textures */
-   NIR_PASS(_, nir, anv_nir_apply_pipeline_layout,
+   /* Apply the actual layout to UBOs, SSBOs, and textures */
+   if (shader_data->info->flags & VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT) {
+      NIR_PASS(_, nir, anv_nir_lower_descriptor_heap, device,
+               shader_data->info->embedded_sampler_count,
+               shader_data->info->embedded_samplers,
+               &shader_data->bind_map);
+   } else {
+      NIR_PASS(_, nir, anv_nir_apply_pipeline_layout,
                pdevice, shader_data->key.base.robust_flags,
                set_layouts, set_layout_count,
                (shader_data->info->flags &
-                VK_SHADER_CREATE_INDEPENDENT_SETS_BIT_MESA) ? NULL:
+                VK_SHADER_CREATE_INDEPENDENT_SETS_BIT_KHR) ? NULL :
                dynamic_descriptors_offsets,
+               shader_data->info->flags & VK_SHADER_CREATE_INDIRECT_BINDABLE_BIT_EXT,
                &shader_data->bind_map, &shader_data->push_map, mem_ctx);
+   }
+
+   /* Now that we're done computing the surface and sampler tables of the bind
+    * map, hash them. This lets us quickly determine if the actual mapping has
+    * changed and not just a no-op pipeline change.
+    */
+   _mesa_blake3_compute(shader_data->bind_map.surface_to_descriptor,
+                        shader_data->bind_map.surface_count * sizeof(struct anv_pipeline_binding),
+                        shader_data->bind_map.surface_blake3);
+   _mesa_blake3_compute(shader_data->bind_map.sampler_to_descriptor,
+                        shader_data->bind_map.sampler_count * sizeof(struct anv_pipeline_binding),
+                        shader_data->bind_map.sampler_blake3);
 
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo,
             anv_nir_ubo_addr_format(pdevice, shader_data->key.base.robust_flags));
@@ -1696,7 +1505,7 @@ anv_shader_lower_nir(struct anv_device *device,
 
    const bool lower_non_uniform_texture_offsets = device->info->ver < 20;
 
-   enum nir_lower_non_uniform_access_type lower_non_uniform_access_types =
+   const enum nir_lower_non_uniform_access_type lower_non_uniform_access_types =
       nir_lower_non_uniform_texture_access |
       nir_lower_non_uniform_texture_query |
       nir_lower_non_uniform_image_access |
@@ -1710,10 +1519,8 @@ anv_shader_lower_nir(struct anv_device *device,
     * need to lower those texture messages in the same way we lower
     * non-uniform texture/sampler handles.
     */
-   if (lower_non_uniform_texture_offsets) {
-      nir_foreach_function_impl(impl, nir)
-         nir_metadata_require(impl, nir_metadata_divergence);
-   }
+   if (lower_non_uniform_texture_offsets)
+      nir_divergence_analysis(nir);
 
    /* In practice, most shaders do not have non-uniform-qualified
     * accesses (see
@@ -1737,6 +1544,10 @@ anv_shader_lower_nir(struct anv_device *device,
       NIR_PASS(_, nir, intel_nir_cleanup_resource_intel);
       NIR_PASS(_, nir, nir_opt_dce);
    }
+
+   if (nir->info.stage == MESA_SHADER_FRAGMENT &&
+       pdevice->instance->drirc.debug.fs_sampler_undef_derivatives_workaround)
+      NIR_PASS(_, nir, brw_nir_apply_sampler_undef_derivatives_workaround);
 
    if (mesa_shader_stage_uses_workgroup(nir->info.stage)) {
       NIR_PASS(_, nir, nir_lower_vars_to_explicit_types,
@@ -1789,8 +1600,10 @@ anv_shader_lower_nir(struct anv_device *device,
                &shader_data->prog_data.base,
                &shader_data->bind_map, &shader_data->push_map);
 
-   NIR_PASS(_, nir, anv_nir_lower_resource_intel, pdevice,
-               shader_data->bind_map.layout_type);
+   if (!(shader_data->info->flags & VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT)) {
+      NIR_PASS(_, nir, anv_nir_lower_resource_intel, pdevice,
+                  shader_data->bind_map.layout_type);
+   }
 
    shader_data->push_desc_info.push_set_buffer =
       anv_nir_loads_push_desc_buffer(
@@ -2114,7 +1927,8 @@ anv_shader_compile(struct vk_device *vk_device,
       struct anv_shader_data *shader_data = &shaders_data[s];
       struct vk_shader_compile_info *info = shader_data->info;
 
-      shader_data->source_hash = ((uint32_t*)info->nir->info.source_blake3)[0];
+      shader_data->source_hash = ((uint64_t*)info->nir->info.source_blake3)[0];
+      shader_data->key_size = brw_prog_key_size(info->stage);
 
       for (uint32_t i = 0; i < info->set_layout_count; i++) {
          shader_data->dynamic_descriptors[i] =
@@ -2133,7 +1947,8 @@ anv_shader_compile(struct vk_device *vk_device,
          rzalloc_array(mem_ctx, struct anv_pipeline_binding, 256);
       shader_data->bind_map.embedded_sampler_to_binding =
          rzalloc_array(mem_ctx, struct anv_pipeline_embedded_sampler_binding,
-                       sets_layout_embedded_sampler_count(info));
+                       MAX2(sets_layout_embedded_sampler_count(info),
+                            info->embedded_sampler_count));
 
       shader_data->prog_data.base.stage = info->stage;
 
@@ -2233,35 +2048,47 @@ anv_shader_compile(struct vk_device *vk_device,
       struct anv_shader_data *prev_shader_data =
          s > 0 ? &shaders_data[s - 1] : NULL;
 
-      char *error_str = NULL;
+      const struct brw_compiler *compiler = device->physical->compiler;
+      const struct intel_device_info *devinfo = compiler->devinfo;
+      nir_shader *nir = shader_data->info->nir;
+
+      shader_data->num_stats = 1;
+
+      union brw_any_compile_params params = { 0 };
+      params.base = (struct brw_compile_params) {
+         .nir = nir,
+         .key = &shader_data->key.base,
+         .prog_data = &shader_data->prog_data.base,
+         .stats = shader_data->stats,
+         .log_data = device,
+         .mem_ctx = mem_ctx,
+         .source_hash = shader_data->source_hash,
+         .archiver = shader_data->archiver,
+      };
+      struct brw_compile_params *compile_params = &params.base;
+
       switch (shader_data->info->stage) {
       case MESA_SHADER_VERTEX:
-         anv_shader_compile_vs(device, mem_ctx, shader_data, &error_str);
+      case MESA_SHADER_GEOMETRY:
+      case MESA_SHADER_TASK:
+      case MESA_SHADER_COMPUTE:
+         /* Nothing to do. */
          break;
       case MESA_SHADER_TESS_CTRL:
-         anv_shader_compile_tcs(device, mem_ctx, shader_data, &error_str);
+         shader_data->key.tcs.outputs_written = nir->info.outputs_written;
+         shader_data->key.tcs.patch_outputs_written =
+            nir->info.patch_outputs_written;
          break;
       case MESA_SHADER_TESS_EVAL:
-         anv_shader_compile_tes(device, mem_ctx,
-                                &shaders_data[s], prev_shader_data,
-                                &error_str);
-         break;
-      case MESA_SHADER_GEOMETRY:
-         anv_shader_compile_gs(device, mem_ctx, shader_data, &error_str);
-         break;
-      case MESA_SHADER_TASK:
-         anv_shader_compile_task(device, mem_ctx, shader_data, &error_str);
+         populate_compile_params_tes(&params, shader_data,
+                                     prev_shader_data);
          break;
       case MESA_SHADER_MESH:
-         anv_shader_compile_mesh(device, mem_ctx,
-                                 &shaders_data[s], prev_shader_data,
-                                 &error_str);
+         populate_compile_params_mesh(&params, shader_data,
+                                      prev_shader_data);
          break;
       case MESA_SHADER_FRAGMENT:
-         anv_shader_compile_fs(device, mem_ctx, shader_data, state, &error_str);
-         break;
-      case MESA_SHADER_COMPUTE:
-         anv_shader_compile_cs(device, mem_ctx, shader_data, &error_str);
+         populate_compile_params_fs(&params, shader_data, prev_shader_data);
          break;
       case MESA_SHADER_RAYGEN:
       case MESA_SHADER_ANY_HIT:
@@ -2269,15 +2096,58 @@ anv_shader_compile(struct vk_device *vk_device,
       case MESA_SHADER_MISS:
       case MESA_SHADER_INTERSECTION:
       case MESA_SHADER_CALLABLE:
-         anv_shader_compile_bs(device, mem_ctx, shader_data, &error_str);
+         populate_compile_params_bs(&params, devinfo, mem_ctx,
+                                    shader_data);
          break;
       default:
          UNREACHABLE("Invalid graphics shader stage");
       }
 
+      if (intel_use_jay(devinfo, nir->info.stage)) {
+         struct jay_shader_bin *bin =
+            jay_compile(devinfo, mem_ctx, nir,
+                        (union brw_any_prog_data *)compile_params->prog_data,
+                        (union brw_any_prog_key *)compile_params->key,
+                        shader_data->archiver);
+         shader_data->code = bin->kernel;
+         shader_data->stats[0] = bin->stats;
+
+         if (mesa_shader_stage_uses_workgroup(nir->info.stage)) {
+            struct brw_cs_prog_data *prog_data =
+               (struct brw_cs_prog_data *)compile_params->prog_data;
+            prog_data->local_size[0] = nir->info.workgroup_size[0];
+            prog_data->local_size[1] = nir->info.workgroup_size[1];
+            prog_data->local_size[2] = nir->info.workgroup_size[2];
+         }
+      } else {
+         shader_data->code = brw_compile(compiler, compile_params);
+      }
+
+      if (shader_data->info->stage == MESA_SHADER_FRAGMENT) {
+         shader_data->num_stats =
+            (uint32_t)!!shader_data->prog_data.fs.dispatch_multi +
+            (uint32_t)shader_data->prog_data.fs.dispatch_8 +
+            (uint32_t)shader_data->prog_data.fs.dispatch_16 +
+            (uint32_t)shader_data->prog_data.fs.dispatch_32;
+         assert(shader_data->num_stats <= ARRAY_SIZE(shader_data->stats));
+
+         /* Update the push constant padding range now that we know the amount
+          * of per-primitive data delivered in the payload.
+          */
+         for (unsigned i = 0; i < ARRAY_SIZE(shader_data->bind_map.push_ranges); i++) {
+            if (shader_data->bind_map.push_ranges[i].set ==
+                ANV_DESCRIPTOR_SET_PER_PRIM_PADDING) {
+               shader_data->bind_map.push_ranges[i].length = MAX2(
+                  shader_data->prog_data.fs.num_per_primitive_inputs / 2,
+                  shader_data->bind_map.push_ranges[i].length);
+               break;
+            }
+         }
+      }
+
       if (shader_data->code == NULL) {
-         if (error_str)
-            result = vk_errorf(device, VK_ERROR_UNKNOWN, "%s", error_str);
+         if (compile_params->error_str)
+            result = vk_errorf(device, VK_ERROR_UNKNOWN, "%s", compile_params->error_str);
          else
             result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
          goto end;

@@ -16,15 +16,8 @@
 
 struct kk_queue {
    struct vk_queue vk;
-   /* We require one queue per command buffer no to lock. Main will handle all
-    * work, but if we are in a render pass and we require to massage inputs,
-    * then pre_gfx will be used to submit compute work that handles that so we
-    * don't have to break the render encoder. */
-   struct {
-      struct mtl_command_queue *mtl_handle;
-   } main, pre_gfx;
-
-   mtl_fence *wait_fence;
+   struct mtl_command_queue *mtl_handle;
+   mtl_commit_options *commit_options;
 };
 
 static inline struct kk_device *

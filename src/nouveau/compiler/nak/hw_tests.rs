@@ -154,6 +154,7 @@ impl<'a> TestShaderBuilder<'a> {
         self.push_op(OpLd {
             dst: dst.clone().into(),
             addr: self.data_addr.clone().into(),
+            uniform_addr: Src::ZERO,
             pred: true.into(),
             offset: offset.into(),
             access: access,
@@ -178,6 +179,7 @@ impl<'a> TestShaderBuilder<'a> {
         assert!(data.comps() == comps);
         self.push_op(OpSt {
             addr: self.data_addr.clone().into(),
+            uniform_addr: Src::ZERO,
             data: data.into(),
             offset: offset.into(),
             access: access,
@@ -201,7 +203,7 @@ impl<'a> TestShaderBuilder<'a> {
         let f = Function {
             ssa_alloc: self.alloc,
             phi_alloc: PhiAllocator::new(),
-            blocks: cfg.as_cfg(),
+            blocks: cfg.as_cfg(true),
         };
 
         let cs_info = ComputeShaderInfo {
@@ -1734,6 +1736,7 @@ fn test_op_ldsm() {
     let offset = b.imul(lane_id.into(), 16.into());
     b.push_op(OpSt {
         addr: offset.into(),
+        uniform_addr: Src::ZERO,
         data: input.into(),
         offset: 0,
         access: MemAccess {
@@ -1755,6 +1758,7 @@ fn test_op_ldsm() {
         mat_size: LdsmSize::M8N8,
         mat_count: 4,
         addr: addr.into(),
+        uniform_addr: Src::ZERO,
         offset: 0,
     });
     b.st_test_data(16, MemType::B128, res);
@@ -1867,24 +1871,24 @@ fn test_render_enable() -> io::Result<()> {
         let mut p = NvPush::new();
 
         let in_gpu_addr = bo.addr + in_offset;
-        p.push_method(cl90b5::SetRenderEnableA {
+        p.push_mthd(cl90b5::SetRenderEnableA {
             upper: (in_gpu_addr >> 32) as u32,
         });
-        p.push_method(cl90b5::SetRenderEnableB {
+        p.push_mthd(cl90b5::SetRenderEnableB {
             lower: in_gpu_addr as u32,
         });
-        p.push_method(cl90b5::SetRenderEnableC { mode });
+        p.push_mthd(cl90b5::SetRenderEnableC { mode });
 
         let out_gpu_addr = bo.addr + out_offset;
-        p.push_method(cl90b5::OffsetOutUpper {
+        p.push_mthd(cl90b5::OffsetOutUpper {
             upper: (out_gpu_addr >> 32) as u32,
         });
-        p.push_method(cl90b5::OffsetOutLower {
+        p.push_mthd(cl90b5::OffsetOutLower {
             value: out_gpu_addr as u32,
         });
-        p.push_method(cl90b5::LineLengthIn { value: 1 });
-        p.push_method(cl90b5::SetRemapConstA { v: WRITE_VAL });
-        p.push_method(cl90b5::SetRemapComponents {
+        p.push_mthd(cl90b5::LineLengthIn { value: 1 });
+        p.push_mthd(cl90b5::SetRemapConstA { v: WRITE_VAL });
+        p.push_mthd(cl90b5::SetRemapComponents {
             component_size: cl90b5::SetRemapComponentsComponentSize::Four,
             dst_x: cl90b5::SetRemapComponentsDstX::ConstA,
             dst_y: cl90b5::SetRemapComponentsDstY::NoWrite,
@@ -1893,7 +1897,7 @@ fn test_render_enable() -> io::Result<()> {
             num_src_components: cl90b5::SetRemapComponentsNumSrcComponents::One,
             num_dst_components: cl90b5::SetRemapComponentsNumDstComponents::One,
         });
-        p.push_method(cl90b5::LaunchDma {
+        p.push_mthd(cl90b5::LaunchDma {
             data_transfer_type: cl90b5::LaunchDmaDataTransferType::NonPipelined,
             flush_enable: true,
             semaphore_type: cl90b5::LaunchDmaSemaphoreType::None,
@@ -1904,7 +1908,7 @@ fn test_render_enable() -> io::Result<()> {
             remap_enable: true,
         });
 
-        p.push_method(cl90b5::SetRenderEnableC {
+        p.push_mthd(cl90b5::SetRenderEnableC {
             mode: cl90b5::SetRenderEnableCMode::True,
         });
 
@@ -2087,4 +2091,33 @@ fn test_op_mufu_f16_down() {
             }
         }
     }
+}
+
+/// This test makes sure the float immediate encodes correctly with F2I, but
+/// also verifies expected behavior for converting NaN.
+#[test]
+fn test_op_f2i_immediate_nan() {
+    let run = &RunSingleton::get();
+
+    let mut b = TestShaderBuilder::new(&run.sm);
+    let dst = b.alloc_ssa(RegFile::GPR);
+    b.push_op(OpF2I {
+        dst: dst.into(),
+        src: f32::NAN.into(),
+        src_type: FloatType::F32,
+        dst_type: IntType::U32,
+        ftz: false,
+        rnd_mode: FRndMode::NearestEven,
+    });
+
+    b.st_test_data(0, MemType::B32, dst.into());
+
+    let bin = b.compile();
+
+    let mut data = vec![0u32];
+    run.run.run(&bin, &mut data).unwrap();
+
+    // TODO: Make the expected result depend on the QMD setting for
+    //       `FP32_F2I_NAN_BEHAVIOR`
+    assert!([0, 0x80000000].contains(&data[0]));
 }

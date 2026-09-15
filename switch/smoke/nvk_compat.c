@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <regex.h>
+#include <signal.h>
 
 #include <switch.h>
 

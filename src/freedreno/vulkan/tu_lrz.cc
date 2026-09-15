@@ -89,6 +89,7 @@ tu_lrz_disable_reason(struct tu_cmd_buffer *cmd, const char *reason) {
    cmd->state.rp.lrz_disabled_at_draw = cmd->state.rp.drawcall_count;
    perf_debug(cmd->device, "Disabling LRZ because '%s' at draw %u", reason,
               cmd->state.rp.lrz_disabled_at_draw);
+   trace_warning_lrz_disabled(&cmd->rp_trace, &cmd->draw_cs, cmd, reason);
 }
 
 void
@@ -104,6 +105,7 @@ tu_lrz_disable_write_for_rp(struct tu_cmd_buffer *cmd, const char *reason)
       cmd->device,
       "Disabling LRZ write for the rest of the RP because '%s' at draw %u",
       reason, cmd->state.rp.lrz_write_disabled_at_draw);
+   trace_warning_lrz_write_disabled(&cmd->rp_trace, &cmd->draw_cs, cmd, reason);
 }
 
 template <chip CHIP>
@@ -217,7 +219,7 @@ tu_lrz_init_state(struct tu_cmd_buffer *cmd,
                   const struct tu_image_view *view)
 {
    if (!view->image->lrz_layout.lrz_total_size) {
-      assert(!cmd->device->use_lrz || !vk_format_has_depth(att->format));
+      trace_warning_depth_image_no_lrz(&cmd->trace, &cmd->draw_cs, cmd);
       return;
    }
 
@@ -243,11 +245,15 @@ tu_lrz_init_state(struct tu_cmd_buffer *cmd,
     */
    if ((view->image->vk.create_flags &
         VK_IMAGE_CREATE_FRAGMENT_DENSITY_MAP_OFFSET_BIT_EXT) &&
-       !clears_depth)
+       !clears_depth) {
+      tu_lrz_disable_reason(cmd, "FRAGMENT_DENSITY_MAP_OFFSET_BIT attachment used without depth attachment clear");
       return;
+   }
 
-   if (!clears_depth && !att->load)
+   if (!clears_depth && !att->load) {
+      tu_lrz_disable_reason(cmd, "Depth attachment isn't loaded or cleared");
       return;
+   }
 
    cmd->state.lrz.valid = true;
    cmd->state.lrz.valid_at_start = true;
@@ -334,13 +340,21 @@ tu_lrz_begin_resumed_renderpass(struct tu_cmd_buffer *cmd)
       return;
    }
 
-   uint32_t a;
-   for (a = 0; a < cmd->state.pass->attachment_count; a++) {
-      if (cmd->state.attachments[a]->image->lrz_layout.lrz_total_size)
+   uint32_t a = VK_ATTACHMENT_UNUSED;
+   for (uint32_t subpass_idx = 0; subpass_idx < cmd->state.pass->subpass_count; subpass_idx++) {
+      const struct tu_subpass *subpass = &cmd->state.pass->subpasses[subpass_idx];
+
+      if (subpass->custom_resolve)
+         continue;
+
+      a = subpass->depth_stencil_attachment.attachment;
+
+      if (a != VK_ATTACHMENT_UNUSED && cmd->state.attachments[a]->image->lrz_layout.lrz_total_size) {
          break;
+      }
    }
 
-   if (a != cmd->state.pass->attachment_count) {
+   if (a != VK_ATTACHMENT_UNUSED) {
       const struct tu_render_pass_attachment *att = &cmd->state.pass->attachments[a];
       tu_lrz_init_state(cmd, att, cmd->state.attachments[a]);
       if (att->clear_mask & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT)) {
@@ -365,14 +379,26 @@ tu_lrz_begin_renderpass(struct tu_cmd_buffer *cmd)
    cmd->state.rp.lrz_write_disable_reason = NULL;
    cmd->state.rp.lrz_write_disabled_at_draw = 0;
 
-   int lrz_img_count = 0;
-   for (unsigned i = 0; i < pass->attachment_count; i++) {
-      if (cmd->state.attachments[i]->image->lrz_layout.lrz_total_size)
-         lrz_img_count++;
+   bool multiple_lrz_attachments = false;
+   uint32_t prev_depth_a = VK_ATTACHMENT_UNUSED;
+   for (uint32_t subpass_idx = 0; subpass_idx < cmd->state.pass->subpass_count; subpass_idx++) {
+      const struct tu_subpass *subpass = &cmd->state.pass->subpasses[subpass_idx];
+
+      if (subpass->custom_resolve)
+         continue;
+
+      uint32_t a = subpass->depth_stencil_attachment.attachment;
+
+      if (a != VK_ATTACHMENT_UNUSED && cmd->state.attachments[a]->image->lrz_layout.lrz_total_size) {
+         if (prev_depth_a != VK_ATTACHMENT_UNUSED && prev_depth_a != a) {
+            multiple_lrz_attachments = true;
+            break;
+         }
+         prev_depth_a = a;
+      }
    }
 
-   if (cmd->device->physical_device->info->props.has_lrz_dir_tracking &&
-       cmd->state.pass->subpass_count > 1 && lrz_img_count > 1) {
+   if (cmd->device->physical_device->info->props.has_lrz_dir_tracking && multiple_lrz_attachments) {
       /* Theoretically we could switch between LRZ buffers during the binning
        * and tiling passes, but it is untested and would add complexity for
        * presumably extremely rare case.
@@ -391,6 +417,16 @@ tu_lrz_begin_renderpass(struct tu_cmd_buffer *cmd)
        */
       memset(&cmd->state.lrz, 0, sizeof(cmd->state.lrz));
       return;
+   }
+
+   for (uint32_t subpass_idx = 0; subpass_idx < pass->subpass_count; subpass_idx++) {
+      const struct tu_subpass *subpass = &pass->subpasses[subpass_idx];
+      uint32_t a = subpass->depth_stencil_attachment.attachment;
+
+      if (subpass->custom_resolve && a != VK_ATTACHMENT_UNUSED) {
+         struct tu_image *image = cmd->state.attachments[a]->image;
+         tu_disable_lrz<CHIP>(cmd, &cmd->cs, image);
+      }
    }
 
     /* Track LRZ valid state */
@@ -421,7 +457,14 @@ void
 tu_lrz_begin_secondary_cmdbuf(struct tu_cmd_buffer *cmd)
 {
    memset(&cmd->state.lrz, 0, sizeof(cmd->state.lrz));
+
    uint32_t a = cmd->state.subpass->depth_stencil_attachment.attachment;
+
+   if (cmd->state.subpass->custom_resolve) {
+      cmd->state.lrz.valid = a == VK_ATTACHMENT_UNUSED;
+      return;
+   }
+
    if (a != VK_ATTACHMENT_UNUSED) {
       const struct tu_render_pass_attachment *att = &cmd->state.pass->attachments[a];
       tu_lrz_init_secondary(cmd, att);
@@ -1125,7 +1168,7 @@ tu6_calculate_lrz_state(struct tu_cmd_buffer *cmd,
     */
    if (!disable_lrz_due_to_fs && fs->variant->writes_pos &&
        !fs->variant->fs.early_fragment_tests &&
-       !cmd->device->instance->ignore_frag_depth_direction) {
+       !cmd->device->instance->drirc.misc.ignore_frag_depth_direction) {
       if (fs->variant->fs.depth_layout == FRAG_DEPTH_LAYOUT_NONE ||
           fs->variant->fs.depth_layout == FRAG_DEPTH_LAYOUT_ANY) {
          disable_lrz_due_to_fs = true;
@@ -1289,7 +1332,7 @@ tu6_calculate_lrz_state(struct tu_cmd_buffer *cmd,
     * fragments from draw A which should be visible due to draw B.
     */
    if (blend_status == TU_LRZ_BLEND_READS_DEST_OR_PARTIAL_WRITE &&
-       z_write_enable && cmd->device->instance->conservative_lrz) {
+       z_write_enable && !cmd->device->instance->drirc.misc.disable_conservative_lrz) {
       tu_lrz_disable_write_for_rp(cmd, "Depth write + blending");
    }
 
@@ -1298,7 +1341,7 @@ tu6_calculate_lrz_state(struct tu_cmd_buffer *cmd,
     * of them, but also has color attachments.
     */
    if (blend_status == TU_LRZ_BLEND_ALL_COLOR_WRITES_SKIPPED &&
-       z_write_enable && cmd->device->instance->conservative_lrz) {
+       z_write_enable && !cmd->device->instance->drirc.misc.disable_conservative_lrz) {
       if (cmd->state.lrz.color_written_with_z_test) {
          tu_lrz_disable_write_for_rp(cmd, "Depth write + no color writes");
       }

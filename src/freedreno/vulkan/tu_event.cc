@@ -14,6 +14,12 @@
 #include "tu_cmd_buffer.h"
 #include "tu_rmv.h"
 
+static uint64_t *
+tu_event_map(tu_event *event)
+{
+   return (uint64_t *)tu_suballoc_bo_map(&event->bo);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 tu_CreateEvent(VkDevice _device,
                const VkEventCreateInfo *pCreateInfo,
@@ -33,6 +39,8 @@ tu_CreateEvent(VkDevice _device,
    mtx_unlock(&device->event_mutex);
    if (result != VK_SUCCESS)
       goto fail_alloc;
+
+   *tu_event_map(event) = 0;
 
    TU_RMV(event_create, device, pCreateInfo, event);
 
@@ -62,13 +70,6 @@ tu_DestroyEvent(VkDevice _device,
    tu_suballoc_bo_free(&device->event_suballoc, &event->bo);
    mtx_unlock(&device->event_mutex);
    vk_object_free(&device->vk, pAllocator, event);
-}
-
-
-static uint64_t *
-tu_event_map(tu_event *event)
-{
-   return (uint64_t *)tu_suballoc_bo_map(&event->bo);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -114,6 +115,13 @@ tu_CmdSetEvent2(VkCommandBuffer commandBuffer,
    VkPipelineStageFlags2 src_stage_mask =
       vk_collect_dependency_info_src_stages(pDependencyInfo);
 
+   if (!(pDependencyInfo->dependencyFlags &
+         VK_DEPENDENCY_ASYMMETRIC_EVENT_BIT_KHR)) {
+      tu_barrier(cmd, 1, pDependencyInfo, true);
+      /* Force emit any flushes before the RB_DONE_TS is emitted below. */
+      tu_emit_cache_flush<CHIP>(cmd);
+   }
+
    tu_write_event<CHIP>(cmd, event, src_stage_mask, 1);
 }
 TU_GENX(tu_CmdSetEvent2);
@@ -131,6 +139,7 @@ tu_CmdResetEvent2(VkCommandBuffer commandBuffer,
 }
 TU_GENX(tu_CmdResetEvent2);
 
+template <chip CHIP>
 VKAPI_ATTR void VKAPI_CALL
 tu_CmdWaitEvents2(VkCommandBuffer commandBuffer,
                   uint32_t eventCount,
@@ -143,6 +152,20 @@ tu_CmdWaitEvents2(VkCommandBuffer commandBuffer,
    for (uint32_t i = 0; i < eventCount; i++) {
       VK_FROM_HANDLE(tu_event, event, pEvents[i]);
 
+      /* If concurrent binning is enabled, and the dstStage includes vertex
+       * stages, make BV also wait for the event.
+       */
+      bool wait_bv = false;
+      if (CHIP >= A7XX) {
+         VkPipelineStageFlags2 dst_stage_mask =
+            vk_collect_dependency_info_dst_stages(&pDependencyInfos[i]);
+         enum tu_stage dst_stage = vk2tu_dst_stage(cmd->device, dst_stage_mask);
+         if (dst_stage <= TU_STAGE_BV) {
+            wait_bv = true;
+            tu7_set_thread_both_patchpoint(cmd, cs);
+         }
+      }
+
       tu_cs_emit_pkt7(cs, CP_WAIT_REG_MEM, 6);
       tu_cs_emit(cs, CP_WAIT_REG_MEM_0_FUNCTION(WRITE_EQ) |
                      CP_WAIT_REG_MEM_0_POLL(POLL_MEMORY));
@@ -150,7 +173,17 @@ tu_CmdWaitEvents2(VkCommandBuffer commandBuffer,
       tu_cs_emit(cs, CP_WAIT_REG_MEM_3_REF(1));
       tu_cs_emit(cs, CP_WAIT_REG_MEM_4_MASK(~0u));
       tu_cs_emit(cs, CP_WAIT_REG_MEM_5_DELAY_LOOP_CYCLES(20));
-   }
 
-   tu_barrier(cmd, eventCount, pDependencyInfos);
+      if (wait_bv)
+         tu7_set_thread_br_patchpoint(cmd, cs, false);
+
+      /* If the dependency info in CmdSetEvent is the same, we can rely on all
+       * flushes/invalidates landing by the time the event is signalled.
+       * Otherwise, we have to do a full pipeline barrier.
+       */
+      if (pDependencyInfos[i].dependencyFlags &
+          VK_DEPENDENCY_ASYMMETRIC_EVENT_BIT_KHR)
+         tu_barrier(cmd, 1, &pDependencyInfos[i], false);
+   }
 }
+TU_GENX(tu_CmdWaitEvents2);

@@ -6,61 +6,56 @@
 
 #include "mtl_command_buffer.h"
 
-#include <Metal/MTLCommandBuffer.h>
-#include <QuartzCore/CAMetalLayer.h>
+#include <Metal/MTL4BufferRange.h>
+#include <Metal/MTL4CommandAllocator.h>
+#include <Metal/MTL4CommandBuffer.h>
+#include <Metal/MTL4Counters.h>
 
 void
-mtl_encode_signal_event(mtl_command_buffer *cmd_buf_handle,
-                        mtl_event *event_handle, uint64_t value)
+mtl_command_allocator_reset(mtl_command_allocator *allocator)
 {
    @autoreleasepool {
-      id<MTLCommandBuffer> cmd_buf = (id<MTLCommandBuffer>)cmd_buf_handle;
-      id<MTLEvent> event = (id<MTLEvent>)event_handle;
-      [cmd_buf encodeSignalEvent:event value:value];
+      id<MTL4CommandAllocator> alloc = (id<MTL4CommandAllocator>)allocator;
+      [alloc reset];
    }
 }
 
 void
-mtl_encode_wait_for_event(mtl_command_buffer *cmd_buf_handle,
-                          mtl_event *event_handle, uint64_t value)
+mtl_begin_command_buffer(mtl_command_buffer *command_buffer,
+                         mtl_command_allocator *allocator)
 {
    @autoreleasepool {
-      id<MTLCommandBuffer> cmd_buf = (id<MTLCommandBuffer>)cmd_buf_handle;
-      id<MTLEvent> event = (id<MTLEvent>)event_handle;
-      [cmd_buf encodeWaitForEvent:event value:value];
+      id<MTL4CommandBuffer> cmd_buf = (id<MTL4CommandBuffer>)command_buffer;
+      id<MTL4CommandAllocator> alloc = (id<MTL4CommandAllocator>)allocator;
+      [cmd_buf beginCommandBufferWithAllocator:alloc];
    }
 }
 
 void
-mtl_add_completed_handler(mtl_command_buffer *cmd, void (*callback)(void *data),
-                          void *data)
+mtl_end_command_buffer(mtl_command_buffer *command_buffer)
 {
    @autoreleasepool {
-      id<MTLCommandBuffer> mtl_cmd = (id<MTLCommandBuffer>)cmd;
-      [mtl_cmd addCompletedHandler:^(id<MTLCommandBuffer> _Nonnull cmd_buf) {
-         @autoreleasepool {
-            if (callback)
-               callback(data);
-         }
-      }];
+      id<MTL4CommandBuffer> cmd_buf = (id<MTL4CommandBuffer>)command_buffer;
+      [cmd_buf endCommandBuffer];
    }
 }
 
 void
-mtl_command_buffer_commit(mtl_command_buffer *cmd_buffer)
+mtl_command_resolve_counter_heap(mtl_command_buffer *command_buffer,
+                                 mtl_counter_heap *heap, uint32_t first_index,
+                                 uint32_t count, uint64_t dst_addr)
 {
    @autoreleasepool {
-      id<MTLCommandBuffer> cmd_buf = (id<MTLCommandBuffer>)cmd_buffer;
-      [cmd_buf commit];
-   }
-}
-
-void
-mtl_present_drawable(mtl_command_buffer *cmd_buf, void *drawable_ptr)
-{
-   @autoreleasepool {
-      id<MTLCommandBuffer> cmd = (id<MTLCommandBuffer>)cmd_buf;
-      id<CAMetalDrawable> drawable = [(id<CAMetalDrawable>)drawable_ptr autorelease];
-      [cmd presentDrawable:drawable];
+      id<MTL4CommandBuffer> cmd_buf = (id<MTL4CommandBuffer>)command_buffer;
+      id<MTL4CounterHeap> h = (id<MTL4CounterHeap>)heap;
+      MTL4BufferRange range = {
+         .bufferAddress = dst_addr,
+         .length = count * sizeof(MTL4TimestampHeapEntry),
+      };
+      [cmd_buf resolveCounterHeap:h
+                        withRange:NSMakeRange(first_index, count)
+                       intoBuffer:range
+                        waitFence:nil
+                      updateFence:nil];
    }
 }

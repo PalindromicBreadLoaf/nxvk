@@ -65,7 +65,7 @@ anv_i915_create_engine(struct anv_device *device,
       if (pCreateInfo->flags & VK_DEVICE_QUEUE_CREATE_PROTECTED_BIT)
          flags |= INTEL_GEM_CREATE_CONTEXT_EXT_PROTECTED_FLAG;
 
-      if (device->physical->instance->force_guc_low_latency &&
+      if (device->physical->instance->drirc.perf.guc_low_latency &&
           physical->info.supports_low_latency_hint)
 	      flags |= INTEL_GEM_CREATE_CONTEXT_EXT_LOW_LATENCY_FLAG;
 
@@ -94,9 +94,9 @@ anv_i915_create_engine(struct anv_device *device,
       }
 
       /* Check if client specified queue priority. */
-      const VkDeviceQueueGlobalPriorityCreateInfoKHR *queue_priority =
+      const VkDeviceQueueGlobalPriorityCreateInfo *queue_priority =
          vk_find_struct_const(pCreateInfo->pNext,
-                              DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_KHR);
+                              DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO);
 
       VkResult result = anv_i915_set_queue_parameters(device,
                                                       queue->context_id,

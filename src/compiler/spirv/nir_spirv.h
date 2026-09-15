@@ -16,10 +16,16 @@ extern "C" {
 
 struct spirv_capabilities;
 
-struct nir_spirv_specialization {
+struct nir_spirv_specialization_entry {
    uint32_t id;
-   nir_const_value value;
+   uint32_t size;
+   uint8_t *data;
    bool defined_on_module;
+};
+
+struct nir_spirv_specialization {
+   uint32_t num_entries;
+   struct nir_spirv_specialization_entry *entries;
 };
 
 enum nir_spirv_debug_level {
@@ -126,6 +132,9 @@ struct spirv_to_nir_options {
        * game bugs.
        */
       bool lower_terminate_to_discard;
+
+      /* Whether OpFMin/OpFMax/OpFClamp should behave like the NMax versions. */
+      bool force_nan_preserve_min_max;
    } workarounds;
 
    /* In Debug Builds, instead of emitting an OS break on failure, just return NULL from
@@ -142,6 +151,11 @@ struct spirv_to_nir_options {
 
    /* Don't look at MESA_SPIRV_READ_PATH for replacements */
    bool ignore_replacement;
+
+   /* Whether to store the DXBC/DXIL shader hash put in the SPIRV by
+    * vkd3d-proton
+    */
+   bool store_dxbc_dxil_hashes;
 };
 
 enum spirv_verify_result {
@@ -153,17 +167,26 @@ enum spirv_verify_result {
 
 enum spirv_verify_result spirv_verify_gl_specialization_constants(
    const uint32_t *words, size_t word_count,
-   struct nir_spirv_specialization *spec, unsigned num_spec,
+   struct nir_spirv_specialization *spec,
    mesa_shader_stage stage, const char *entry_point_name);
 
 nir_shader *spirv_to_nir(const uint32_t *words, size_t word_count,
-                         struct nir_spirv_specialization *specializations,
-                         unsigned num_specializations,
+                         struct nir_spirv_specialization *specialization,
                          mesa_shader_stage stage, const char *entry_point_name,
                          const struct spirv_to_nir_options *options,
                          const nir_shader_compiler_options *nir_options);
 
 void spirv_print_asm(FILE *fp, const uint32_t *words, size_t word_count);
+
+struct nir_spirv_specialization *
+vtn_alloc_specialization(uint32_t num_entries);
+
+bool
+vtn_add_specialization_entry(struct nir_spirv_specialization *spec, uint32_t slot,
+                             uint32_t entry_id, uint32_t entry_size,
+                             const void *entry_data, bool defined_on_module);
+
+void vtn_free_specialization(struct nir_spirv_specialization *spec);
 
 #ifdef __cplusplus
 }

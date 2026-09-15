@@ -10,7 +10,7 @@
 #include "ac_binary.h"
 #include "amd_family.h"
 #include "compiler/shader_enums.h"
-#include "util/format/u_format.h"
+#include "util/format/u_formats.h"
 #include "util/u_math.h"
 
 #include <stdbool.h>
@@ -342,6 +342,12 @@ ac_ngg_compute_subgroup_info(enum amd_gfx_level gfx_level, mesa_shader_stage es_
                              unsigned esgs_vertex_stride, unsigned ngg_lds_vertex_size,
                              unsigned ngg_lds_scratch_size, bool tess_turns_off_ngg,
                              unsigned max_esgs_lds_padding, ac_ngg_subgroup_info *out);
+
+void
+ac_print_spi_ps_input_vgpr_list(uint32_t spi_ps_input_ena, uint32_t spi_ps_input_addr, FILE *f);
+
+void ac_print_spi_ps_shader_col_format(uint32_t spi_shader_col_format, FILE *f);
+void ac_print_spi_ps_shader_z_format(uint32_t spi_shader_z_format, FILE *f);
 
 static unsigned inline
 ac_shader_get_lds_alloc_granularity(enum amd_gfx_level gfx_level)

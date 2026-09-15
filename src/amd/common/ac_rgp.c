@@ -271,6 +271,7 @@ enum sqtt_gfxip_level
    SQTT_GFXIP_LEVEL_GFXIP_11_0 = 0xc,
    SQTT_GFXIP_LEVEL_GFXIP_11_5 = 0xd,
    SQTT_GFXIP_LEVEL_GFXIP_12 = 0x10,
+   SQTT_GFXIP_LEVEL_GFXIP_11_7 = 0x11,
 };
 
 enum sqtt_memory_type
@@ -364,6 +365,8 @@ static enum sqtt_gfxip_level ac_gfx_level_to_sqtt_gfxip_level(enum amd_gfx_level
       return SQTT_GFXIP_LEVEL_GFXIP_11_0;
    case GFX11_5:
       return SQTT_GFXIP_LEVEL_GFXIP_11_5;
+   case GFX11_7:
+      return SQTT_GFXIP_LEVEL_GFXIP_11_7;
    case GFX12:
       return SQTT_GFXIP_LEVEL_GFXIP_12;
    default:
@@ -469,7 +472,7 @@ static void ac_sqtt_fill_asic_info(const struct radeon_info *rad_info,
    chunk->vram_size = (uint64_t)rad_info->vram_size_kb * 1024;
    chunk->l2_cache_size = rad_info->l2_cache_size;
    chunk->l1_cache_size = rad_info->tcp_cache_size;
-   chunk->lds_size = rad_info->lds_size_per_workgroup;
+   chunk->lds_size = rad_info->compiler_info.lds_size_per_workgroup;
 
    strncpy(chunk->gpu_name, ac_get_family_name(rad_info->family), SQTT_GPU_NAME_MAX_SIZE - 1);
 
@@ -570,7 +573,8 @@ struct sqtt_file_chunk_api_info {
 static_assert(sizeof(struct sqtt_file_chunk_api_info) == 560,
               "sqtt_file_chunk_api_info doesn't match RGP spec");
 
-static void ac_sqtt_fill_api_info(struct sqtt_file_chunk_api_info *chunk)
+static void ac_sqtt_fill_api_info(struct sqtt_file_chunk_api_info *chunk,
+                                  uint32_t instruction_timing_se_mask)
 {
    chunk->header.chunk_id.type = SQTT_FILE_CHUNK_TYPE_API_INFO;
    chunk->header.chunk_id.index = 0;
@@ -582,7 +586,12 @@ static void ac_sqtt_fill_api_info(struct sqtt_file_chunk_api_info *chunk)
    chunk->major_version = 0;
    chunk->minor_version = 0;
    chunk->profiling_mode = SQTT_PROFILING_MODE_PRESENT;
-   chunk->instruction_trace_mode = SQTT_INSTRUCTION_TRACE_DISABLED;
+   if (instruction_timing_se_mask) {
+      chunk->instruction_trace_mode = SQTT_INSTRUCTION_TRACE_FULL_FRAME;
+      chunk->instruction_trace_data.shader_engine_filter.mask = instruction_timing_se_mask;
+   } else {
+      chunk->instruction_trace_mode = SQTT_INSTRUCTION_TRACE_DISABLED;
+   }
 }
 
 struct sqtt_code_object_database_record {
@@ -713,6 +722,7 @@ static enum sqtt_version ac_gfx_level_to_sqtt_version(enum amd_gfx_level gfx_lev
       return SQTT_VERSION_2_4;
    case GFX11:
    case GFX11_5:
+   case GFX11_7:
       return SQTT_VERSION_3_2;
    case GFX12:
       return SQTT_VERSION_3_3;
@@ -860,6 +870,7 @@ enum elf_gfxip_level
    EF_AMDGPU_MACH_AMDGCN_GFX1030 = 0x036,
    EF_AMDGPU_MACH_AMDGCN_GFX1100 = 0x041,
    EF_AMDGPU_MACH_AMDGCN_GFX1150 = 0x043,
+   EF_AMDGPU_MACH_AMDGCN_GFX1170 = 0x05d,
    EF_AMDGPU_MACH_AMDGCN_GFX1200 = 0x04e,
 };
 
@@ -878,6 +889,8 @@ static enum elf_gfxip_level ac_gfx_level_to_elf_gfxip_level(enum amd_gfx_level g
       return EF_AMDGPU_MACH_AMDGCN_GFX1100;
    case GFX11_5:
       return EF_AMDGPU_MACH_AMDGCN_GFX1150;
+   case GFX11_7:
+      return EF_AMDGPU_MACH_AMDGCN_GFX1170;
    case GFX12:
       return EF_AMDGPU_MACH_AMDGCN_GFX1200;
    default:
@@ -1225,7 +1238,7 @@ ac_sqtt_dump_data(const struct radeon_info *rad_info, struct ac_sqtt_trace *sqtt
    fwrite(&asic_info, sizeof(asic_info), 1, output);
 
    /* SQTT api chunk. */
-   ac_sqtt_fill_api_info(&api_info);
+   ac_sqtt_fill_api_info(&api_info, sqtt_trace->instruction_timing_se_mask);
    file_offset += sizeof(api_info);
    fwrite(&api_info, sizeof(api_info), 1, output);
 

@@ -5,12 +5,14 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "gfx/si_gfx.h"
 #include "si_build_pm4.h"
 #include "si_pipe.h"
 #include "sid.h"
 #include "util/os_time.h"
 #include "util/u_log.h"
 #include "util/u_upload_mgr.h"
+#include "ac_cmdbuf_cp.h"
 #include "ac_debug.h"
 #include "si_utrace.h"
 
@@ -97,9 +99,9 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_h
    if (sscreen->info.is_amdgpu && sscreen->info.drm_minor >= 39)
       flags |= RADEON_FLUSH_START_NEXT_GFX_IB_NOW;
 
-   if (ctx->gfx_level == GFX6) {
-      /* The kernel flushes L2 before shaders are finished. */
-      wait_flags |= wait_ps_cs;
+   if (ctx->gfx_level <= GFX7) {
+      /* Random hangs without waiting for shaders and flushing cache */
+      wait_flags |= wait_ps_cs | SI_BARRIER_INV_L2;
    } else if (!(flags & RADEON_FLUSH_START_NEXT_GFX_IB_NOW) ||
               ((flags & RADEON_FLUSH_TOGGLE_SECURE_SUBMISSION) &&
                 !ws->cs_is_secure(cs))) {
@@ -112,7 +114,7 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_h
    /* Drop this flush if it's a no-op. */
    if (!radeon_emitted(cs, ctx->initial_gfx_cs_size) &&
        (!wait_flags || !ctx->gfx_last_ib_is_busy) &&
-       !(flags & RADEON_FLUSH_TOGGLE_SECURE_SUBMISSION)) {
+       !(flags & (RADEON_FLUSH_TOGGLE_SECURE_SUBMISSION | RADEON_FLUSH_FORCE))) {
       tc_driver_internal_flush_notify(ctx->tc);
       return;
    }
@@ -158,7 +160,7 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_h
    /* If we use s_sendmsg to set tess factors to all 0 or all 1 instead of writing to the tess
     * factor buffer, we need this at the end of command buffers:
     */
-   if ((ctx->gfx_level == GFX11 || ctx->gfx_level == GFX11_5) && ctx->has_tessellation) {
+   if ((ctx->gfx_level >= GFX11 && ctx->gfx_level < GFX12) && ctx->has_tessellation) {
       radeon_begin(cs);
       radeon_event_write(V_028A90_SQ_NON_EVENT);
       radeon_end();
@@ -196,6 +198,9 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_h
       start_ts = si_ds_begin_submit(&ctx->ds_queue);
       submission_id = ctx->ds_queue.submission_id;
    }
+
+   if (unlikely(ctx->sqtt))
+      si_sqtt_describe_flush(ctx);
 
    /* Flush the CS. */
    ws->cs_flush(cs, flags, &ctx->last_gfx_fence);
@@ -433,6 +438,9 @@ void si_begin_new_gfx_cs(struct si_context *ctx, bool first_cs)
       ctx->initial_gfx_cs_size = ctx->gfx_cs.current.cdw;
       return;
    }
+
+   if (unlikely(ctx->sqtt))
+      si_sqtt_describe_begin(ctx, &ctx->gfx_cs);
 
    if (ctx->has_tessellation) {
       radeon_add_to_buffer_list(ctx, &ctx->gfx_cs,

@@ -28,6 +28,7 @@ import gitlab.v4.objects
 from gitlab_common import (
     GITLAB_URL,
     TOKEN_DIR,
+    get_server_and_project_from_url,
     get_gitlab_pipeline_from_url,
     get_gitlab_project,
     get_token_from_default_dir,
@@ -56,6 +57,18 @@ STATUS_COLORS = defaultdict(lambda: "", {
 
 COMPLETED_STATUSES = frozenset({"success", "failed"})
 RUNNING_STATUSES = frozenset({"created", "pending", "running"})
+
+PROFILES: dict[str, dict] = {
+    # a750-vk runs both VKCTS and vkd3d together.
+    "uprev_vkd3d": {
+        "target": [".*vkd3d.*|a750-vk"],
+        "stress": 15,
+    },
+    "uprev_vkcts_main": {
+        "target": ["radv-.*-vkcts(-asan|-full)?"],
+        "stress": 25
+    }
+}
 
 if is_gitlab_job():
     console = Console(highlight=False, no_color=False, color_system="truecolor", width=120)
@@ -445,8 +458,15 @@ def parse_args() -> argparse.Namespace:
         help="Target job regex. For multiple targets, pass multiple values, "
              "eg. `--target foo bar`. Only jobs in the target stage(s) "
              "supplied, and their dependencies, will be considered.",
-        required=True,
+        required=False,
+        default=[],
         nargs=argparse.ONE_OR_MORE,
+    )
+    parser.add_argument(
+        "--profile",
+        metavar="name",
+        choices=PROFILES,
+        help="Use a predefined set of target jobs",
     )
     parser.add_argument(
         "--include-stage",
@@ -496,7 +516,7 @@ def parse_args() -> argparse.Namespace:
         "--stress",
         metavar="n",
         type=int,
-        default=0,
+        default=None,
         help="Stresstest job(s). Specify the number of times to rerun the selected jobs, "
              "or use -1 for indefinite. Defaults to 0. If jobs have already been executed, "
              "this will ensure the total run count respects the specified number.",
@@ -549,12 +569,27 @@ def parse_args() -> argparse.Namespace:
 
     args = parser.parse_args()
 
+    if args.profile:
+        if not args.target:
+            args.target = PROFILES[args.profile]["target"]
+        if args.stress is None:
+            args.stress = PROFILES[args.profile].get("stress", 0)
+    elif not args.target:
+        parser.error("one of --target or --profile is required")
+
+    if args.stress is None:
+        args.stress = 0
+
     # argparse doesn't support groups inside add_mutually_exclusive_group(),
     # which means we can't just put `--project` and `--rev` in a group together,
     # we have to do this by heand instead.
     if args.pipeline_url and args.project != parser.get_default("project"):
         # weird phrasing but it's the error add_mutually_exclusive_group() gives
-        parser.error("argument --project: not allowed with argument --pipeline-url")
+        parser.error("argument --project: not allowed with argument --pipeline-url. It is implicit in the url.")
+    # argparse neither support the exclude `--server` when this information is
+    # included in the url of the `--pipeline-url`.
+    if args.pipeline_url and args.server != parser.get_default("server"):
+        parser.error("argument --server: not allowed with argument --pipeline-url. It is implicit in the url.")
 
     return args
 
@@ -673,22 +708,35 @@ def main() -> None:
 
         token = read_token(args.token)
 
-        gl = gitlab.Gitlab(url=args.server,
+        if args.pipeline_url:
+            server_url, project_name = get_server_and_project_from_url(args.pipeline_url)
+        else:
+            server_url = args.server
+            project_name = args.project
+
+        gl = gitlab.Gitlab(url=server_url,
                            private_token=token,
                            retry_transient_errors=True)
 
         REV: str = args.rev
 
         if args.pipeline_url:
-            pipe, cur_project = get_gitlab_pipeline_from_url(gl, args.pipeline_url)
+            pipe, cur_project = get_gitlab_pipeline_from_url(gl, args.pipeline_url, server_url)
             REV = pipe.sha
+            print(f"Using the revision from pipeline {pipe.id}: {REV}.")
         else:
-            mesa_project = gl.projects.get("mesa/mesa")
-            projects = [mesa_project]
-            if args.mr:
-                REV = mesa_project.mergerequests.get(args.mr).sha
+            if server_url == GITLAB_URL and project_name == "mesa":  # the default valut
+                gl_project = gl.projects.get("mesa/mesa")
             else:
+                gl_project = get_gitlab_project(gl, project_name)
+            projects = {gl_project}
+            if args.mr:
+                REV = gl_project.mergerequests.get(args.mr).sha
+                print(f"Using the revision from {args.mr}: {REV}.")
+            else:
+                print(f"Using the revision from {REV}: ",end="")
                 REV = check_output(['git', 'rev-parse', REV]).decode('ascii').strip()
+                print(f"{REV}.")
 
                 if args.rev == 'HEAD':
                     try:
@@ -718,7 +766,7 @@ def main() -> None:
                                 )
                                 print("Did you forget to `git push` ?")
 
-                projects.append(get_gitlab_project(gl, args.project))
+            projects.add(get_gitlab_project(gl, project_name))
             (pipe, cur_project) = wait_for_pipeline(projects, REV)
 
         print(f"Revision: {REV}")
@@ -774,7 +822,7 @@ def main() -> None:
             return True
 
         deps = find_dependencies(
-            server=args.server,
+            server=server_url,
             token=token,
             job_filter=job_filter,
             iid=pipe.iid,
@@ -800,6 +848,8 @@ def main() -> None:
         print_monitor_summary(exec_t, t_start)
 
         sys.exit(ret)
+    except gitlab.exceptions.GitlabAuthenticationError as exception:
+        print(f"[yellow]Gitlab authentication error {exception.error_message}.\n[red]Check the token!")
     except KeyboardInterrupt:
         sys.exit(1)
 

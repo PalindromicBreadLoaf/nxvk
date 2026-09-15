@@ -348,10 +348,11 @@ agx_round_registers(unsigned halfregs)
 
 static const nir_shader_compiler_options agx_nir_options = {
    .lower_fdiv = true,
-   .fuse_ffma16 = true,
-   .fuse_ffma32 = true,
+   .float_mul_add16 = nir_float_muladd_support_has_ffma | nir_float_muladd_support_fuse,
+   .float_mul_add32 = nir_float_muladd_support_has_ffma | nir_float_muladd_support_fuse,
    .lower_flrp16 = true,
    .lower_flrp32 = true,
+   .lower_flrp64 = true,
    .lower_fpow = true,
    .lower_fmod = true,
    .lower_bitfield_extract8 = true,

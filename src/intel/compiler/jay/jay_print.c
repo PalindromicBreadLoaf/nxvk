@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "compiler/brw/brw_eu_defines.h"
+#include "compiler/gen/gen.h"
+#include "compiler/gen/gen_enums.h"
+#include "compiler/gen/gen_names.h"
 #include "util/lut.h"
 #include "util/macros.h"
 #include "jay_ir.h"
@@ -16,24 +18,10 @@
       arr[x];                                                                  \
    })
 
-static const char *jay_conditional_mod_str[] = {
-   [JAY_CONDITIONAL_EQ] = ".eq", [JAY_CONDITIONAL_NE] = ".ne",
-   [JAY_CONDITIONAL_GT] = ".gt", [JAY_CONDITIONAL_LT] = ".lt",
-   [JAY_CONDITIONAL_GE] = ".ge", [JAY_CONDITIONAL_LE] = ".le",
-   [JAY_CONDITIONAL_OV] = ".ov", [JAY_CONDITIONAL_NAN] = ".nan",
-};
-
-static const char *jay_arf_str[] = {
-   [JAY_ARF_NULL] = "_",
-   [JAY_ARF_MASK] = "mask",
-   [JAY_ARF_CONTROL] = "ctrl",
-   [JAY_ARF_TIMESTAMP] = "timestamp",
-};
-
 static const char *jay_file_str[JAY_FILE_LAST + 1] = {
-   [GPR] = "r",       [UGPR] = "u",    [FLAG] = "f",      [UFLAG] = "uf",
-   [J_ADDRESS] = "a", [ACCUM] = "acc", [UACCUM] = "uacc", [J_ARF] = "arf",
-   [MEM] = "m",       [UMEM] = "um",   [TEST_FILE] = "t",
+   [GPR] = "r",       [UGPR] = "u",      [FLAG] = "f",      [UFLAG] = "uf",
+   [J_ADDRESS] = "a", [ACCUM] = "acc",   [UACCUM] = "uacc", [J_ARF] = "arf",
+   [MEM] = "m",       [TEST_FILE] = "t",
 };
 
 static const char *jay_base_types[] = {
@@ -47,23 +35,29 @@ jay_print_type(FILE *fp, enum jay_type t)
            jay_type_size_bits(t));
 }
 
+const char *
+jay_file_prefix(enum jay_file file)
+{
+   return ENUM_TO_STR(file, jay_file_str);
+}
+
 static void
 jay_print_def(FILE *fp, const jay_inst *I, int src)
 {
    jay_def def = src == -2 ? I->cond_flag : src == -1 ? I->dst : I->src[src];
    unsigned len = jay_num_values(def);
-   const char *file = ENUM_TO_STR(def.file, jay_file_str);
+   const char *file = jay_file_prefix(def.file);
    bool has_lu = jay_is_ssa(def) && !jay_is_null(def) && src >= 0;
    unsigned lu_bit = has_lu ? jay_source_last_use_bit(I->src, src) : 0;
 
    bool has_index = jay_channel(def, 0) != JAY_SENTINEL;
-   bool has_reg = !def.collect && def.reg && def.file != J_ARF;
+   bool has_reg = (!def.collect && def.reg && def.file != J_ARF) || !has_index;
 
    if (jay_is_null(def)) {
       has_reg = false;
       fprintf(fp, "_");
    } else if (def.file == J_ARF) {
-      fputs(ENUM_TO_STR(jay_base_index(def), jay_arf_str), fp);
+      fputs(gen_arf_to_string(jay_base_index(def)), fp);
    } else if (def.collect) {
       assert(has_index && "else would be contiguous");
       fprintf(fp, "(");
@@ -122,33 +116,6 @@ jay_print_src(FILE *fp, jay_inst *I, unsigned s)
    }
 }
 
-/* XXX: copypaste of brw_print_swsb */
-static void
-jay_print_swsb(FILE *f, const struct tgl_swsb swsb)
-{
-   if (swsb.regdist) {
-      fprintf(f, "%s@%d",
-              (swsb.pipe == TGL_PIPE_FLOAT  ? "F" :
-               swsb.pipe == TGL_PIPE_INT    ? "I" :
-               swsb.pipe == TGL_PIPE_LONG   ? "L" :
-               swsb.pipe == TGL_PIPE_ALL    ? "A" :
-               swsb.pipe == TGL_PIPE_MATH   ? "M" :
-               swsb.pipe == TGL_PIPE_SCALAR ? "S" :
-                                              ""),
-              swsb.regdist);
-   }
-
-   if (swsb.mode) {
-      if (swsb.regdist)
-         fprintf(f, " ");
-
-      fprintf(f, "$%d%s", swsb.sbid,
-              (swsb.mode & TGL_SBID_SET ? "" :
-               swsb.mode & TGL_SBID_DST ? ".dst" :
-                                          ".src"));
-   }
-}
-
 void
 jay_print_inst(FILE *fp, jay_inst *I)
 {
@@ -164,6 +131,10 @@ jay_print_inst(FILE *fp, jay_inst *I)
       jay_print_def(fp, I, -2);
    }
 
+   if (I->zero_inactive) {
+      fprintf(fp, " (balloted)");
+   }
+
    if (!jay_is_null(I->dst) || !jay_is_null(I->cond_flag)) {
       fprintf(fp, " = ");
    }
@@ -171,12 +142,6 @@ jay_print_inst(FILE *fp, jay_inst *I)
    if (I->predication) {
       fprintf(fp, "(");
       jay_print_src(fp, I, jay_inst_get_predicate(I) - I->src);
-
-      if (jay_inst_has_default(I)) {
-         fprintf(fp, "/");
-         jay_print_src(fp, I, jay_inst_get_default(I) - I->src);
-      }
-
       fprintf(fp, ")");
    }
 
@@ -194,8 +159,9 @@ jay_print_inst(FILE *fp, jay_inst *I)
       fprintf(fp, ".(%s)", util_lut3_to_str[jay_bfn_ctrl(I)]);
    }
 
-   const char *cmod = ENUM_TO_STR(I->conditional_mod, jay_conditional_mod_str);
-   fprintf(fp, "%s%s ", I->saturate ? ".sat" : "", cmod ? cmod : "");
+   enum gen_condition cmod = I->conditional_mod;
+   fprintf(fp, "%s%s%s ", I->saturate ? ".sat" : "", cmod ? "." : "",
+           cmod ? gen_condition_to_string(cmod) : "");
    sep = "";
 
    for (unsigned i = 0; i < I->num_srcs - I->predication; i++) {
@@ -214,11 +180,17 @@ jay_print_inst(FILE *fp, jay_inst *I)
       sep = jay_print_inst_info(fp, I, sep);
    }
 
+   if (jay_inst_has_default(I)) {
+      fprintf(fp, "%sdefault ", sep);
+      jay_print_src(fp, I, jay_inst_get_default(I) - I->src);
+      sep = ", ";
+   }
+
    /* Software scoreboard dependency info */
    if (I->dep.regdist || I->dep.mode) {
       fprintf(fp, "%s%s%s", strlen(sep) ? " {" : "{",
               I->replicate_dep ? "*" : "", I->decrement_dep ? "+" : "");
-      jay_print_swsb(fp, I->dep);
+      gen_print_swsb(NULL, fp, I->dep);
       fprintf(fp, "}");
    }
 
@@ -248,10 +220,17 @@ jay_print_block(FILE *fp, jay_block *block)
 {
    indent(fp, block, false);
    fprintf(fp, "B%d%s%s", block->index, block->uniform ? " [uniform]" : "",
-           block->loop_header ? " [loop header]" : "");
+           block->loop_header          ? " [loop header]" :
+           block->physical_loop_header ? " [physical loop header]" :
+                                         "");
    bool first = true;
-   jay_foreach_predecessor(block, p) {
+   jay_foreach_predecessor(block, p, GPR) {
       fprintf(fp, "%s B%d", first ? " <-" : "", (*p)->index);
+      first = false;
+   }
+   first = true;
+   jay_foreach_predecessor(block, p, UGPR) {
+      fprintf(fp, "%s B%d", first ? " <=" : "", (*p)->index);
       first = false;
    }
    fprintf(fp, " {\n");
@@ -282,11 +261,14 @@ jay_print_block(FILE *fp, jay_block *block)
    indent(fp, block, false);
    fprintf(fp, "}");
    first = true;
-   jay_foreach_successor(block, succ) {
-      if (succ) {
-         fprintf(fp, "%s B%d", first ? " ->" : "", succ->index);
-         first = false;
-      }
+   jay_foreach_successor(block, succ, GPR) {
+      fprintf(fp, "%s B%d", first ? " ->" : "", succ->index);
+      first = false;
+   }
+   first = true;
+   jay_foreach_successor(block, succ, UGPR) {
+      fprintf(fp, "%s B%d", first ? " =>" : "", succ->index);
+      first = false;
    }
    fprintf(fp, "\n\n");
 }
@@ -307,3 +289,21 @@ jay_print(FILE *fp, jay_shader *s)
       jay_print_func(fp, f);
    }
 }
+
+#ifndef NDEBUG
+
+void
+jay_archive(jay_shader *s, const char *name, unsigned idx)
+{
+   if (!s->archiver)
+      return;
+
+   const char *filename =
+      ralloc_asprintf(s, "JAY%u/%02u-%s", s->dispatch_width, idx, name);
+
+   FILE *f = debug_archiver_start_file(s->archiver, filename);
+   jay_print(f, s);
+   debug_archiver_finish_file(s->archiver);
+}
+
+#endif

@@ -1506,6 +1506,10 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
             fprintf(fp, "|AVAILABLE");
          if (semantics & (NIR_MEMORY_MAKE_VISIBLE))
             fprintf(fp, "|VISIBLE");
+         if (semantics & (NIR_MEMORY_CONTROL_ARRIVE))
+            fprintf(fp, "|ARRIVE");
+         if (semantics & (NIR_MEMORY_CONTROL_WAIT))
+            fprintf(fp, "|WAIT");
          break;
       }
 
@@ -2004,6 +2008,9 @@ print_tex_instr(nir_tex_instr *instr, print_state *state)
    case nir_texop_sample_pos_nv:
       fprintf(fp, "sample_pos_nv ");
       break;
+   case nir_texop_gradient_pan:
+      fprintf(fp, "gradient_pan ");
+      break;
    case nir_texop_sample_weighted_qcom:
       fprintf(fp, "sample_weighted_qcom ");
       break;
@@ -2283,6 +2290,10 @@ print_jump_instr(nir_jump_instr *instr, print_state *state)
       fprintf(fp, "halt");
       break;
 
+   case nir_jump_abort:
+      fprintf(fp, "abort");
+      break;
+
    case nir_jump_goto:
       fprintf(fp, "goto b%u",
               instr->target ? instr->target->index : -1);
@@ -2295,6 +2306,8 @@ print_jump_instr(nir_jump_instr *instr, print_state *state)
       fprintf(fp, " else b%u",
               instr->else_target ? instr->else_target->index : -1);
       break;
+   default:
+      UNREACHABLE("Unknown jump instruction");
    }
 }
 
@@ -2874,6 +2887,9 @@ print_shader_info(const struct shader_info *info, FILE *fp)
    if (info->label)
       fprintf(fp, "label: %s\n", info->label);
 
+   if (info->spec)
+      fprintf(fp, "%s", info->spec);
+
    print_nz_bool(fp, "internal", info->internal);
 
    if (mesa_shader_stage_uses_workgroup(info->stage)) {
@@ -3205,7 +3221,7 @@ nir_print_instr(const nir_instr *instr, FILE *fp)
       .def_prefix = "%",
    };
    if (instr->block) {
-      nir_function_impl *impl = nir_cf_node_get_function(&instr->block->cf_node);
+      nir_function_impl *impl = instr->block->impl;
       state.shader = impl->function->shader;
       state.divergence_valid = impl->valid_metadata & nir_metadata_divergence;
    }

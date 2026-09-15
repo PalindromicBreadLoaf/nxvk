@@ -60,6 +60,7 @@
 #define V3D_TMU_TEXEL_ALIGN 64
 
 #define V3D_MAX_IMAGE_DIMENSION 4096
+#define V3D_MAX_FRAMEBUFFER_SIZE(ver) (ver < 71 ? 4096u : 7680u)
 
 /* The HW can do 16384 (15), but we run into hangs when we expose that. Also,
  * since we are only exposing images up to 4096 pixels per dimension 13 is
@@ -67,7 +68,18 @@
  */
 #define V3D_MAX_MIP_LEVELS 13
 
+/* Maximum size we let a growing CL BO double up to, so that jobs with a
+ * huge number of draws keep allocating bounded chunks instead of
+ * ever-larger BOs.
+ */
+#define V3D_CL_MAX_GROW_SIZE (1024 * 1024)
+
 #define V3D_MAX_ARRAY_LAYERS 2048
+
+#define V3D_MAX_COMPUTE_SHARED_MEMORY_SIZE (32u * 1024u)
+
+#define V3D_MAX_CSD_WG_COUNT 65535
+#define V3D_MAX_CSD_WG_SIZE 256
 
 #define V3D_MAX_VERTEX_ATTRIB_DIVISOR 0xffff
 

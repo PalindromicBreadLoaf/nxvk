@@ -61,6 +61,12 @@ enum nvkmd_mem_flags {
 
    /** GPU accesses to this memory must bypass the GPU cache hierarchy */
    NVKMD_MEM_GPU_UNCACHED = 1 << 6,
+
+   /** Memory backs a compressed image */
+   NVKMD_MEM_COMPRESSED = 1 << 7,
+
+   /** CPU maps of this memory bypass the CPU cache */
+   NVKMD_MEM_CPU_UNCACHED = 1 << 8,
 };
 
 #define NVKMD_MEM_PLACEMENT_FLAGS \
@@ -127,6 +133,7 @@ struct nvkmd_info {
    bool has_overmap;
    bool has_compression;
    bool has_sparse;
+   bool has_cpu_uncached;
 };
 
 struct nvkmd_pdev_ops {
@@ -276,6 +283,12 @@ struct nvkmd_mem {
 
    void *client_map;
 };
+
+static inline bool
+nvkmd_mem_is_cpu_cacheable(const struct nvkmd_mem *mem)
+{
+   return !(mem->flags & (NVKMD_MEM_COHERENT | NVKMD_MEM_CPU_UNCACHED));
+}
 
 void nvkmd_mem_init(struct nvkmd_dev *dev,
                     struct nvkmd_mem *mem,

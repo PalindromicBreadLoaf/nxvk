@@ -71,6 +71,8 @@ typedef struct {
 typedef struct {
    nir_shader *nir;
 
+   nir_function_impl *impl;
+
    struct blob_reader *blob;
 
    /* the next index to assign to a NIR in-memory object */
@@ -1539,7 +1541,7 @@ read_phi(read_ctx *ctx, nir_block *blk, union packed_instr header)
        * we have to set the parent_instr manually.  It doesn't really matter
        * when we do it, so we might as well do it here.
        */
-      nir_src_set_parent_instr(&src->src, &phi->instr);
+      nir_src_set_use_instr(&src->src, &phi->instr);
 
       /* Stash it in the list of phi sources.  We'll walk this list and fix up
        * sources at the very end of read_function_impl.
@@ -1872,7 +1874,7 @@ write_if(write_ctx *ctx, nir_if *nif)
 static void
 read_if(read_ctx *ctx, struct exec_list *cf_list)
 {
-   nir_if *nif = nir_if_create(ctx->nir);
+   nir_if *nif = nir_if_create(ctx->impl);
 
    read_src(ctx, &nif->condition);
    nif->control = blob_read_uint8(ctx->blob);
@@ -1889,6 +1891,7 @@ write_loop(write_ctx *ctx, nir_loop *loop)
    blob_write_uint8(ctx->blob, loop->control);
    bool has_continue_construct = nir_loop_has_continue_construct(loop);
    blob_write_uint8(ctx->blob, has_continue_construct);
+   blob_write_uint8(ctx->blob, loop->do_while);
 
    write_cf_list(ctx, &loop->body);
    if (has_continue_construct) {
@@ -1899,12 +1902,13 @@ write_loop(write_ctx *ctx, nir_loop *loop)
 static void
 read_loop(read_ctx *ctx, struct exec_list *cf_list)
 {
-   nir_loop *loop = nir_loop_create(ctx->nir);
+   nir_loop *loop = nir_loop_create(ctx->impl);
 
    nir_cf_node_insert_end(cf_list, &loop->cf_node);
 
    loop->control = blob_read_uint8(ctx->blob);
    bool has_continue_construct = blob_read_uint8(ctx->blob);
+   loop->do_while = blob_read_uint8(ctx->blob);
 
    read_cf_list(ctx, &loop->body);
    if (has_continue_construct) {
@@ -1998,6 +2002,7 @@ read_function_impl(read_ctx *ctx)
 
    read_var_list(ctx, &fi->locals);
 
+   ctx->impl = fi;
    read_cf_list(ctx, &fi->body);
    read_fixup_phis(ctx);
 
@@ -2166,6 +2171,7 @@ enum nir_serialize_shader_flags {
    NIR_SERIALIZE_SHADER_NAME = 1 << 0,
    NIR_SERIALIZE_SHADER_LABEL = 1 << 1,
    NIR_SERIALIZE_DEBUG_INFO = 1 << 2,
+   NIR_SERIALIZE_SHADER_SPEC = 1 << 3,
 };
 
 void
@@ -2211,6 +2217,8 @@ serialize_internal(struct blob *blob, const nir_shader *nir, bool strip, bool se
       flags |= NIR_SERIALIZE_SHADER_NAME;
    if (!strip && info.label)
       flags |= NIR_SERIALIZE_SHADER_LABEL;
+   if (!strip && info.spec)
+      flags |= NIR_SERIALIZE_SHADER_SPEC;
    if (ctx.debug_info)
       flags |= NIR_SERIALIZE_DEBUG_INFO;
    blob_write_uint32(blob, flags);
@@ -2219,6 +2227,8 @@ serialize_internal(struct blob *blob, const nir_shader *nir, bool strip, bool se
       blob_write_string(blob, info.name);
    if (!strip && info.label)
       blob_write_string(blob, info.label);
+   if (!strip && info.spec)
+      blob_write_string(blob, info.spec);
    info.name = info.label = NULL;
    blob_write_bytes(blob, (uint8_t *)&info, sizeof(info));
 
@@ -2280,6 +2290,7 @@ nir_deserialize(void *mem_ctx,
    enum nir_serialize_shader_flags flags = blob_read_uint32(blob);
    char *name = (flags & NIR_SERIALIZE_SHADER_NAME) ? blob_read_string(blob) : NULL;
    char *label = (flags & NIR_SERIALIZE_SHADER_LABEL) ? blob_read_string(blob) : NULL;
+   char *spec = (flags & NIR_SERIALIZE_SHADER_SPEC) ? blob_read_string(blob) : NULL;
 
    struct shader_info info;
    blob_copy_bytes(blob, (uint8_t *)&info, sizeof(info));
@@ -2292,6 +2303,7 @@ nir_deserialize(void *mem_ctx,
 
    info.name = name ? ralloc_strdup(ctx.nir, name) : NULL;
    info.label = label ? ralloc_strdup(ctx.nir, label) : NULL;
+   info.spec = spec ? ralloc_strdup(ctx.nir, spec) : NULL;
 
    ctx.nir->info = info;
 

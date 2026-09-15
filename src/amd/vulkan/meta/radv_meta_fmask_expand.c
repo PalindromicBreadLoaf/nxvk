@@ -8,7 +8,7 @@
 #include "nir/radv_meta_nir.h"
 #include "radv_formats.h"
 #include "radv_meta.h"
-#include "vk_format.h"
+#include "vk_shader_module.h"
 
 static VkResult
 get_pipeline_layout(struct radv_device *device, VkPipelineLayout *layout_out)
@@ -114,9 +114,9 @@ radv_process_color_image(struct radv_cmd_buffer *cmd_buffer, struct radv_image *
 
    radv_meta_bind_compute_pipeline(cmd_buffer, pipeline);
 
-   const VkImageViewUsageCreateInfo view_usage_info = {
-      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
-      .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+   const VkImageViewUsage2CreateInfoKHR view_usage_info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_2_CREATE_INFO_KHR,
+      .usage = VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR | VK_IMAGE_USAGE_2_STORAGE_BIT_KHR,
    };
 
    radv_image_view_init(&iview, device,

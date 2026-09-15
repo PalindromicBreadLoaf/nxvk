@@ -48,9 +48,9 @@ panvk_per_arch(cmd_dispatch_prepare_tls)(
    batch->tlsinfo.wls.size = cs->info.wls_size;
 
    if (batch->tlsinfo.wls.size) {
-      unsigned core_id_range;
+      unsigned core_id_range =
+         pan_query_core_id_range(&phys_dev->kmod.dev->props);
 
-      pan_query_core_count(&phys_dev->kmod.dev->props, &core_id_range);
       batch->tlsinfo.wls.instances = pan_calc_wls_instances(
          &cs->cs.local_size, &phys_dev->kmod.dev->props, indirect ? NULL : dim);
       batch->wls_total_size = pan_calc_total_wls_size(
@@ -74,6 +74,8 @@ cmd_dispatch(struct panvk_cmd_buffer *cmdbuf, struct panvk_dispatch_info *info)
    panvk_per_arch(cmd_close_batch)(cmdbuf);
    struct panvk_batch *batch = panvk_per_arch(cmd_open_batch)(cmdbuf);
 
+   const struct panvk_shader_desc_info *cs_desc_info =
+      &cmdbuf->state.compute.shader->desc_info;
    struct panvk_descriptor_state *desc_state =
       &cmdbuf->state.compute.desc_state;
    struct panvk_shader_desc_state *cs_desc_state =
@@ -89,21 +91,7 @@ cmd_dispatch(struct panvk_cmd_buffer *cmdbuf, struct panvk_dispatch_info *info)
                                                            &wg_count, indirect);
 
    result = panvk_per_arch(cmd_prepare_push_descs)(
-      cmdbuf, desc_state, cs->desc_info.used_set_mask);
-   if (result != VK_SUCCESS)
-      return;
-
-   if (compute_state_dirty(cmdbuf, CS) ||
-       compute_state_dirty(cmdbuf, DESC_STATE)) {
-      result = panvk_per_arch(cmd_prepare_dyn_ssbos)(cmdbuf, desc_state, cs,
-                                                     cs_desc_state);
-      if (result != VK_SUCCESS)
-         return;
-   }
-
-   panvk_per_arch(cmd_prepare_dispatch_sysvals)(cmdbuf, info);
-
-   result = panvk_per_arch(cmd_prepare_push_uniforms)(cmdbuf, cs, 1);
+      cmdbuf, desc_state, cs_desc_info->used_set_mask);
    if (result != VK_SUCCESS)
       return;
 
@@ -112,17 +100,33 @@ cmd_dispatch(struct panvk_cmd_buffer *cmdbuf, struct panvk_dispatch_info *info)
    if (compute_state_dirty(cmdbuf, CS) ||
        compute_state_dirty(cmdbuf, DESC_STATE)) {
       result = panvk_per_arch(cmd_prepare_shader_desc_tables)(
-         cmdbuf, desc_state, cs, cs_desc_state);
+         cmdbuf, desc_state, cs_desc_info, true, cs_desc_state);
+      if (result != VK_SUCCESS)
+         return;
+
+      result = panvk_per_arch(cmd_prepare_dyn_ssbos)(
+         cmdbuf, desc_state, cs_desc_info, cs_desc_state);
+      if (result != VK_SUCCESS)
+         return;
 
       result = panvk_per_arch(meta_get_copy_desc_job)(
-         cmdbuf, cs, &cmdbuf->state.compute.desc_state, cs_desc_state, 0,
-         &copy_desc_job);
+         cmdbuf, cs_desc_info, &cmdbuf->state.compute.desc_state,
+         cs_desc_state, 0, &copy_desc_job);
       if (result != VK_SUCCESS)
          return;
 
       if (copy_desc_job.cpu)
          util_dynarray_append(&batch->jobs, copy_desc_job.cpu);
    }
+
+   panvk_per_arch(cmd_prepare_dispatch_sysvals)(cmdbuf, info);
+
+   struct pan_ptr push_uniforms;
+   result = panvk_per_arch(cmd_prepare_compute_push_uniforms)(
+      cmdbuf, cs, &push_uniforms);
+   if (result != VK_SUCCESS)
+      return;
+   cmdbuf->state.compute.push_uniforms = push_uniforms.gpu;
 
    struct pan_ptr job = panvk_cmd_alloc_desc(cmdbuf, COMPUTE_JOB);
    if (!job.gpu)

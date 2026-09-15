@@ -726,7 +726,7 @@ emit_alu(struct ir3_context *ctx, nir_alu_instr *alu)
    case nir_op_fsub:
       dst = ir3_ADD_F_rpt(b, dst_sz, src[0], 0, src[1], IR3_REG_FNEG);
       break;
-   case nir_op_ffma:
+   case nir_op_fmad:
       /* The scalar ALU doesn't support mad, so expand to mul+add so that we
        * don't unnecessarily fall back to non-earlypreamble. This is safe
        * because at least on a6xx+ mad is unfused.
@@ -2909,11 +2909,13 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
       ir3_split_dest(b, dst, ctx->tess_coord, 0, 2);
       break;
 
-   case nir_intrinsic_store_global_ir3:
-      ctx->funcs->emit_intrinsic_store_global_ir3(ctx, intr);
+   case nir_intrinsic_store_global:
+   case nir_intrinsic_store_global_offset:
+      ctx->funcs->emit_intrinsic_store_global(ctx, intr);
       break;
-   case nir_intrinsic_load_global_ir3:
-      ctx->funcs->emit_intrinsic_load_global_ir3(ctx, intr, dst);
+   case nir_intrinsic_load_global:
+   case nir_intrinsic_load_global_offset:
+      ctx->funcs->emit_intrinsic_load_global(ctx, intr, dst);
       break;
 
    case nir_intrinsic_load_ubo:
@@ -3494,8 +3496,6 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
       break;
    }
    case nir_intrinsic_prefetch_ubo_ir3: {
-      if (!ir3_bindless_resource(intr->src[0]))
-         break;
       struct ir3_instruction *offset = create_immed(b, 0);
       struct ir3_instruction *idx = ir3_get_src(ctx, &intr->src[0])[0];
       struct ir3_instruction *ldc = ir3_LDC(b, idx, 0, offset, 0);
@@ -3508,6 +3508,20 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 
       make_dst_dummy(ldc);
       array_insert(ctx->block, ctx->block->keeps, ldc);
+      break;
+   }
+   case nir_intrinsic_resbase_ir3: {
+      struct ir3_instruction *ibo = ir3_ssbo_to_ibo(ctx, intr->src[0]);
+      struct ir3_instruction *resbase = ir3_RESBASE(b, ibo, 0);
+      resbase->cat6.iim_val = 1;
+      resbase->cat6.d = 1;
+      resbase->cat6.type = TYPE_U32;
+      resbase->cat6.typed = false;
+      /* resbase has no writemask and always writes out 2 components */
+      resbase->dsts[0]->wrmask = MASK(2);
+      ir3_handle_bindless_cat6(resbase, intr->src[0]);
+      ir3_handle_nonuniform(resbase, intr);
+      ir3_split_dest(b, dst, resbase, 0, 2);
       break;
    }
    case nir_intrinsic_rotate:
@@ -3597,7 +3611,6 @@ get_tex_dest_type(nir_tex_instr *tex)
    case nir_type_bool32:
    case nir_type_uint32:
       return TYPE_U32;
-   case nir_type_bool16:
    case nir_type_uint16:
       return TYPE_U16;
    case nir_type_invalid:
@@ -5158,6 +5171,9 @@ setup_input(struct ir3_context *ctx, nir_intrinsic_instr *intr)
          unsigned idx = (n * 4) + i + frac;
          ctx->last_dst[i] = ctx->inputs[idx];
       }
+
+      if (slot >= VERT_ATTRIB_GENERIC0)
+         so->attr_in = MAX2(so->attr_in, slot - VERT_ATTRIB_GENERIC0 + 1);
    }
 }
 
@@ -6175,7 +6191,7 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
     */
    IR3_PASS(ir, ir3_legalize, so, &max_bary);
 
-   if (ctx->compiler->cs_lock_unlock_quirk && ir3_shader_compute(so)) {
+   if (ctx->compiler->info->props.cs_lock_unlock_quirk && ir3_shader_compute(so)) {
       struct ir3_instruction *end = ir3_find_end(so->ir);
       struct ir3_instruction *lock =
          ir3_build_instr(&ctx->build, OPC_LOCK, 0, 0);
@@ -6224,9 +6240,9 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
    if (so->type == MESA_SHADER_FRAGMENT) {
       so->empty = is_empty(ir) && so->outputs_count == 0 &&
                   so->num_sampler_prefetch == 0;
-      so->writes_only_color = !ctx->s->info.writes_memory && !so->has_kill &&
-                              !so->writes_pos && !so->writes_smask &&
-                              !so->writes_stencilref;
+      so->has_no_side_effects = !ctx->s->info.writes_memory;
+      so->has_no_ds_effects = !so->has_kill && !so->writes_pos &&
+                              !so->writes_smask && !so->writes_stencilref;
    }
 
    if (mesa_shader_stage_is_compute(so->type)) {

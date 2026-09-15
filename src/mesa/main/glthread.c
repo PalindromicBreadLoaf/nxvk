@@ -302,8 +302,8 @@ void _mesa_glthread_enable(struct gl_context *ctx)
    ctx->st->thread_scheduler_disabled = true;
 
    /* Update the dispatch only if the dispatch is current. */
-   if (GET_DISPATCH() == ctx->Dispatch.Current) {
-       _mesa_glapi_set_dispatch(ctx->GLApi);
+   if (_mesa_get_dispatch(ctx) == ctx->Dispatch.Current) {
+       _mesa_set_dispatch(ctx, ctx->GLApi);
    }
 }
 
@@ -322,8 +322,8 @@ void _mesa_glthread_disable(struct gl_context *ctx)
       ctx->st->thread_scheduler_disabled = false;
 
    /* Update the dispatch only if the dispatch is current. */
-   if (GET_DISPATCH() == ctx->MarshalExec) {
-       _mesa_glapi_set_dispatch(ctx->GLApi);
+   if (_mesa_get_dispatch(ctx) == ctx->MarshalExec) {
+       _mesa_set_dispatch(ctx, ctx->GLApi);
    }
 
    /* Unbind VBOs in all VAOs that glthread bound for non-VBO vertex uploads

@@ -40,7 +40,7 @@
  */
 static pco_shader *build_shader(pco_ctx *ctx, nir_shader *nir, pco_data *data)
 {
-   pco_preprocess_nir(ctx, nir);
+   pco_preprocess_nir(ctx, nir, data);
    pco_lower_nir(ctx, nir, data);
    pco_postprocess_nir(ctx, nir, data);
 
@@ -71,7 +71,8 @@ nir_shader *pvr_usc_fs_pfo_passthrough_nir(pco_ctx *ctx)
    nir_frag_store_pco(&b, nir_imm_int(&b, 0), .base = 0);
    nir_jump(&b, nir_jump_return);
 
-   pco_preprocess_nir(ctx, b.shader);
+   pco_data data = { 0 };
+   pco_preprocess_nir(ctx, b.shader, &data);
 
    return b.shader;
 }
@@ -658,7 +659,7 @@ static nir_def *resolve_samples(nir_builder *b,
 
    switch (resolve_op) {
    case PVR_RESOLVE_BLEND:
-      op = nir_op_ffma;
+      op = nir_op_ffma_weak;
       coeff = nir_imm_float(b, 1.0 / num_samples);
       break;
 
@@ -683,7 +684,7 @@ static nir_def *resolve_samples(nir_builder *b,
 
    for (unsigned i = 1; i < num_samples; i++) {
       if (resolve_op == PVR_RESOLVE_BLEND)
-         accum = nir_ffma(b, samples[i], coeff, accum);
+         accum = nir_ffma_weak(b, samples[i], coeff, accum);
       else
          accum = nir_build_alu2(b, op, samples[i], accum);
    }
@@ -817,6 +818,9 @@ pvr_uscgen_tq_frag_load(nir_builder *b,
       else if (layer_props->sample)
          params.sampler_dim = GLSL_SAMPLER_DIM_3D;
 
+      params.sample_components =
+         pvr_pbe_format_num_sample_components(layer_props->pbe_format);
+
       nir_intrinsic_instr *smp = pco_emit_nir_smp(b, &params);
       samples[sample_idx] = &smp->def;
    }
@@ -863,7 +867,7 @@ pvr_uscgen_tq_frag_coords(nir_builder *b,
          nir_vec2(b,
                   nir_load_preamble(b, 1, 32, .base = *next_sh + base_sh + 1),
                   nir_load_preamble(b, 1, 32, .base = *next_sh + base_sh + 3));
-      coords = nir_fmad(b, coords, mult, add);
+      coords = nir_ffma_weak(b, coords, mult, add);
       *next_sh += 4;
    }
 

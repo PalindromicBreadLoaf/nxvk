@@ -175,7 +175,7 @@ infer_nir_alu_type_from_uses_ssa(nir_def *ssa);
 static nir_alu_type
 infer_nir_alu_type_from_use(nir_src *src)
 {
-   nir_instr *instr = nir_src_parent_instr(src);
+   nir_instr *instr = nir_src_use_instr(src);
    nir_alu_type atype = nir_type_invalid;
    switch (instr->type) {
    case nir_instr_type_alu: {
@@ -2287,6 +2287,21 @@ emit_alu(struct ntv_context *ctx, nir_alu_instr *alu)
          }
          result = spirv_builder_emit_composite_construct(&ctx->builder, dest_type, components, num_components);
       }
+      break;
+   }
+
+   case nir_op_ffma_weak: {
+      assert(nir_op_infos[alu->op].num_inputs == 3);
+      result = emit_builtin_triop(ctx, GLSLstd450Fma, dest_type,
+                                  src[0], src[1], src[2]);
+      break;
+   }
+
+   case nir_op_ffma: {
+      assert(nir_op_infos[alu->op].num_inputs == 3);
+      spirv_builder_emit_cap(&ctx->builder, SpvCapabilityFMAKHR);
+      spirv_builder_emit_extension(&ctx->builder, "SPV_KHR_fma");
+      result = emit_triop(ctx, SpvOpFmaKHR, dest_type, src[0], src[1], src[2]);
       break;
    }
 
@@ -5010,6 +5025,20 @@ get_spacing(enum gl_tess_spacing spacing)
    }
 }
 
+/* Prefer ShaderLayer/ShaderViewportIndexLayerEXT for Layer. Fall back to Geometry only when necessary. */
+static void
+emit_shader_layer_cap(struct spirv_builder *builder, const struct ntv_info *sinfo)
+{
+   if (sinfo->spirv_version >= SPIRV_VERSION(1, 5) && sinfo->have_shader_output_layer) {
+      spirv_builder_emit_cap(builder, SpvCapabilityShaderLayer);
+   } else if (sinfo->have_shader_viewport_index_layer) {
+      spirv_builder_emit_extension(builder, "SPV_EXT_shader_viewport_index_layer");
+      spirv_builder_emit_cap(builder, SpvCapabilityShaderViewportIndexLayerEXT);
+   } else {
+      spirv_builder_emit_cap(builder, SpvCapabilityGeometry);
+   }
+}
+
 struct spirv_shader *
 nir_to_spirv(struct nir_shader *s, const struct ntv_info *sinfo)
 {
@@ -5073,19 +5102,20 @@ nir_to_spirv(struct nir_shader *s, const struct ntv_info *sinfo)
    if (s->info.stage < MESA_SHADER_GEOMETRY) {
       if (s->info.outputs_written & VARYING_BIT_LAYER ||
           s->info.inputs_read & VARYING_BIT_LAYER) {
-         if (sinfo->spirv_version >= SPIRV_VERSION(1, 5))
-            spirv_builder_emit_cap(&ctx.builder, SpvCapabilityShaderLayer);
-         else {
-            spirv_builder_emit_extension(&ctx.builder, "SPV_EXT_shader_viewport_index_layer");
-            spirv_builder_emit_cap(&ctx.builder, SpvCapabilityShaderViewportIndexLayerEXT);
-         }
+         emit_shader_layer_cap(&ctx.builder, sinfo);
       }
    } else if (s->info.stage == MESA_SHADER_FRAGMENT) {
       /* incredibly, this is legal and intended.
        * https://github.com/KhronosGroup/SPIRV-Registry/issues/95
+       *
+       * gl_Layer can be enabled via ShaderLayer/ShaderViewportIndexLayerEXT, so
+       * avoid pulling in the Geometry capability (and thus the geometryShader
+       * feature) unless it is actually needed. gl_PrimitiveID has no such
+       * alternative and always requires Geometry (or Tessellation).
        */
-      if (s->info.inputs_read & (VARYING_BIT_LAYER |
-                                 VARYING_BIT_PRIMITIVE_ID))
+      if (s->info.inputs_read & VARYING_BIT_LAYER)
+         emit_shader_layer_cap(&ctx.builder, sinfo);
+      if (s->info.inputs_read & VARYING_BIT_PRIMITIVE_ID)
          spirv_builder_emit_cap(&ctx.builder, SpvCapabilityGeometry);
    }
 
@@ -5626,7 +5656,7 @@ static void
 fixup_deref_components(nir_deref_instr *deref)
 {
    nir_foreach_use(src, &deref->def) {
-      nir_instr *user_instr = nir_src_parent_instr(src);
+      nir_instr *user_instr = nir_src_use_instr(src);
       if (user_instr->type != nir_instr_type_deref)
          continue;
       nir_deref_instr *user_deref = nir_instr_as_deref(user_instr);

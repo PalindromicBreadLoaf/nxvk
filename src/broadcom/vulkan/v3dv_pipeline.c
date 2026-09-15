@@ -192,9 +192,7 @@ v3dv_pipeline_get_nir_options(const struct v3d_device_info *devinfo)
       .lower_mul_2x32_64 = true,
       .lower_fdiv = true,
       .lower_find_lsb = true,
-      .lower_ffma16 = true,
-      .lower_ffma32 = true,
-      .lower_ffma64 = true,
+      .lower_flrp16 = true,
       .lower_flrp32 = true,
       .lower_fpow = true,
       .lower_fsqrt = true,
@@ -224,6 +222,11 @@ v3dv_pipeline_get_nir_options(const struct v3d_device_info *devinfo)
 
    if (!initialized) {
       options.lower_fsat = devinfo->ver < 71;
+      if (devinfo->ver >= 71) {
+         options.has_udot_4x8 = true;
+         options.has_sdot_4x8 = true;
+         options.has_sudot_4x8 = true;
+      }
       initialized = true;
     }
 
@@ -364,8 +367,6 @@ preprocess_nir(nir_shader *nir)
             nir_var_mem_ubo | nir_var_mem_ssbo, NULL,
             nir_lower_direct_array_deref_of_vec_load);
 
-   NIR_PASS(_, nir, nir_lower_frexp);
-
    /* Get rid of split copies */
    v3d_optimize_nir(NULL, nir);
 }
@@ -423,7 +424,7 @@ shader_module_compile_to_nir(struct v3dv_device *device,
    return nir;
 }
 
-static int
+static unsigned
 type_size_vec4(const struct glsl_type *type, bool bindless)
 {
    return glsl_count_attribute_slots(type, false);
@@ -569,8 +570,12 @@ lower_vulkan_resource_index(nir_builder *b,
          pipeline_get_descriptor_map(state->pipeline, binding_layout->type,
                                      b->shader->info.stage, false);
 
-      if (!const_val)
+      if (!const_val) {
+         mesa_loge("V3D_WEBGPU_OVERRIDE: Dawn shader uses dynamic descriptor "
+                   "indexing (type=%d) which is not implemented — expect "
+                   "corruption", binding_layout->type);
          UNREACHABLE("non-constant vulkan_resource_index array index");
+      }
 
       /* At compile-time we will need to know if we are processing a UBO load
        * for an inline or a regular UBO so we can handle inline loads like
@@ -1044,6 +1049,8 @@ pipeline_populate_v3d_key(struct v3d_key *key,
       p_stage->robustness.images == robust_image_enabled;
    key->robust_image_access_2 =
       p_stage->robustness.images == robust_image2_enabled;
+   key->null_descriptor =
+      p_stage->pipeline->device->vk.enabled_features.nullDescriptor;
 }
 
 uint32_t
@@ -1806,7 +1813,8 @@ pipeline_lower_nir(struct v3dv_pipeline *pipeline,
     * shader doesn't need any other samplers, get rid of them so we can
     * recognize that this program doesn't use any samplers at all.
     */
-   if (!needs_default_sampler_state && maps->sampler_map.num_desc == 2)
+   if (!needs_default_sampler_state &&
+       maps->sampler_map.num_desc == V3DV_NUM_NO_SAMPLER_IDX)
       maps->sampler_map.num_desc = 0;
 
    p_stage->feedback.duration += os_time_get_nano() - stage_start;
@@ -2386,7 +2394,7 @@ pipeline_add_multiview_gs(struct v3dv_pipeline *pipeline,
 
    pipeline->has_gs = true;
    pipeline->stages[BROADCOM_SHADER_GEOMETRY] = p_stage;
-   pipeline->active_stages |= MESA_SHADER_GEOMETRY;
+   pipeline->active_stages |= VK_SHADER_STAGE_GEOMETRY_BIT;
 
    pipeline->stages[BROADCOM_SHADER_GEOMETRY_BIN] =
       pipeline_stage_create_binning(p_stage, pAllocator);
@@ -2465,7 +2473,7 @@ pipeline_compile_graphics(struct v3dv_pipeline *pipeline,
             vk_find_struct_const(sinfo->pNext, SHADER_MODULE_CREATE_INFO);
       }
 
-      vk_pipeline_robustness_state_fill(&device->vk, &p_stage->robustness,
+      vk_pipeline_robustness_state_fill(&device->vk.robustness_state, &p_stage->robustness,
                                         pCreateInfo->pNext, sinfo->pNext);
 
       vk_pipeline_hash_shader_stage(pipeline->flags,
@@ -2516,14 +2524,14 @@ pipeline_compile_graphics(struct v3dv_pipeline *pipeline,
       p_stage->module = NULL;
       p_stage->module_info = NULL;
       p_stage->nir = b.shader;
-      vk_pipeline_robustness_state_fill(&device->vk, &p_stage->robustness,
+      vk_pipeline_robustness_state_fill(&device->vk.robustness_state, &p_stage->robustness,
                                         NULL, NULL);
       pipeline_compute_blake3_from_nir(p_stage);
       p_stage->program_id =
          p_atomic_inc_return(&physical_device->next_program_id);
 
       pipeline->stages[BROADCOM_SHADER_FRAGMENT] = p_stage;
-      pipeline->active_stages |= MESA_SHADER_FRAGMENT;
+      pipeline->active_stages |= VK_SHADER_STAGE_FRAGMENT_BIT;
    }
 
    /* If multiview is enabled, we inject a custom passthrough geometry shader
@@ -2682,7 +2690,7 @@ compute_vpm_config(struct v3dv_pipeline *pipeline)
    struct v3dv_shader_variant *vs_variant =
       pipeline->shared_data->variants[BROADCOM_SHADER_VERTEX];
    struct v3dv_shader_variant *vs_bin_variant =
-      pipeline->shared_data->variants[BROADCOM_SHADER_VERTEX];
+      pipeline->shared_data->variants[BROADCOM_SHADER_VERTEX_BIN];
    struct v3d_vs_prog_data *vs = vs_variant->prog_data.vs;
    struct v3d_vs_prog_data *vs_bin =vs_bin_variant->prog_data.vs;
 
@@ -2910,7 +2918,7 @@ pipeline_init_dynamic_state(struct v3dv_device *device,
    }
 
    v3dv_dyn->color_write_enable =
-      (1ull << (4 * V3D_MAX_RENDER_TARGETS(device->devinfo.ver))) - 1;
+      (1ull << (4 * device->devinfo.max_render_targets)) - 1;
    if (pipeline_state->cb) {
       const uint8_t color_writes = pipeline_state->cb->color_write_enables;
       v3dv_dyn->color_write_enable = 0;
@@ -3138,6 +3146,26 @@ lower_compute(struct nir_shader *nir)
    NIR_PASS(_, nir, nir_lower_explicit_io,
             nir_var_mem_shared, nir_address_format_32bit_offset);
 
+   /* V3D can't execute workgroups with more than 256 invocations
+    * (maxComputeWorkGroupInvocations). If the shader requested a
+    * larger workgroup, serialize it into a 256-invocation one.
+    */
+   const uint32_t wg_size = nir->info.workgroup_size[0] *
+                            nir->info.workgroup_size[1] *
+                            nir->info.workgroup_size[2];
+   if (wg_size > V3D_MAX_CSD_WG_SIZE) {
+      perf_debug("Compute shader requested workgroup size %u (>256); "
+                 "lowering to a 256-invocation workgroup wrapping an "
+                 "outer loop (workgroup_size=(%u,%u,%u)).\n",
+                 wg_size,
+                 nir->info.workgroup_size[0],
+                 nir->info.workgroup_size[1],
+                 nir->info.workgroup_size[2]);
+      NIR_PASS(_, nir, nir_lower_workgroup_size, V3D_MAX_CSD_WG_SIZE);
+      v3d_optimize_nir(NULL, nir);
+      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   }
+
    struct nir_lower_compute_system_values_options sysval_options = {
       .has_base_workgroup_id = true,
    };
@@ -3179,7 +3207,7 @@ pipeline_compile_compute(struct v3dv_pipeline *pipeline,
          vk_find_struct_const(sinfo->pNext, SHADER_MODULE_CREATE_INFO);
    }
 
-   vk_pipeline_robustness_state_fill(&device->vk, &p_stage->robustness,
+   vk_pipeline_robustness_state_fill(&device->vk.robustness_state, &p_stage->robustness,
                                      info->pNext, sinfo->pNext);
 
    vk_pipeline_hash_shader_stage(pipeline->flags,
@@ -3616,8 +3644,8 @@ v3dv_GetPipelineExecutableStatisticsKHR(
          .instrs = qpu_inst_count,
          .thread_count = prog_data->threads,
          .spill_size = prog_data->spill_size,
-         .spills = prog_data->spill_size,
-         .fills = prog_data->spill_size,
+         .spills = prog_data->tmu_spills,
+         .fills = prog_data->tmu_fills,
          .read_stalls = prog_data->qpu_read_stalls,
       };
 

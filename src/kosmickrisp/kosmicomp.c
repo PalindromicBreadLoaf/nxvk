@@ -48,7 +48,7 @@ debug_callback(void *priv, enum nir_spirv_debug_level debuglevel, size_t offset,
    fprintf(stderr, "<%d> at %zu %s\n", debuglevel, offset, message);
 }
 
-static int
+static unsigned
 type_size_vec4(const struct glsl_type *type, bool bindless)
 {
    return glsl_count_attribute_slots(type, false);
@@ -69,6 +69,7 @@ static void
 optimize(nir_shader *nir)
 {
    msl_preprocess_nir(nir);
+   msl_preprocess_nir_workarounds(nir, 0);
 
    nir_lower_compute_system_values_options csv_options = {
       .has_base_global_invocation_id = 0,
@@ -172,8 +173,8 @@ main(int argc, char **argv)
       fprintf(stderr, "Couldn't guess shader stage from %s\n", argv[1]);
       return 4;
    }
-   nir_shader *shader = spirv_to_nir(words, nwords, NULL, 0, stage, "main",
-                                     &options, &nir_options);
+   nir_shader *shader =
+      spirv_to_nir(words, nwords, NULL, stage, "main", &options, &nir_options);
    if (!shader) {
       fprintf(stderr, "Compilation failed!\n");
       return 3;

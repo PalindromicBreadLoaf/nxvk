@@ -6,7 +6,7 @@
 
 #include "ac_nir.h"
 #include "ac_nir_helpers.h"
-#include "sid.h"
+#include "amdgfxregs.h"
 
 #include "nir_builder.h"
 #include "nir_xfb_info.h"

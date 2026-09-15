@@ -75,8 +75,7 @@ anv_reloc_list_init_clone(struct anv_reloc_list *list,
       list->deps =
          vk_alloc(list->alloc, list->dep_words * sizeof(BITSET_WORD), 8,
                   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-      memcpy(list->deps, other_list->deps,
-             list->dep_words * sizeof(BITSET_WORD));
+      __bitset_copy(list->deps, other_list->deps, list->dep_words);
    } else {
       list->deps = NULL;
    }
@@ -109,8 +108,7 @@ anv_reloc_list_grow_deps(struct anv_reloc_list *list,
    list->deps = new_deps;
 
    /* Zero out the new data */
-   memset(list->deps + list->dep_words, 0,
-          (new_length - list->dep_words) * sizeof(BITSET_WORD));
+   __bitset_zero(list->deps + list->dep_words, new_length - list->dep_words);
    list->dep_words = new_length;
 
    return VK_SUCCESS;
@@ -139,7 +137,7 @@ static void
 anv_reloc_list_clear(struct anv_reloc_list *list)
 {
    if (list->dep_words > 0)
-      memset(list->deps, 0, list->dep_words * sizeof(BITSET_WORD));
+      __bitset_zero(list->deps, list->dep_words);
 }
 
 VkResult
@@ -458,7 +456,7 @@ anv_cmd_buffer_surface_base_address(struct anv_cmd_buffer *cmd_buffer)
       }
    }
 
-   struct anv_state_pool *pool = &cmd_buffer->device->binding_table_pool;
+   struct anv_state_pool *pool = anv_device_get_binding_table_pool(cmd_buffer->device);
    struct anv_state *bt_block = u_vector_head(&cmd_buffer->bt_block_states);
    return (struct anv_address) {
       .bo = pool->block_pool.bo,
@@ -815,7 +813,7 @@ anv_cmd_buffer_alloc_space(struct anv_cmd_buffer *cmd_buffer,
 
       return (struct anv_cmd_alloc) {
          .address = anv_state_pool_state_address(
-            &cmd_buffer->device->dynamic_state_pool,
+            anv_device_get_dynamic_state_pool(cmd_buffer->device),
             state),
          .map = state.map,
          .size = size,
@@ -1079,7 +1077,7 @@ anv_cmd_buffer_end_batch_buffer(struct anv_cmd_buffer *cmd_buffer)
        * actual ExecuteCommands implementation.
        */
       const uint32_t length = cmd_buffer->batch.next - cmd_buffer->batch.start;
-      if (!(cmd_buffer->device->physical->instance->debug & ANV_DEBUG_NO_SECONDARY_CALL)) {
+      if (!ANV_DEBUG(NO_SECONDARY_CALL)) {
          cmd_buffer->exec_mode = ANV_CMD_BUFFER_EXEC_MODE_CALL_AND_RETURN;
 
          void *jump_addr =

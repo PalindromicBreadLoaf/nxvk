@@ -23,20 +23,20 @@ void
 brw_fill_tess_info_from_shader_info(struct brw_tess_info *brw_info,
                                     const shader_info *shader_info);
 
-int type_size_vec4(const struct glsl_type *type, bool bindless);
-int type_size_dvec4(const struct glsl_type *type, bool bindless);
+unsigned type_size_vec4(const struct glsl_type *type, bool bindless);
+unsigned type_size_dvec4(const struct glsl_type *type, bool bindless);
 
 struct brw_mem_access_cb_data {
    const struct intel_device_info *devinfo;
 };
 
-static inline int
+static inline unsigned
 type_size_scalar_bytes(const struct glsl_type *type, bool bindless)
 {
    return glsl_count_dword_slots(type, bindless) * 4;
 }
 
-static inline int
+static inline unsigned
 type_size_vec4_bytes(const struct glsl_type *type, bool bindless)
 {
    return type_size_vec4(type, bindless) * 16;
@@ -126,12 +126,18 @@ brw_nir_fs_needs_null_rt(const struct intel_device_info *devinfo,
    /* Depth/Stencil needs a valid render target even if there is no color
     * output.
     */
-   if (nir->info.outputs_written & (BITFIELD_BIT(FRAG_RESULT_DEPTH) |
-                                    BITFIELD_BIT(FRAG_RESULT_STENCIL) |
+   if (nir->info.outputs_written & (BITFIELD64_BIT(FRAG_RESULT_DEPTH) |
+                                    BITFIELD64_BIT(FRAG_RESULT_STENCIL) |
                                     BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK)))
       return true;
 
-   return alpha_to_coverage;
+   /* Alpha to coverage is only relevant on draw buffer 0 (or color which
+    * writes to all color outputs)
+    */
+   return alpha_to_coverage &&
+          (nir->info.outputs_written &
+           (BITFIELD64_BIT(FRAG_RESULT_COLOR) |
+            BITFIELD64_BIT(FRAG_RESULT_DATA0))) != 0;
 }
 
 void brw_preprocess_nir(const struct brw_compiler *compiler,
@@ -155,9 +161,13 @@ bool brw_nir_lower_cs_subgroup_id(nir_shader *nir,
 bool brw_nir_lower_alpha_to_coverage(nir_shader *shader);
 bool brw_needs_vertex_attributes_bypass(const nir_shader *shader);
 void brw_nir_lower_fs_barycentrics(nir_shader *shader);
+bool brw_nir_lower_fully_covered(nir_shader *nir);
 
 struct brw_lower_urb_cb_data {
    const struct intel_device_info *devinfo;
+
+   /** Input URB read length (returned by lowering) */
+   unsigned *push_input_read_length;
 
    /** Maximum amount of pushed data in bytes */
    unsigned max_push_bytes;
@@ -220,7 +230,8 @@ void brw_nir_lower_gs_inputs(nir_shader *nir,
                              unsigned *out_urb_read_length);
 void brw_nir_lower_tes_inputs(nir_shader *nir,
                               const struct intel_device_info *devinfo,
-                              const struct intel_vue_map *vue);
+                              const struct intel_vue_map *vue,
+                              unsigned *out_urb_read_length);
 void brw_nir_lower_fs_inputs(nir_shader *nir,
                              const struct intel_device_info *devinfo,
                              const struct brw_fs_prog_key *key);
@@ -237,6 +248,9 @@ void brw_nir_lower_mesh_outputs(nir_shader *nir,
 void brw_nir_lower_fs_outputs(nir_shader *nir);
 bool brw_nir_lower_fs_load_output(nir_shader *shader,
                                   const struct brw_fs_prog_key *key);
+bool brw_nir_lower_fs_config_intel(nir_shader *nir,
+                                   const struct brw_fs_prog_key *key,
+                                   const struct brw_fs_prog_data *prog_data);
 
 bool brw_nir_lower_frag_coord_z(nir_shader *nir,
                                 const struct intel_device_info *devinfo);
@@ -301,9 +315,14 @@ bool brw_nir_limit_trig_input_range_workaround(nir_shader *nir);
 
 bool brw_nir_apply_sqrt_workarounds(nir_shader *nir);
 
+bool brw_nir_apply_sampler_undef_derivatives_workaround(nir_shader *nir);
+
 bool brw_nir_lower_fsign(nir_shader *nir);
 
 bool brw_nir_opt_fsat(nir_shader *);
+
+bool brw_nir_opt_systolic_vectorize(nir_shader *shader,
+                                    const struct intel_device_info *devinfo);
 
 void brw_nir_apply_key(struct brw_pass_tracker *pt,
                        const struct brw_base_prog_key *key,
@@ -318,6 +337,10 @@ enum brw_reg_type brw_type_for_base_type(enum glsl_base_type base_type);
 enum brw_reg_type brw_type_for_nir_type(const struct intel_device_info *devinfo,
                                         nir_alu_type type);
 
+struct brw_nir_vectorize_mem_cb_data {
+   const struct intel_device_info *devinfo;
+};
+
 bool brw_nir_should_vectorize_mem(unsigned align_mul, unsigned align_offset,
                                   unsigned bit_size,
                                   unsigned num_components,
@@ -326,12 +349,26 @@ bool brw_nir_should_vectorize_mem(unsigned align_mul, unsigned align_offset,
                                   nir_intrinsic_instr *high,
                                   void *data);
 
-void brw_nir_optimize(struct brw_pass_tracker *pt);
+/**
+ * Gets the size of a nir_load_*_uniform_block_intel after its lowered
+ * by the backend to a block load message, note that page faults can
+ * happen if this is not accounted for when using these intrinsics.
+ */
+static inline unsigned
+brw_uniform_block_size(const struct intel_device_info *devinfo,
+                       unsigned num_components)
+{
+   /* Round up to a supported block size, or to the nearest multiple of
+    * 16 components if its any larger.
+    */
+   return num_components > 8 ? align(num_components, 16)
+      : num_components > 4 ? 8
+      : !devinfo->has_lsc ? 4
+      : num_components;
+}
 
-#define BRW_NIR_FRAG_OUTPUT_INDEX_SHIFT 0
-#define BRW_NIR_FRAG_OUTPUT_INDEX_MASK INTEL_MASK(0, 0)
-#define BRW_NIR_FRAG_OUTPUT_LOCATION_SHIFT 1
-#define BRW_NIR_FRAG_OUTPUT_LOCATION_MASK INTEL_MASK(31, 1)
+void brw_nir_cleanup_pre_fs_prog_data(struct brw_pass_tracker *pt);
+void brw_nir_optimize(struct brw_pass_tracker *pt);
 
 bool brw_nir_move_interpolation_to_top(nir_shader *nir);
 nir_def *brw_nir_load_global_const(nir_builder *b,
@@ -369,8 +406,6 @@ brw_nir_no_indirect_mask(mesa_shader_stage stage)
 
    return indirect_mask;
 }
-
-bool brw_nir_uses_inline_data(nir_shader *shader);
 
 nir_variable *
 brw_nir_find_complete_variable_with_location(nir_shader *shader,
@@ -418,6 +453,9 @@ brw_nir_frag_convert_attrs_prim_to_vert_indirect(struct nir_shader *nir,
                                                  const struct intel_device_info *devinfo,
                                                  struct brw_compile_fs_params *params);
 
+unsigned
+brw_nir_vs_compute_payload_size(nir_shader *nir,
+                                const struct intel_device_info *devinfo);
 unsigned
 brw_nir_pack_vs_input(nir_shader *nir, struct brw_vs_prog_data *prog_data);
 

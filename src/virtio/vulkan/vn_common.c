@@ -36,6 +36,7 @@ static const struct debug_control vn_debug_options[] = {
    { "no_ray_tracing", VN_DEBUG_NO_RAY_TRACING },
    { "mem_budget", VN_DEBUG_MEM_BUDGET },
    { "no_desc_heap", VN_DEBUG_NO_DESC_HEAP },
+   { "no_drm_syncobj", VN_DEBUG_NO_DRM_SYNCOBJ },
    { NULL, 0 },
    /* clang-format on */
 };
@@ -46,7 +47,6 @@ static const struct debug_control vn_perf_options[] = {
    { "no_async_buffer_create", VN_PERF_NO_ASYNC_BUFFER_CREATE },
    { "no_async_queue_submit", VN_PERF_NO_ASYNC_QUEUE_SUBMIT },
    { "no_event_feedback", VN_PERF_NO_EVENT_FEEDBACK },
-   { "no_fence_feedback", VN_PERF_NO_FENCE_FEEDBACK },
    { "no_cmd_batching", VN_PERF_NO_CMD_BATCHING },
    { "no_semaphore_feedback", VN_PERF_NO_SEMAPHORE_FEEDBACK },
    { "no_query_feedback", VN_PERF_NO_QUERY_FEEDBACK },
@@ -56,6 +56,7 @@ static const struct debug_control vn_perf_options[] = {
    { "no_async_image_create", VN_PERF_NO_ASYNC_IMAGE_CREATE },
    { "no_async_image_format", VN_PERF_NO_ASYNC_IMAGE_FORMAT },
    { "no_async_present", VN_PERF_NO_ASYNC_PRESENT },
+   { "no_timeline_sync", VN_PERF_NO_TIMELINE_SYNC },
    { NULL, 0 },
    /* clang-format on */
 };
@@ -169,8 +170,6 @@ vn_relax_reason_string(enum vn_relax_reason reason)
       return "tls ring seqno";
    case VN_RELAX_REASON_RING_SPACE:
       return "ring space";
-   case VN_RELAX_REASON_FENCE:
-      return "fence";
    case VN_RELAX_REASON_SEMAPHORE:
       return "semaphore";
    case VN_RELAX_REASON_QUERY:
@@ -206,7 +205,6 @@ vn_relax_get_profile(enum vn_relax_reason reason)
       };
    case VN_RELAX_REASON_TLS_RING_SEQNO:
    case VN_RELAX_REASON_RING_SPACE:
-   case VN_RELAX_REASON_FENCE:
    case VN_RELAX_REASON_SEMAPHORE:
    case VN_RELAX_REASON_QUERY:
       /* warn every 1024 iters after having already slept ~3.5s:

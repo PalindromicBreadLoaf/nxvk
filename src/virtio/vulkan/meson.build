@@ -4,6 +4,19 @@
 # based in part on anv and radv which are:
 # Copyright © 2017 Intel Corporation
 
+vn_drirc = custom_target(
+  'vn_drirc',
+  input  : [files('vn_drirc_gen.py'), drirc_gen, '00-venus-defaults.conf'],
+  output : ['vn_drirc.c', 'vn_drirc.h'],
+  command : [
+    prog_python, '@INPUT0@',
+    '--import-path', join_paths(dir_source_root, 'src/util'),
+    '--drirc-src', '@OUTPUT0@',
+    '--drirc-hdr', '@OUTPUT1@',
+    '--validate', '@INPUT2@',
+  ],
+)
+
 vn_entrypoints = custom_target(
   'vn_entrypoints',
   input : [vk_entrypoints_gen, vk_api_xml],
@@ -76,6 +89,7 @@ libvn_files = files(
   'vn_ring.c',
   'vn_renderer_internal.c',
   'vn_renderer_util.c',
+  'vn_sync.c',
 )
 
 vn_incs = [
@@ -95,6 +109,7 @@ vn_deps = [
 
 vn_c_args = [
   no_override_init_args,
+  soong_compat_c_args,
 ] + cc.get_supported_arguments([
   '-Werror=switch',
 ])
@@ -112,7 +127,10 @@ if not with_platform_windows
 endif
 
 if system_has_kms_drm
-  libvn_files += files('vn_renderer_virtgpu.c')
+  libvn_files += files(
+    'vn_renderer_sim_syncobj.c',
+    'vn_renderer_virtgpu.c',
+  )
   vn_deps += dep_libdrm
 endif
 
@@ -138,7 +156,7 @@ endif
 
 libvulkan_virtio = shared_library(
   'vulkan_virtio',
-  [libvn_files, vn_entrypoints, sha1_h],
+  [libvn_files, vn_entrypoints, vn_drirc, sha1_h],
   include_directories : vn_incs,
   link_with : vn_libs,
   dependencies : vn_deps,

@@ -862,14 +862,15 @@ void genX(CmdResetQueryPool)(
 {
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
    ANV_FROM_HANDLE(anv_query_pool, pool, queryPool);
-   struct anv_physical_device *pdevice = cmd_buffer->device->physical;
+   const struct anv_physical_device *pdevice = cmd_buffer->device->physical;
+   const struct anv_instance *instance = pdevice->instance;
 
    /* Shader clearing is only possible on render/compute when not in protected
     * mode.
     */
    if (anv_cmd_buffer_is_render_or_compute_queue(cmd_buffer) &&
        (cmd_buffer->vk.pool->flags & VK_COMMAND_POOL_CREATE_PROTECTED_BIT) == 0 &&
-       queryCount >= pdevice->instance->query_clear_with_blorp_threshold) {
+       queryCount >= instance->drirc.perf.query_clear_with_blorp_threshold) {
       trace_intel_begin_query_clear_blorp(&cmd_buffer->trace);
 
       anv_cmd_buffer_fill_area(cmd_buffer,
@@ -1573,9 +1574,17 @@ void genX(CmdWriteTimestamp2)(
 
    assert(pool->vk.query_type == VK_QUERY_TYPE_TIMESTAMP);
 
-   if (append_query_clear_flush(cmd_buffer, pool,
-                                "CmdWriteTimestamp flush query clears"))
-      genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
+   /* Anything bottom-of-pipe, request a post-sync */
+   if (stage != VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)
+      cmd_buffer->state.pending_pipe_bits |= ANV_PIPE_POST_SYNC_BIT;
+
+   append_query_clear_flush(cmd_buffer, pool,
+                            "CmdWriteTimestamp flush query clears");
+
+   /* Always flush, even for top-of-pipe there might be a barrier that needs
+    * executing before we take the timestamp.
+    */
+   genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
 
    struct mi_builder b;
    mi_builder_init(&b, cmd_buffer->device->info, &cmd_buffer->batch);
@@ -1585,10 +1594,6 @@ void genX(CmdWriteTimestamp2)(
                    mi_reg64(TIMESTAMP));
       emit_query_mi_availability(&b, query_addr, true);
    } else {
-      /* Everything else is bottom-of-pipe */
-      cmd_buffer->state.pending_pipe_bits |= ANV_PIPE_POST_SYNC_BIT;
-      genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
-
       bool cs_stall_needed =
          (GFX_VER == 9 && cmd_buffer->device->info->gt == 4);
 
@@ -2040,9 +2045,10 @@ void genX(CmdCopyQueryPoolResults)(
    ANV_FROM_HANDLE(anv_query_pool, pool, queryPool);
    ANV_FROM_HANDLE(anv_buffer, buffer, destBuffer);
    struct anv_device *device = cmd_buffer->device;
-   struct anv_physical_device *pdevice = device->physical;
+   const struct anv_physical_device *pdevice = device->physical;
+   const struct anv_instance *instance = pdevice->instance;
 
-   if (queryCount > pdevice->instance->query_copy_with_shader_threshold &&
+   if (queryCount > instance->drirc.perf.query_copy_with_shader_threshold &&
        anv_cmd_buffer_is_render_or_compute_queue(cmd_buffer)) {
       copy_query_results_with_shader(cmd_buffer, pool,
                                      anv_address_add(buffer->address,
@@ -2062,9 +2068,44 @@ void genX(CmdCopyQueryPoolResults)(
    }
 }
 
+void genX(CmdCopyQueryPoolResultsToMemoryKHR)(
+    VkCommandBuffer                             commandBuffer,
+    VkQueryPool                                 queryPool,
+    uint32_t                                    firstQuery,
+    uint32_t                                    queryCount,
+    const VkStridedDeviceAddressRangeKHR*       pDstRange,
+    VkAddressCommandFlagsKHR                    dstFlags,
+    VkQueryResultFlags                          queryResultFlags)
+{
+   ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
+   ANV_FROM_HANDLE(anv_query_pool, pool, queryPool);
+   struct anv_device *device = cmd_buffer->device;
+   const struct anv_physical_device *pdevice = device->physical;
+   const struct anv_instance *instance = pdevice->instance;
+
+   struct anv_address dst_addr =
+      anv_address_from_strided_range_flags(*pDstRange, dstFlags);
+
+   if (queryCount > instance->drirc.perf.query_copy_with_shader_threshold) {
+      copy_query_results_with_shader(cmd_buffer, pool,
+                                     dst_addr,
+                                     pDstRange->stride,
+                                     firstQuery,
+                                     queryCount,
+                                     queryResultFlags);
+   } else {
+      copy_query_results_with_cs(cmd_buffer, pool,
+                                 dst_addr,
+                                 pDstRange->stride,
+                                 firstQuery,
+                                 queryCount,
+                                 queryResultFlags);
+   }
+}
+
 #if GFX_VERx10 >= 125 && ANV_SUPPORT_RT
 
-#include "bvh/anv_bvh.h"
+#include "bvh/anv_bvh_defines.h"
 
 void
 genX(CmdWriteAccelerationStructuresPropertiesKHR)(

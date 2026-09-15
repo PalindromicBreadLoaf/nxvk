@@ -115,8 +115,11 @@ fdl6_format_swiz(enum pipe_format format, bool has_z24uint_s8uint,
          format_swiz[1] = PIPE_SWIZZLE_X;
          format_swiz[2] = PIPE_SWIZZLE_X;
          format_swiz[3] = PIPE_SWIZZLE_Y;
-      } else if (!util_format_has_alpha(format)) {
-         /* for rgbx, force A to 1.  Harmless for R/RG, where we already get 1. */
+      } else if (util_format_get_nr_components(format) >= 3 && !util_format_has_alpha(format)) {
+         /* For GL's RGB/RGBX, force A to 1. We can't do this on R/RG, because it breaks
+          * QCOM_image_processing filtering (where image component substitution
+          * happens before filtering).
+          */
          format_swiz[3] = PIPE_SWIZZLE_1;
       }
       break;
@@ -574,7 +577,8 @@ template <chip CHIP>
 void
 fdl6_buffer_view_init(uint32_t *descriptor, enum pipe_format format,
                       const uint8_t (&swiz)[4], uint64_t iova, uint32_t size,
-                      uint32_t struct_size_texels)
+                      uint32_t struct_size_texels,
+                      enum fdl_ssbo_emulation_mode ssbo_emulation)
 {
    unsigned elem_size = util_format_get_blocksize(format);
    unsigned elements = size / elem_size;
@@ -609,6 +613,19 @@ fdl6_buffer_view_init(uint32_t *descriptor, enum pipe_format format,
                      A6XX_TEX_MEMOBJ_2_TYPE(A6XX_TEX_BUFFER);
       descriptor[4] = base_iova;
       descriptor[5] = base_iova >> 32;
+
+      if (ssbo_emulation == FDL_SSBO_EMULATION_ENABLED) {
+         /* resbase returns 0 if size is 0 */
+         if (descriptor[1] == 0) {
+            descriptor[1] = A6XX_TEX_MEMOBJ_1_WIDTH(1);
+         }
+
+         uint64_t encoded_size = (uint64_t) size << 6ull;
+         descriptor[7] = A6XX_TEX_MEMOBJ_7_FLAG_LO(encoded_size & 0x7FFFFFF);
+         descriptor[8] = A6XX_TEX_MEMOBJ_8_FLAG_HI(encoded_size >> 26);
+         descriptor[11] = iova;
+         descriptor[12] = iova >> 32;
+      }
    } else if (CHIP >= A8XX) {
       descriptor[0] = A8XX_TEX_MEMOBJ_0_INSTANCE_DESC_BASE_LO(iova);
       descriptor[1] = A8XX_TEX_MEMOBJ_1_BASE_HI(iova >> 32) |

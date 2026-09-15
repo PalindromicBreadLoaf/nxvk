@@ -9,11 +9,11 @@
  */
 
 #include "radv_cs.h"
+#include "tools/radv_debug.h"
+#include "tools/radv_sqtt.h"
 #include "radv_buffer.h"
-#include "radv_debug.h"
 #include "radv_sdma.h"
 #include "radv_shader.h"
-#include "radv_sqtt.h"
 #include "sid.h"
 
 void
@@ -151,7 +151,7 @@ gfx10_cs_emit_cache_flush(struct radv_cmd_stream *cs, enum amd_gfx_level gfx_lev
    if (cb_db_event) {
       if (gfx_level >= GFX11) {
          /* Send an event that flushes caches. */
-         ac_emit_cp_release_mem_pws(cs->b, gfx_level, cs->hw_ip, cb_db_event, gcr_cntl);
+         ac_emit_cp_release_mem_pws(cs->b, gfx_level, cs->hw_ip, cb_db_event, gcr_cntl & C_587_GLI_INV);
 
          gcr_cntl &= C_587_GLK_WB & C_587_GLK_INV & C_587_GLV_INV & C_587_GL2_INV & C_587_GL2_WB; /* keep SEQ */
 
@@ -208,7 +208,7 @@ gfx10_cs_emit_cache_flush(struct radv_cmd_stream *cs, enum amd_gfx_level gfx_lev
 
    /* Ignore fields that only modify the behavior of other fields. */
    if (gcr_cntl & C_587_GL2_RANGE & C_587_SEQ & (gfx_level >= GFX12 ? ~0 : C_587_GL1_RANGE)) {
-      ac_emit_cp_acquire_mem(cs->b, gfx_level, cs->hw_ip, V_581B_CP_PFP, gcr_cntl);
+      ac_emit_cp_acquire_mem(cs->b, gfx_level, cs->hw_ip, V_581A_PREFETCH_PARSER, gcr_cntl);
    } else if ((cb_db_event || (flush_bits & (RADV_CMD_FLAG_VS_PARTIAL_FLUSH | RADV_CMD_FLAG_PS_PARTIAL_FLUSH |
                                              RADV_CMD_FLAG_CS_PARTIAL_FLUSH))) &&
               !is_mec) {
@@ -392,7 +392,7 @@ radv_cs_emit_cache_flush(struct radeon_winsys *ws, struct radv_cmd_stream *cs, e
    }
 
    if ((flush_bits & RADV_CMD_FLAG_INV_L2) || (gfx_level <= GFX7 && (flush_bits & RADV_CMD_FLAG_WB_L2))) {
-      ac_emit_cp_acquire_mem(cs->b, gfx_level, cs->hw_ip, V_581B_CP_PFP,
+      ac_emit_cp_acquire_mem(cs->b, gfx_level, cs->hw_ip, V_581A_PREFETCH_PARSER,
                              cp_coher_cntl | S_0085F0_TC_ACTION_ENA(1) | S_0085F0_TCL1_ACTION_ENA(1) |
                                 S_0301F0_TC_WB_ACTION_ENA(gfx_level >= GFX8));
       cp_coher_cntl = 0;
@@ -406,14 +406,14 @@ radv_cs_emit_cache_flush(struct radeon_winsys *ws, struct radv_cmd_stream *cs, e
           *
           * WB doesn't work without NC.
           */
-         ac_emit_cp_acquire_mem(cs->b, gfx_level, cs->hw_ip, V_581B_CP_PFP,
+         ac_emit_cp_acquire_mem(cs->b, gfx_level, cs->hw_ip, V_581A_PREFETCH_PARSER,
                                 cp_coher_cntl | S_0301F0_TC_WB_ACTION_ENA(1) | S_0301F0_TC_NC_ACTION_ENA(1));
          cp_coher_cntl = 0;
 
          *sqtt_flush_bits |= RGP_FLUSH_FLUSH_L2 | RGP_FLUSH_INVAL_VMEM_L0;
       }
       if (flush_bits & RADV_CMD_FLAG_INV_VCACHE) {
-         ac_emit_cp_acquire_mem(cs->b, gfx_level, cs->hw_ip, V_581B_CP_PFP,
+         ac_emit_cp_acquire_mem(cs->b, gfx_level, cs->hw_ip, V_581A_PREFETCH_PARSER,
                                 cp_coher_cntl | S_0085F0_TCL1_ACTION_ENA(1));
          cp_coher_cntl = 0;
 
@@ -425,7 +425,7 @@ radv_cs_emit_cache_flush(struct radeon_winsys *ws, struct radv_cmd_stream *cs, e
     * Therefore, it should be last. Done in PFP.
     */
    if (cp_coher_cntl)
-      ac_emit_cp_acquire_mem(cs->b, gfx_level, cs->hw_ip, V_581B_CP_PFP, cp_coher_cntl);
+      ac_emit_cp_acquire_mem(cs->b, gfx_level, cs->hw_ip, V_581A_PREFETCH_PARSER, cp_coher_cntl);
 
    radeon_begin(cs);
 

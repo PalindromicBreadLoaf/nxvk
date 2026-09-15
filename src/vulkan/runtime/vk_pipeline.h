@@ -98,7 +98,7 @@ vk_pipeline_hash_shader_stage(VkPipelineCreateFlags2KHR pipeline_flags,
                               unsigned char *stage_blake3);
 
 void
-vk_pipeline_robustness_state_fill(const struct vk_device *device,
+vk_pipeline_robustness_state_fill(const struct vk_pipeline_robustness_state *device_robustness_state,
                                   struct vk_pipeline_robustness_state *rs,
                                   const void *pipeline_pNext,
                                   const void *shader_stage_pNext);
@@ -229,6 +229,12 @@ vk_pipeline_get_shader(struct vk_pipeline *pipeline,
 void
 vk_cmd_unbind_pipelines_for_stages(struct vk_command_buffer *cmd_buffer,
                                    VkShaderStageFlags stages);
+
+uint32_t
+vk_pipeline_get_rt_scratch_size(struct vk_pipeline *pipeline);
+
+uint32_t
+vk_pipeline_get_rt_ray_queries(struct vk_pipeline *pipeline);
 
 #ifdef __cplusplus
 }

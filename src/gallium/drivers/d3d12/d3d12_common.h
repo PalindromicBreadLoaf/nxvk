@@ -28,7 +28,6 @@
 
 #include <wsl/winadapter.h>
 
-#define D3D12_IGNORE_SDK_LAYERS
 #ifndef _GAMING_XBOX
 #include <directx/d3d12.h>
 #include <directx/d3d12video.h>

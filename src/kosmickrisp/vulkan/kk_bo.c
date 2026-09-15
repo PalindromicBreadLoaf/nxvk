@@ -23,6 +23,14 @@ kk_alloc_bo(struct kk_device *dev, struct vk_object_base *log_obj,
    mtl_heap_buffer_size_and_align_with_length(dev->mtl_handle, &size_B,
                                               &minimum_alignment);
    minimum_alignment = MAX2(minimum_alignment, align_B);
+
+#if DETECT_ARCH_X86_64
+   /* KK_WORKAROUND_8 */
+   if (!(dev->disabled_workarounds & BITFIELD64_BIT(8))) {
+      minimum_alignment = MAX2(minimum_alignment, 16384);
+   }
+#endif
+
    size_B = align64(size_B, minimum_alignment);
    mtl_heap *handle =
       mtl_new_heap(dev->mtl_handle, size_B, KK_MTL_RESOURCE_OPTIONS);
@@ -66,8 +74,17 @@ fail_heap:
 void
 kk_destroy_bo(struct kk_device *dev, struct kk_bo *bo)
 {
-   kk_device_remove_heap_from_residency_set(dev, bo->mtl_handle);
+   /* We may only have a mapped buffer, for example if the memory was imported
+    * from a host pointer */
+   if (bo->mtl_handle)
+      kk_device_remove_heap_from_residency_set(dev, bo->mtl_handle);
+   else
+      kk_device_remove_buffer_from_residency_set(dev, bo->map);
+
    mtl_release(bo->map);
-   mtl_release(bo->mtl_handle);
+
+   if (bo->mtl_handle)
+      mtl_release(bo->mtl_handle);
+
    FREE(bo);
 }

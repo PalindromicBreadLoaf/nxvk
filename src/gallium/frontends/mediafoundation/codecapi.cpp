@@ -340,14 +340,22 @@ CDX12EncHMFT::IsSupported( const GUID *Api )
        *Api == CODECAPI_AVEncVideoEncodeQP || *Api == CODECAPI_AVEncVideoMinQP || *Api == CODECAPI_AVEncVideoForceKeyFrame ||
        *Api == CODECAPI_AVEncH264SPSID || *Api == CODECAPI_AVEncH264PPSID || *Api == CODECAPI_AVEncVideoTemporalLayerCount ||
        *Api == CODECAPI_AVEncVideoSelectLayer || *Api == CODECAPI_AVEncVideoEncodeFrameTypeQP ||
-       *Api == CODECAPI_AVEncSliceControlMode || *Api == CODECAPI_AVEncSliceControlSize ||
        *Api == CODECAPI_AVEncVideoMaxNumRefFrame || *Api == CODECAPI_AVEncVideoMeanAbsoluteDifference ||
        *Api == CODECAPI_AVEncVideoMaxQP || *Api == CODECAPI_AVScenarioInfo || *Api == CODECAPI_AVEncVideoROIEnabled ||
        *Api == CODECAPI_AVEncVideoLTRBufferControl || *Api == CODECAPI_AVEncVideoMarkLTRFrame ||
-       *Api == CODECAPI_AVEncVideoUseLTRFrame || *Api == CODECAPI_AVEncSliceGenerationMode )
+       *Api == CODECAPI_AVEncVideoUseLTRFrame )
    {
       hr = S_OK;
       return hr;
+   }
+
+   if( m_EncoderCapabilities.m_bHWSupportsAppControlledSlicePartitioning )
+   {
+      if( *Api == CODECAPI_AVEncSliceControlMode || *Api == CODECAPI_AVEncSliceControlSize )
+      {
+         hr = S_OK;
+         return hr;
+      }   
    }
 
    if( m_EncoderCapabilities.m_HWSupportsIntraRefreshModes != PIPE_VIDEO_ENC_INTRA_REFRESH_NONE )
@@ -958,7 +966,7 @@ CDX12EncHMFT::GetValue( const GUID *Api, VARIANT *Value )
       hevcDeltaQPSettings.dataType = CODEC_API_QP_MAP_INT8;
       hevcDeltaQPSettings.minValue = static_cast<INT16>( m_uiMinQP );
       hevcDeltaQPSettings.maxValue = static_cast<INT16>( m_uiMaxQP );
-#if defined(INPUTQPSETTINGS_HAS_STEPS)
+#if defined( INPUTQPSETTINGS_HAS_STEPS )
       hevcDeltaQPSettings.steps = 1;
 #else
       hevcDeltaQPSettings.step = 1;
@@ -1167,7 +1175,7 @@ CDX12EncHMFT::SetValue( const GUID *Api, VARIANT *Value )
          {
             CHECKHR_GOTO( E_INVALIDARG, done );
          }
-         m_bLowLatency = Value->boolVal;
+         m_bLowLatency = Value->boolVal == VARIANT_TRUE ? TRUE : FALSE;
          if( ( m_eScenarioInfo == eAVScenarioInfo_DisplayRemoting ) ||
              ( m_eScenarioInfo == eAVScenarioInfo_DisplayRemotingWithFeatureMap ) ||
              ( m_eScenarioInfo == eAVScenarioInfo_CameraRecord ) || ( m_eScenarioInfo == eAVScenarioInfo_VideoConference ) ||
@@ -1193,7 +1201,7 @@ CDX12EncHMFT::SetValue( const GUID *Api, VARIANT *Value )
       {
          CHECKHR_GOTO( E_INVALIDARG, done );
       }
-      m_bCabacEnable = Value->boolVal;
+      m_bCabacEnable = Value->boolVal == VARIANT_TRUE ? TRUE : FALSE;
    }
    else if( *Api == CODECAPI_AVEnableInLoopDeblockFilter )
    {

@@ -32,7 +32,7 @@ get_surface_count(const struct anv_device *device,
 {
 #if GFX_VERx10 >= 125
    if (shader->vk.stage == MESA_SHADER_COMPUTE &&
-       !device->physical->instance->force_compute_surface_prefetch)
+       !device->physical->instance->drirc.perf.cs_surface_prefetch)
       return 0;
 #endif
    return shader->bind_map.surface_count;
@@ -51,7 +51,7 @@ get_sampler_count(const struct anv_device *device,
     */
    return 0;
 #else
-   if (!device->physical->instance->force_sampler_prefetch)
+   if (!device->physical->instance->drirc.perf.sampler_prefetch)
       return 0;
 
    return DIV_ROUND_UP(
@@ -289,6 +289,14 @@ vertex_element_comp_control(enum isl_format format, unsigned comp)
    }
 }
 
+static inline uint32_t
+vertex_element_slot(uint32_t elements, uint32_t elements_double, uint32_t a)
+{
+   return __builtin_popcount(elements & ((1 << a) - 1)) -
+          DIV_ROUND_UP(__builtin_popcount(elements_double &
+                                         ((1 << a) - 1)), 2);
+}
+
 static void
 emit_ves_vf_instancing(struct anv_batch *batch,
                        uint32_t *vertex_element_dws,
@@ -323,19 +331,12 @@ emit_ves_vf_instancing(struct anv_batch *batch,
        *
        * TODO: Compact vertex elements so we never end up with holes.
        */
-      struct GENX(VERTEX_ELEMENT_STATE) element = {
-         .Valid = true,
-         .Component0Control = VFCOMP_STORE_0,
-         .Component1Control = VFCOMP_STORE_0,
-         .Component2Control = VFCOMP_STORE_0,
-         .Component3Control = VFCOMP_STORE_0,
-      };
-      GENX(VERTEX_ELEMENT_STATE_pack)(NULL,
-                                      &vertex_element_dws[i * 2],
-                                      &element);
+      memcpy(&vertex_element_dws[i * 2],
+             device->physical->gfx_default.empty_vs_input,
+             sizeof(device->physical->gfx_default.empty_vs_input));
    }
 
-   u_foreach_bit(a, vi->attributes_valid) {
+   u_foreach_bit(a, vi->attributes_valid & elements) {
       enum isl_format format = anv_get_vbo_format(
          device->physical, vi->attributes[a].format);
       assume(format < ISL_NUM_FORMATS);
@@ -343,13 +344,7 @@ emit_ves_vf_instancing(struct anv_batch *batch,
       uint32_t binding = vi->attributes[a].binding;
       assert(binding < get_max_vbs(device->info));
 
-      if ((elements & (1 << a)) == 0)
-         continue; /* Binding unused */
-
-      uint32_t slot =
-         __builtin_popcount(elements & ((1 << a) - 1)) -
-         DIV_ROUND_UP(__builtin_popcount(elements_double &
-                                        ((1 << a) -1)), 2);
+      uint32_t slot = vertex_element_slot(elements, elements_double, a);
 
       struct GENX(VERTEX_ELEMENT_STATE) element = {
          .VertexBufferIndex = vi->attributes[a].binding,
@@ -365,11 +360,14 @@ emit_ves_vf_instancing(struct anv_batch *batch,
       GENX(VERTEX_ELEMENT_STATE_pack)(NULL,
                                       &vertex_element_dws[slot * 2],
                                       &element);
+   }
 
-      /* On Broadwell and later, we have a separate VF_INSTANCING packet
-       * that controls instancing.  On Haswell and prior, that's part of
-       * VERTEX_BUFFER_STATE which we emit later.
-       */
+   u_foreach_bit(a, vi->attributes_valid & elements) {
+      uint32_t binding = vi->attributes[a].binding;
+      assert(binding < get_max_vbs(device->info));
+
+      uint32_t slot = vertex_element_slot(elements, elements_double, a);
+
       anv_batch_emit(batch, GENX(3DSTATE_VF_INSTANCING), vfi) {
          bool per_instance = vi->bindings[binding].input_rate ==
             VK_VERTEX_INPUT_RATE_INSTANCE;
@@ -401,12 +399,13 @@ genX(batch_emit_vertex_input)(struct anv_batch *batch,
       memcpy(p + 1, device->physical->gfx_default.empty_vs_input,
              sizeof(device->physical->gfx_default.empty_vs_input));
    } else {
-      /* Use dyn->vi to emit the dynamic VERTEX_ELEMENT_STATE input. */
-      emit_ves_vf_instancing(batch, p + 1, device, shader, vi);
-      /* Then append the VERTEX_ELEMENT_STATE for the draw parameters */
+      /* Fill the system values VERTEX_ELEMENT_STATE entries for the draw parameters. */
       memcpy(p + 1 + 2 * shader->vs.input_elements,
              shader->vs.sgvs_elements,
              4 * 2 * shader->vs.sgvs_count);
+
+      /* Use dyn->vi to emit the dynamic VERTEX_ELEMENT_STATE input. */
+      emit_ves_vf_instancing(batch, p + 1, device, shader, vi);
    }
 }
 
@@ -533,7 +532,7 @@ emit_vs_shader(struct anv_batch *batch,
    }
 #endif
 
-   if (device->physical->instance->vf_component_packing) {
+   if (device->physical->instance->drirc.perf.vf_comp_packing) {
       anv_shader_emit(batch, shader, vs.vf_component_packing,
                       GENX(3DSTATE_VF_COMPONENT_PACKING), vfc) {
          vfc.VertexElementEnablesDW[0] = vs_prog_data->vf_component_packing[0];
@@ -735,15 +734,7 @@ emit_ds_shader(struct anv_batch *batch,
       ds.DispatchGRFStartRegisterForURBData =
          tes_prog_data->base.base.dispatch_grf_start_reg;
 
-#if GFX_VER < 11
-      ds.DispatchMode =
-         tes_prog_data->base.dispatch_mode == DISPATCH_MODE_SIMD8 ?
-         DISPATCH_MODE_SIMD8_SINGLE_PATCH :
-         DISPATCH_MODE_SIMD4X2;
-#else
-      assert(tes_prog_data->base.dispatch_mode == INTEL_DISPATCH_MODE_SIMD8);
       ds.DispatchMode = DISPATCH_MODE_SIMD8_SINGLE_PATCH;
-#endif
 
       ds.UserClipDistanceClipTestEnableBitmask =
          tes_prog_data->base.clip_distance_mask;
@@ -914,12 +905,7 @@ emit_task_shader(struct anv_batch *batch,
                                                       task_dispatch.group_size,
                                                       task_dispatch.simd_size);
 
-      /*
-       * 3DSTATE_TASK_SHADER_DATA.InlineData[0:1] will be used for an address
-       * of a buffer with push constants and descriptor set table and
-       * InlineData[2:7] will be used for first few push constants.
-       */
-      task.EmitInlineParameter = true;
+      task.EmitInlineParameter = shader->bind_map.inline_dwords_count > 0;
       task.IndirectDataLength = align(shader->bind_map.push_ranges[0].length * 32, 64);
 
       task.XP0Required = task_prog_data->uses_drawid;
@@ -1018,12 +1004,7 @@ emit_mesh_shader(struct anv_batch *batch,
                                                       mesh_dispatch.group_size,
                                                       mesh_dispatch.simd_size);
 
-      /*
-       * 3DSTATE_MESH_SHADER_DATA.InlineData[0:1] will be used for an address
-       * of a buffer with push constants and descriptor set table and
-       * InlineData[2:7] will be used for first few push constants.
-       */
-      mesh.EmitInlineParameter = true;
+      mesh.EmitInlineParameter = shader->bind_map.inline_dwords_count > 0;
       mesh.IndirectDataLength = align(shader->bind_map.push_ranges[0].length * 32, 64);
 
       mesh.XP0Required = mesh_prog_data->uses_drawid;
@@ -1209,7 +1190,7 @@ emit_cs_shader(struct anv_batch *batch,
          .RegistersPerThread                = ptl_register_blocks(cs_prog_data->base.grf_used),
 #endif
       },
-      .EmitInlineParameter            = cs_prog_data->uses_inline_push_addr,
+      .EmitInlineParameter            = shader->bind_map.inline_dwords_count > 0,
    };
 
    assert(ARRAY_SIZE(shader->cs.gfx125.compute_walker_body) >=
@@ -1279,6 +1260,75 @@ emit_cs_shader(struct anv_batch *batch,
    GENX(INTERFACE_DESCRIPTOR_DATA_pack)(batch,
                                         shader->cs.gfx9.idd,
                                         &desc);
+#endif
+}
+
+void
+genX(write_cs_descriptor)(struct anv_dgc_cs_descriptor *desc,
+                          struct anv_device *device,
+                          struct anv_shader *shader)
+{
+   const struct anv_pipeline_bind_map *bind_map = &shader->bind_map;
+   const struct anv_push_range *push_range = &bind_map->push_ranges[0];
+
+   *desc = (struct anv_dgc_cs_descriptor) {
+      .push_data_offset = 32 * (push_range->set == ANV_DESCRIPTOR_SET_PUSH_CONSTANTS ?
+                                push_range->start : 0),
+   };
+
+   const struct brw_cs_prog_data *prog_data =
+      brw_cs_prog_data_const(shader->prog_data);
+   const struct intel_cs_dispatch_info dispatch =
+      brw_cs_get_dispatch_info(device->info, prog_data, NULL);
+
+   desc->right_mask = dispatch.right_mask;
+   desc->threads = dispatch.threads;
+   desc->simd_size = dispatch.simd_size;
+
+#if GFX_VERx10 >= 125
+   GENX(COMPUTE_WALKER_pack)(NULL, desc->gfx125.compute_walker,
+                             &(struct GENX(COMPUTE_WALKER)) {
+                                GENX(COMPUTE_WALKER_header),
+                                .body = {
+                                   .PostSync.MOCS = anv_mocs(device, NULL, 0),
+                                },
+                             });
+
+   assert(sizeof(desc->gfx125.compute_walker) >
+          sizeof(shader->cs.gfx125.compute_walker_body));
+   for (uint32_t i = 0; i < ARRAY_SIZE(shader->cs.gfx125.compute_walker_body); i++)
+      desc->gfx125.compute_walker[1 + i] |= shader->cs.gfx125.compute_walker_body[i];
+   desc->gfx125.inline_dwords_count = bind_map->inline_dwords_count;
+   assert(sizeof(desc->gfx125.inline_dwords) ==
+          sizeof(bind_map->inline_dwords));
+   memcpy(desc->gfx125.inline_dwords,
+          bind_map->inline_dwords,
+          sizeof(bind_map->inline_dwords));
+
+#else
+   assert(sizeof(desc->gfx9.media_vfe_state) ==
+          shader->cs.gfx9.vfe.len * 4);
+   assert(sizeof(desc->gfx9.interface_descriptor_data) ==
+          sizeof(shader->cs.gfx9.idd));
+
+   memcpy(desc->gfx9.media_vfe_state,
+          &shader->cmd_data[shader->cs.gfx9.vfe.offset],
+          shader->cs.gfx9.vfe.len * 4);
+   memcpy(desc->gfx9.interface_descriptor_data,
+          shader->cs.gfx9.idd,
+          sizeof(desc->gfx9.interface_descriptor_data));
+
+   desc->gfx9.n_threads = dispatch.threads;
+   desc->gfx9.cross_thread_push_size = prog_data->push.cross_thread.size;
+   desc->gfx9.per_thread_push_size = prog_data->push.per_thread.size;
+   desc->gfx9.subgroup_id_offset =
+      offsetof(struct anv_push_constants, cs.subgroup_id) -
+      (32 * push_range->start + prog_data->push.cross_thread.size);
+
+   GENX(GPGPU_WALKER_pack)(NULL, desc->gfx9.gpgpu_walker,
+                           &(struct GENX(GPGPU_WALKER)) {
+                                GENX(GPGPU_WALKER_header),
+                           });
 #endif
 }
 

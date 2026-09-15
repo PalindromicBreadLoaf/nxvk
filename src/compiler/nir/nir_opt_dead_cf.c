@@ -132,9 +132,9 @@ def_only_used_in_cf_node(nir_def *def, void *_node)
       nir_block *block;
 
       if (nir_src_is_if(use))
-         block = nir_cf_node_as_block(nir_cf_node_prev(&nir_src_parent_if(use)->cf_node));
+         block = nir_cf_node_as_block(nir_cf_node_prev(&nir_src_use_if(use)->cf_node));
       else
-         block = nir_src_parent_instr(use)->block;
+         block = nir_src_use_instr(use)->block;
 
       /* Note: Normally, the uses of a phi instruction are considered to be
        * used in the block that is the predecessor of the phi corresponding to
@@ -205,7 +205,8 @@ node_is_dead(nir_cf_node *node)
          if (instr->type == nir_instr_type_jump &&
              (!inside_loop ||
               nir_instr_as_jump(instr)->type == nir_jump_return ||
-              nir_instr_as_jump(instr)->type == nir_jump_halt))
+              nir_instr_as_jump(instr)->type == nir_jump_halt ||
+              nir_instr_as_jump(instr)->type == nir_jump_abort))
             return false;
 
          if (instr->type == nir_instr_type_intrinsic) {
@@ -216,10 +217,12 @@ node_is_dead(nir_cf_node *node)
 
             switch (intrin->intrinsic) {
             case nir_intrinsic_load_deref:
+            case nir_intrinsic_load_deref_transpose_amd:
             case nir_intrinsic_load_ssbo:
             case nir_intrinsic_load_global:
             case nir_intrinsic_load_global_bounded:
             case nir_intrinsic_load_global_nv:
+            case nir_intrinsic_load_global_transpose_amd:
             case nir_intrinsic_load_ssbo_intel:
             case nir_intrinsic_load_ssbo_ir3:
                /* If there's a memory barrier after the loop, a load might be
@@ -230,7 +233,8 @@ node_is_dead(nir_cf_node *node)
                 * Consider only loads that the result can be affected by other
                 * invocations.
                 */
-               if (intrin->intrinsic == nir_intrinsic_load_deref) {
+               if (intrin->intrinsic == nir_intrinsic_load_deref ||
+                   intrin->intrinsic == nir_intrinsic_load_deref_transpose_amd) {
                   nir_deref_instr *deref = nir_src_as_deref(intrin->src[0]);
                   if (!nir_deref_mode_may_be(deref, nir_var_mem_ssbo |
                                                        nir_var_mem_shared |
@@ -388,11 +392,39 @@ dead_cf_list(struct exec_list *list, bool *list_ends_in_jump)
    return progress;
 }
 
+/*
+ * nir_jump_return jumps to the end of a function, while nir_jump_halt jumps to
+ * the end of the entrypoint (equivalent for the entrypoint). Therefore, return
+ * is pointless as the last instruction of a function and likewise halt in the
+ * entrypoint. Detect such cases and delete the jump.
+ *
+ * This cleans up certain halts added by nir_lower_terminate_to_demote.
+ */
+static bool
+delete_final_return(nir_function_impl *impl)
+{
+   nir_block *last_block = nir_impl_last_block(impl);
+   if (!nir_block_ends_in_jump(last_block)) {
+      return false;
+   }
+
+   nir_jump_instr *jump = nir_instr_as_jump(nir_block_last_instr(last_block));
+   if (jump->type == nir_jump_return ||
+       (impl->function->is_entrypoint && jump->type == nir_jump_halt)) {
+
+      nir_instr_remove(&jump->instr);
+      return true;
+   }
+
+   return false;
+}
+
 static bool
 opt_dead_cf_impl(nir_function_impl *impl)
 {
    bool dummy;
    bool progress = dead_cf_list(&impl->body, &dummy);
+   progress |= delete_final_return(impl);
 
    if (progress) {
       nir_progress(true, impl, nir_metadata_none);

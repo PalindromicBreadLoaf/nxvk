@@ -6,16 +6,15 @@
 
 #include "si_build_pm4.h"
 #include "si_query.h"
-#include "si_shader_internal.h"
+#include "gfx/si_gfx.h"
+#include "gfx/si_shader_internal.h"
 #include "sid.h"
 #include "util/fast_idiv_by_const.h"
 #include "util/format/u_format.h"
-#include "util/format/u_format_s3tc.h"
 #include "util/hash_table.h"
 #include "util/u_dual_blend.h"
 #include "util/u_helpers.h"
 #include "util/u_memory.h"
-#include "util/u_resource.h"
 #include "util/u_upload_mgr.h"
 #include "util/u_blend.h"
 #include "util/u_process.h"
@@ -1832,7 +1831,7 @@ static void si_emit_db_render_state(struct si_context *sctx, unsigned index)
          S_028010_DECOMPRESS_Z_ON_FLUSH(sctx->framebuffer.nr_samples >= 4) |
          S_028010_CENTROID_COMPUTATION_MODE(sctx->gfx_level >= GFX10_3 ? 1 : 0);
 
-   if (sctx->gfx_level <= GFX11_5) {
+   if (sctx->gfx_level <= GFX11_7) {
       db_render_override2 |=
          S_028010_DISABLE_ZMASK_EXPCLEAR_OPTIMIZATION(sctx->db_depth_disable_expclear) |
          S_028010_DISABLE_SMEM_EXPCLEAR_OPTIMIZATION(sctx->db_stencil_disable_expclear);
@@ -2181,7 +2180,7 @@ static bool si_is_reduction_mode_supported(struct pipe_screen *screen, enum pipe
    return ac_is_reduction_mode_supported(&sscreen->info, format, true);
 }
 
-static bool si_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
+bool si_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
                                    enum pipe_texture_target target, unsigned sample_count,
                                    unsigned storage_sample_count, unsigned usage)
 {
@@ -2408,7 +2407,7 @@ static void si_init_depth_surface(struct si_context *sctx)
       .num_samples = tex->buffer.b.b.nr_samples,
       .first_layer = sctx->framebuffer.state.zsbuf.first_layer,
       .last_layer = sctx->framebuffer.state.zsbuf.last_layer,
-      .allow_expclear = sctx->gfx_level <= GFX11_5,
+      .allow_expclear = sctx->gfx_level <= GFX11_7,
       .htile_enabled = sctx->gfx_level < GFX12 && si_htile_enabled(tex, level, PIPE_MASK_ZS),
       .htile_stencil_disabled = tex->htile_stencil_disabled,
    };
@@ -3542,6 +3541,7 @@ void si_make_buffer_descriptor(struct si_screen *screen, struct si_resource *buf
          },
       .stride = stride,
       .gfx10_oob_select = V_008F0C_OOB_SELECT_STRUCTURED_WITH_OFFSET,
+      .has_desc_resource_level = screen->info.compiler_info.has_desc_resource_level,
    };
 
    ac_build_buffer_descriptor(screen->info.gfx_level, &buffer_state, &state[0]);
@@ -3624,6 +3624,7 @@ static void cdna_emu_make_image_descriptor(struct si_screen *screen, struct si_t
          },
       .stride = stride,
       .gfx10_oob_select = V_008F0C_OOB_SELECT_STRUCTURED_WITH_OFFSET,
+      .has_desc_resource_level = screen->info.compiler_info.has_desc_resource_level,
    };
 
    ac_build_buffer_descriptor(screen->info.gfx_level, &buffer_state, &state[0]);
@@ -4468,6 +4469,7 @@ static void *si_create_vertex_elements(struct pipe_context *ctx, unsigned count,
           */
          .gfx10_oob_select = v->elem[i].stride ? V_008F0C_OOB_SELECT_STRUCTURED
                                                : V_008F0C_OOB_SELECT_RAW,
+         .has_desc_resource_level = sscreen->info.compiler_info.has_desc_resource_level,
       };
 
       ac_set_buf_desc_word3(sscreen->info.gfx_level, &buffer_state, &v->elem[i].rsrc_word3);
@@ -4796,7 +4798,6 @@ void si_init_state_functions(struct si_context *sctx)
 
 void si_init_screen_state_functions(struct si_screen *sscreen)
 {
-   sscreen->b.is_format_supported = si_is_format_supported;
    sscreen->b.create_vertex_state = si_pipe_create_vertex_state;
    sscreen->b.vertex_state_destroy = si_pipe_vertex_state_destroy;
 
@@ -4952,10 +4953,10 @@ static bool gfx10_init_gfx_preamble_state(struct si_context *sctx)
    }
 
    if (sctx->uses_userq_reg_shadowing) {
-      /* In case of GFX11_5, CONTEXT_CONTROL packet is added in si_init_cp_reg_shaodwing()
+      /* In case of GFX11.5-11.7, CONTEXT_CONTROL packet is added in si_init_cp_reg_shaodwing()
        * function.
        */
-      if (sctx->gfx_level != GFX11_5) {
+      if (sctx->gfx_level < GFX11_5 || sctx->gfx_level > GFX11_7) {
          ac_pm4_cmd_add(&pm4->base, PKT3(PKT3_CONTEXT_CONTROL, 1, 0));
          ac_pm4_cmd_add(&pm4->base, S_281_UPDATE_LOAD_ENABLES(1) | S_281_LOAD_PER_CONTEXT_STATE(1) |
                            S_281_LOAD_CS_SH_REGS(1) | S_281_LOAD_GFX_SH_REGS(1) |

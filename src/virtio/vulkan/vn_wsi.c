@@ -178,7 +178,7 @@ vn_wsi_init(struct vn_physical_device *physical_dev)
       &physical_dev->instance->base.vk.alloc;
    VkResult result = wsi_device_init(
       &physical_dev->wsi_device, vn_physical_device_to_handle(physical_dev),
-      vn_wsi_proc_addr, alloc, -1, &physical_dev->instance->dri_options,
+      vn_wsi_proc_addr, alloc, -1, &physical_dev->instance->drirc.options,
       &(struct wsi_device_options){
          .sw_device = use_sw_device,
          .extra_xwayland_image = true,
@@ -368,7 +368,7 @@ vn_wsi_validate_image_format_info(struct vn_physical_device *physical_dev,
     * both plane counts to 1 while virgl may be involved.
     */
    if (modifier_info &&
-       !physical_dev->instance->enable_wsi_multi_plane_modifiers &&
+       !physical_dev->instance->drirc.performance.enable_wsi_multi_plane_modifiers &&
        modifier_info->drmFormatModifier != DRM_FORMAT_MOD_LINEAR) {
       const uint32_t plane_count = vn_modifier_plane_count(
          physical_dev, info->format, modifier_info->drmFormatModifier);
@@ -388,8 +388,11 @@ vn_wsi_validate_image_format_info(struct vn_physical_device *physical_dev,
 }
 
 VkResult
-vn_wsi_fence_wait(struct vn_device *dev, struct vn_queue *queue)
+vn_wsi_fence_wait(VkQueue queue_handle)
 {
+   struct vn_queue *queue = vn_queue_from_handle(queue_handle);
+   struct vn_device *dev = vn_device_from_vk(queue->base.vk.base.device);
+
    /* External sync is supported by virtgpu backend but not vtest backend. For
     * vtest, common wsi will skip the implicit out fence installation due to
     * the lack of external SYNC_FD semaphore support. So we'll detect async
@@ -416,7 +419,6 @@ vn_wsi_fence_wait(struct vn_device *dev, struct vn_queue *queue)
          return result;
    }
 
-   VkQueue queue_handle = vn_queue_to_handle(queue);
    result = vn_QueueSubmit(queue_handle, 0, NULL, queue->async_present.fence);
    if (result != VK_SUCCESS)
       return result;
@@ -473,8 +475,10 @@ vn_wsi_sync_wait(struct vn_device *dev, int fd)
 }
 
 void
-vn_wsi_flush(struct vn_queue *queue)
+vn_wsi_flush(VkQueue queue_handle)
 {
+   struct vn_queue *queue = vn_queue_from_handle(queue_handle);
+
    /* No need to flush if there's no present. */
    if (!queue->async_present.initialized)
       return;

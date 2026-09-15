@@ -60,6 +60,8 @@ struct lower_descriptors_ctx {
    bool use_edb_buffer_views;
    bool clamp_desc_array_bounds;
    bool indirect_bind;
+   bool has_task_shader;
+   bool no_ubo_cbuf;
    nir_address_format ubo_addr_format;
    nir_address_format ssbo_addr_format;
 
@@ -397,6 +399,20 @@ record_cbuf_uses_instr(UNUSED nir_builder *b, nir_instr *instr, void *_ctx)
    }
 }
 
+/* Whether a set's descriptors live in the command buffer rather than in
+ * memory only the GPU reads.
+ */
+static bool
+cbuf_set_is_push(const struct lower_descriptors_ctx *ctx, uint8_t desc_set)
+{
+   const struct nvk_descriptor_set_layout *set_layout =
+      ctx->set_layouts[desc_set];
+
+   return set_layout != NULL &&
+          (set_layout->flags &
+           VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR);
+}
+
 static void
 build_cbuf_map(nir_shader *nir, struct lower_descriptors_ctx *ctx)
 {
@@ -458,12 +474,14 @@ build_cbuf_map(nir_shader *nir, struct lower_descriptors_ctx *ctx)
           cbufs[i].key.type == NVK_CBUF_TYPE_UBO_DESC)
          continue;
 
-      /* Prior to Turing, indirect cbufs require splitting the pushbuf and
-       * pushing bits of the descriptor set.  Doing this every draw call is
-       * probably more overhead than it's worth.
+      /* Prior to Turing, a cbuf whose descriptor the CPU cannot read at bind
+       * time requires splitting the pushbuf so the command streamer fetches
+       * the descriptor itself. That split is ruinous, but it only applies to sets
+       * the CPU has no copy of.
        */
       if (ctx->dev_info->cls_eng3d < TURING_A &&
-          cbufs[i].key.type == NVK_CBUF_TYPE_UBO_DESC)
+          cbufs[i].key.type == NVK_CBUF_TYPE_UBO_DESC &&
+          (ctx->no_ubo_cbuf || !cbuf_set_is_push(ctx, cbufs[i].key.desc_set)))
          continue;
 
       ctx->cbuf_map->cbufs[ctx->cbuf_map->cbuf_count++] = cbufs[i].key;
@@ -858,7 +876,7 @@ lower_load_input_attachment_coord(nir_builder *b, nir_intrinsic_instr *load,
 {
    b->cursor = nir_before_instr(&load->instr);
 
-   nir_def *pos = nir_f2i32(b, nir_load_frag_coord(b));
+   nir_def *pos = nir_f2i32(b, nir_build_frag_coord(b, 2));
 
    nir_def *layer = nir_load_layer_id(b);
    nir_def *view = load_root_table(b, 1, 32, draw.view_index, ctx);
@@ -1122,6 +1140,8 @@ static bool
 try_lower_intrin(nir_builder *b, nir_intrinsic_instr *intrin,
                  const struct lower_descriptors_ctx *ctx)
 {
+   const mesa_shader_stage stage = b->shader->info.stage;
+
    switch (intrin->intrinsic) {
    case nir_intrinsic_load_constant:
       return lower_load_constant(b, intrin, ctx);
@@ -1133,20 +1153,30 @@ try_lower_intrin(nir_builder *b, nir_intrinsic_instr *intrin,
       UNREACHABLE("Should have been lowered by nir_lower_cs_intrinsics()");
 
    case nir_intrinsic_load_num_workgroups:
+      /* We use ISBE.ATTR to pass this from task. */
+      if (stage == MESA_SHADER_MESH && ctx->has_task_shader)
+         return false;
+
+      if (stage == MESA_SHADER_MESH || stage == MESA_SHADER_TASK)
+         return lower_sysval_to_root_table(b, intrin, draw.mesh.group_count, ctx);
+
       return lower_sysval_to_root_table(b, intrin, cs.group_count, ctx);
 
    case nir_intrinsic_load_base_workgroup_id:
-      return lower_sysval_to_root_table(b, intrin, cs.base_group, ctx);
+      if (stage == MESA_SHADER_COMPUTE)
+         return lower_sysval_to_root_table(b, intrin, cs.base_group, ctx);
+
+      return false;
 
    case nir_intrinsic_load_push_constant:
       return lower_load_push_constant(b, intrin, ctx);
 
    case nir_intrinsic_load_base_vertex:
    case nir_intrinsic_load_first_vertex:
-      return lower_sysval_to_root_table(b, intrin, draw.base_vertex, ctx);
+      return lower_sysval_to_root_table(b, intrin, draw.vs.base_vertex, ctx);
 
    case nir_intrinsic_load_base_instance:
-      return lower_sysval_to_root_table(b, intrin, draw.base_instance, ctx);
+      return lower_sysval_to_root_table(b, intrin, draw.vs.base_instance, ctx);
 
    case nir_intrinsic_load_draw_id:
       return lower_sysval_to_root_table(b, intrin, draw.draw_index, ctx);
@@ -1548,6 +1578,8 @@ nvk_nir_lower_descriptors(nir_shader *nir,
          rs->images != VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DISABLED_EXT,
       .indirect_bind =
          shader_flags & VK_SHADER_CREATE_INDIRECT_BINDABLE_BIT_EXT,
+      .has_task_shader = (shader_flags & VK_SHADER_CREATE_NO_TASK_SHADER_BIT_EXT) == 0,
+      .no_ubo_cbuf = (pdev->debug_flags & NVK_DEBUG_NO_UBO_CBUF) != 0,
       .ssbo_addr_format = nvk_ssbo_addr_format(pdev, rs),
       .ubo_addr_format = nvk_ubo_addr_format(pdev, rs),
    };

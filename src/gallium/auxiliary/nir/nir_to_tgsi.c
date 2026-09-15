@@ -75,7 +75,6 @@ struct ntt_compile {
 
    bool needs_texcoord_semantic;
    bool native_integers;
-   bool has_txf_lz;
 
    bool addr_declared[3];
    struct ureg_dst addr_reg[3];
@@ -762,10 +761,10 @@ ntt_try_store_in_tgsi_output_with_use(struct ntt_compile *c,
    if (nir_src_is_if(src))
       return false;
 
-   if (nir_src_parent_instr(src)->type != nir_instr_type_intrinsic)
+   if (nir_src_use_instr(src)->type != nir_instr_type_intrinsic)
       return false;
 
-   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(nir_src_parent_instr(src));
+   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(nir_src_use_instr(src));
    if (intr->intrinsic != nir_intrinsic_store_output ||
        !nir_src_is_const(intr->src[1])) {
       return false;
@@ -793,7 +792,7 @@ ntt_try_store_reg_in_tgsi_output(struct ntt_compile *c, struct ureg_dst *dst,
    /* Look for a single use for try_store_in_tgsi_output */
    nir_src *use = NULL;
    nir_foreach_reg_load(src, reg_decl) {
-      nir_intrinsic_instr *load = nir_instr_as_intrinsic(nir_src_parent_instr(src));
+      nir_intrinsic_instr *load = nir_instr_as_intrinsic(nir_src_use_instr(src));
       nir_foreach_use_including_if(load_use, &load->def) {
          /* We can only have one use */
          if (use != NULL)
@@ -1571,7 +1570,9 @@ ntt_emit_alu(struct ntt_compile *c, nir_alu_instr *instr)
       [nir_op_fmax] = { TGSI_OPCODE_MAX, TGSI_OPCODE_DMAX },
       [nir_op_imax] = { TGSI_OPCODE_IMAX, TGSI_OPCODE_I64MAX },
       [nir_op_umax] = { TGSI_OPCODE_UMAX, TGSI_OPCODE_U64MAX },
-      [nir_op_ffma] = { TGSI_OPCODE_MAD, TGSI_OPCODE_DMAD },
+      /* This is fine as long as drivers implement TGSI MAD as fmad */
+      [nir_op_fmad] = { TGSI_OPCODE_MAD, TGSI_OPCODE_DMAD },
+      [nir_op_ffma_weak] = { TGSI_OPCODE_MAD, TGSI_OPCODE_DMAD },
       [nir_op_ldexp] = { TGSI_OPCODE_LDEXP, 0 },
    };
 
@@ -2005,7 +2006,7 @@ ntt_emit_mem(struct ntt_compile *c, nir_intrinsic_instr *instr,
       next_src = 1;
       break;
    case nir_var_mem_shared:
-      memory = ureg_src_register(TGSI_FILE_MEMORY, 0);
+      memory = ureg_src_register(TGSI_FILE_MEMORY, TGSI_MEMORY_TYPE_SHARED);
       next_src = 0;
       break;
    case nir_var_uniform: { /* HW atomic buffers */
@@ -2786,15 +2787,6 @@ ntt_emit_texture(struct ntt_compile *c, nir_tex_instr *instr)
    case nir_texop_txf:
    case nir_texop_txf_ms:
       tex_opcode = TGSI_OPCODE_TXF;
-
-      if (c->has_txf_lz) {
-         int lod_src = nir_tex_instr_src_index(instr, nir_tex_src_lod);
-         if (lod_src >= 0 &&
-             nir_src_is_const(instr->src[lod_src].src) &&
-             ntt_src_as_uint(c, instr->src[lod_src].src) == 0) {
-            tex_opcode = TGSI_OPCODE_TXF_LZ;
-         }
-      }
       break;
    case nir_texop_txl:
       tex_opcode = TGSI_OPCODE_TXL;
@@ -3214,7 +3206,7 @@ ntt_emit_impl(struct ntt_compile *c, nir_function_impl *impl)
 
 }
 
-static int
+static unsigned
 type_size(const struct glsl_type *type, bool bindless)
 {
    return glsl_count_attribute_slots(type, false);
@@ -4026,8 +4018,6 @@ const void *nir_to_tgsi_options(struct nir_shader *s,
 
    c->needs_texcoord_semantic =
       screen->caps.tgsi_texcoord;
-   c->has_txf_lz =
-      screen->caps.tgsi_tex_txf_lz;
 
    c->s = s;
    c->native_integers = native_integers;
@@ -4077,8 +4067,6 @@ const void *nir_to_tgsi_options(struct nir_shader *s,
 
 const nir_shader_compiler_options nir_to_tgsi_compiler_options = {
    .fdot_replicates = true,
-   .fuse_ffma32 = true,
-   .fuse_ffma64 = true,
    .lower_extract_byte = true,
    .lower_extract_word = true,
    .lower_insert_byte = true,

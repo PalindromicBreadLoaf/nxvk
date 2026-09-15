@@ -11,7 +11,6 @@
 
 #include "kk_buffer.h"
 #include "kk_cmd_buffer.h"
-#include "kk_encoder.h"
 
 #include "kosmickrisp/bridge/mtl_bridge.h"
 
@@ -26,15 +25,15 @@ kk_cmd_bind_map_buffer(struct vk_command_buffer *vk_cmd,
    VK_FROM_HANDLE(kk_buffer, buffer, _buffer);
 
    assert(buffer->vk.size < UINT_MAX);
-   struct kk_bo *bo = kk_cmd_allocate_buffer(cmd, buffer->vk.size, 16u);
-   if (unlikely(bo == NULL))
+   struct kk_ptr buf = kk_pool_alloc(cmd, buffer->vk.size, 16u);
+   if (unlikely(!buf.gpu))
       return VK_ERROR_OUT_OF_POOL_MEMORY;
 
    /* Need to retain since VkBuffers release the mtl_handle too */
-   mtl_retain(bo->map);
-   buffer->mtl_handle = bo->map;
-   buffer->vk.device_address = bo->gpu;
-   *map_out = bo->cpu;
+   mtl_retain(buf.buffer);
+   buffer->mtl_handle = buf.buffer;
+   buffer->vk.device_address = buf.gpu;
+   *map_out = buf.cpu;
 
    return VK_SUCCESS;
 }
@@ -80,9 +79,9 @@ struct kk_meta_save {
          } gfx;
       };
    } pipeline;
+   struct kk_conditional_rendering_state cond_render;
    struct kk_descriptor_set *desc0;
    struct kk_push_descriptor_set *push_desc0;
-   mtl_buffer *vb0_handle;
    struct kk_addr_range vb0;
    struct kk_buffer_address desc0_set_addr;
    bool has_push_desc0;
@@ -119,7 +118,9 @@ kk_meta_begin(struct kk_cmd_buffer *cmd, struct kk_meta_save *save,
          cmd->state.shaders[MESA_SHADER_COMPUTE];
    }
 
-   save->vb0_handle = cmd->state.gfx.vb.handles[0];
+   save->cond_render = cmd->state.cond_render;
+   cmd->state.cond_render.enabled = false;
+
    save->vb0 = cmd->state.gfx.vb.addr_range[0];
 
    save->desc0 = desc->sets[0];
@@ -172,7 +173,6 @@ kk_meta_end(struct kk_cmd_buffer *cmd, struct kk_meta_save *save,
          save->pipeline.gfx.is_ds_dynamic;
 
       cmd->state.gfx.vb.addr_range[0] = save->vb0;
-      cmd->state.gfx.vb.handles[0] = save->vb0_handle;
       cmd->state.gfx.dirty |= KK_DIRTY_VB;
 
       cmd->state.gfx.occlusion.mode = save->pipeline.gfx.occlusion;
@@ -182,6 +182,8 @@ kk_meta_end(struct kk_cmd_buffer *cmd, struct kk_meta_save *save,
    } else {
       kk_cmd_bind_compute_shader(cmd, save->shaders[MESA_SHADER_COMPUTE]);
    }
+
+   cmd->state.cond_render = save->cond_render;
 
    memcpy(desc->root.push, save->push, sizeof(save->push));
 }
@@ -274,12 +276,15 @@ kk_CmdClearAttachments(VkCommandBuffer commandBuffer, uint32_t attachmentCount,
    kk_meta_init_render(cmd, &render_info);
 
    uint32_t view_mask = cmd->state.gfx.render.view_mask;
-   struct kk_encoder *encoder = cmd->encoder;
    uint32_t layer_ids[KK_MAX_MULTIVIEW_VIEW_COUNT] = {};
-   mtl_set_vertex_amplification_count(encoder->main.encoder, layer_ids, 1u);
+   mtl_set_vertex_amplification_count(cmd->gfx.encoder, layer_ids, 1u);
+
+   /* Preserve conditional rendering state for clearing attachments */
+   struct kk_conditional_rendering_state cond_render = cmd->state.cond_render;
 
    struct kk_meta_save save;
    kk_meta_begin(cmd, &save, VK_PIPELINE_BIND_POINT_GRAPHICS);
+   cmd->state.cond_render = cond_render;
    vk_meta_clear_attachments(&cmd->vk, &dev->meta, &render_info,
                              attachmentCount, pAttachments, rectCount, pRects);
    kk_meta_end(cmd, &save, VK_PIPELINE_BIND_POINT_GRAPHICS);
@@ -290,7 +295,7 @@ kk_CmdClearAttachments(VkCommandBuffer commandBuffer, uint32_t attachmentCount,
    if (view_mask == 0u) {
       layer_ids[count++] = 0;
    }
-   mtl_set_vertex_amplification_count(encoder->main.encoder, layer_ids, count);
+   mtl_set_vertex_amplification_count(cmd->gfx.encoder, layer_ids, count);
 }
 
 void

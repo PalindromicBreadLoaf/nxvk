@@ -44,6 +44,7 @@ genX(emit_simpler_shader_init_fragment)(struct anv_simple_shader *state)
 
    struct anv_batch *batch = state->batch;
    struct anv_device *device = state->device;
+   const struct anv_instance *instance = device->physical->instance;
    const struct brw_fs_prog_data *prog_data =
       brw_fs_prog_data_const(state->kernel->prog_data);
 
@@ -88,7 +89,7 @@ genX(emit_simpler_shader_init_fragment)(struct anv_simple_shader *state)
        * distribution.
        */
       vf.GeometryDistributionEnable =
-         device->physical->instance->enable_vf_distribution;
+         instance->drirc.debug.vf_distribution;
 #endif
    }
    anv_batch_emit(batch, GENX(3DSTATE_VF_SGVS), sgvs) {
@@ -273,27 +274,12 @@ genX(emit_simpler_shader_init_fragment)(struct anv_simple_shader *state)
    anv_batch_emit(batch, GENX(3DSTATE_PRIMITIVE_REPLICATION), pr);
 #endif
 
-   VkShaderStageFlags push_stages =
-      genX(push_constant_alloc_stages)(VK_SHADER_STAGE_FRAGMENT_BIT);
-   genX(batch_emit_push_constants)(batch, device, push_stages);
-   state->cmd_buffer->state.gfx.push_constant_stages = push_stages;
-
-#if GFX_VERx10 == 125
-   /* DG2: Wa_22011440098
-    * MTL: Wa_18022330953
-    *
-    * In 3D mode, after programming push constant alloc command immediately
-    * program push constant command(ZERO length) without any commit between
-    * them.
-    *
-    * Note that Wa_16011448509 isn't needed here as all address bits are zero.
-    */
-   anv_batch_emit(batch, GENX(3DSTATE_CONSTANT_ALL), c) {
-      /* Update empty push constants for all stages (bitmask = 11111b) */
-      c.ShaderUpdateEnable = 0x1f;
-      c.MOCS = anv_mocs(device, NULL, 0);
+   if (!instance->drirc.perf.disable_push_const_alloc) {
+      VkShaderStageFlags push_stages =
+         genX(push_constant_alloc_stages)(VK_SHADER_STAGE_FRAGMENT_BIT);
+      genX(batch_emit_push_constants_alloc)(batch, device, push_stages);
+      state->cmd_buffer->state.gfx.push_constant_stages = push_stages;
    }
-#endif
 
 #if GFX_VER == 9
    /* Allocate a binding table for Gfx9 because the HW does not have a null-rt
@@ -373,6 +359,9 @@ genX(emit_simpler_shader_init_fragment)(struct anv_simple_shader *state)
       BITSET_SET(hw_state->emit_dirty, ANV_GFX_STATE_TASK_CONTROL);
    }
 
+   /* Add the flagged instructions as emitted */
+   BITSET_OR(hw_state->emitted, hw_state->emitted, hw_state->emit_dirty);
+
    /* Update urb config after simple shader. */
    memcpy(&state->cmd_buffer->state.gfx.urb_cfg, &urb_cfg,
           sizeof(urb_cfg));
@@ -397,11 +386,14 @@ genX(emit_simpler_shader_init_compute)(struct anv_simple_shader *state)
    struct anv_shader_internal *cs_bin = state->kernel;
    const struct brw_cs_prog_data *prog_data =
       (const struct brw_cs_prog_data *) cs_bin->prog_data;
-   /* Currently our simple shaders are simple enough that they never spill. */
-   assert(prog_data->base.total_scratch == 0);
    if (state->cmd_buffer != NULL) {
-      genX(cmd_buffer_ensure_cfe_state)(state->cmd_buffer, 0);
+      genX(cmd_buffer_ensure_cfe_state)(state->cmd_buffer,
+                                        prog_data->base.total_scratch);
    } else {
+      /* Currently our simple shaders not in the command buffers are simple
+       * enough that they never spill.
+       */
+      assert(prog_data->base.total_scratch == 0);
       anv_batch_emit(state->batch, GENX(CFE_STATE), cfe) {
          cfe.MaximumNumberofThreads =
             state->device->info->max_cs_threads *
@@ -460,14 +452,14 @@ genX(simple_shader_push_state_address)(struct anv_simple_shader *state,
 {
    if (state->kernel->stage == MESA_SHADER_FRAGMENT) {
       return anv_state_pool_state_address(
-         &state->device->dynamic_state_pool, push_state);
+         anv_device_get_dynamic_state_pool(state->device), push_state);
    } else {
 #if GFX_VERx10 >= 125
       return anv_state_pool_state_address(
-         &state->device->general_state_pool, push_state);
+         anv_device_get_general_state_pool(state->device), push_state);
 #else
       return anv_state_pool_state_address(
-         &state->device->dynamic_state_pool, push_state);
+         anv_device_get_dynamic_state_pool(state->device), push_state);
 #endif
    }
 }
@@ -481,7 +473,7 @@ genX(emit_simple_shader_dispatch)(struct anv_simple_shader *state,
    struct anv_device *device = state->device;
    struct anv_batch *batch = state->batch;
    struct anv_address push_addr =
-      anv_state_pool_state_address(&device->dynamic_state_pool, push_state);
+      anv_state_pool_state_address(anv_device_get_dynamic_state_pool(device), push_state);
 
    if (state->kernel->stage == MESA_SHADER_FRAGMENT) {
       /* At the moment we require a command buffer associated with this
@@ -505,7 +497,7 @@ genX(emit_simple_shader_dispatch)(struct anv_simple_shader *state,
       vertices[6] = x0; vertices[7] = y0; vertices[8] = z; /* v2 */
 
       struct anv_address vs_data_address =
-         anv_state_pool_state_address(&device->dynamic_state_pool, vs_data_state);
+         anv_state_pool_state_address(anv_device_get_dynamic_state_pool(device), vs_data_state);
       uint32_t *dw = anv_batch_emitn(batch,
                                      1 + GENX(VERTEX_BUFFER_STATE_length),
                                      GENX(3DSTATE_VERTEX_BUFFERS));
@@ -591,6 +583,7 @@ genX(emit_simple_shader_dispatch)(struct anv_simple_shader *state,
 
       intel_compute_engine_async_threads_limit(devinfo, dispatch.threads,
                                                slm_or_barrier_enabled,
+                                               prog_data->uses_fence,
                                                &pixel_async_compute_thread_limit,
                                                &z_pass_async_compute_thread_limit,
                                                &np_z_async_throttle_settings);
@@ -660,13 +653,7 @@ genX(emit_simple_shader_dispatch)(struct anv_simple_shader *state,
       if (state->cmd_buffer) {
          genX(cmd_buffer_post_dispatch_wa)(state->cmd_buffer);
       } else {
-         /* TODO: switch to use INTEL_NEEDS_WA_14025112257 */
-         if (device->info->ver >= 20 &&
-             batch->engine_class == INTEL_ENGINE_CLASS_COMPUTE) {
-            genX(batch_emit_pipe_control)(batch, devinfo, GPGPU,
-                                          ANV_PIPE_STATE_CACHE_INVALIDATE_BIT,
-                                          "Wa_14025112257");
-         }
+         genX(batch_emit_post_dispatch_wa)(batch);
       }
 
 #else /* GFX_VERx10 < 125 */

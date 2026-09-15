@@ -238,6 +238,7 @@ void vtn_emit_cf_func_structured(struct vtn_builder *b, struct vtn_function *fun
 bool vtn_handle_phis_first_pass(struct vtn_builder *b, SpvOp opcode,
                                 const uint32_t *w, unsigned count);
 void vtn_emit_ret_store(struct vtn_builder *b, const struct vtn_block *block);
+void vtn_handle_abort(struct vtn_builder *b, const uint32_t *w, unsigned count);
 void vtn_build_structured_cfg(struct vtn_builder *b, const uint32_t *words,
                               const uint32_t *end);
 
@@ -651,18 +652,23 @@ struct vtn_builder {
     */
    struct set *vars_used_indirectly;
 
-   unsigned num_specializations;
-   struct nir_spirv_specialization *specializations;
+   struct nir_spirv_specialization *specialization;
 
    unsigned value_id_bound;
    struct vtn_value *values;
 
    /* Information on the origin of the SPIR-V */
    enum vtn_generator generator_id;
+   const char *source_file;
    SpvSourceLanguage source_lang;
 
    struct spirv_capabilities supported_capabilities;
    struct spirv_capabilities enabled_capabilities;
+
+   /* VK_EXT_shader_tile_image NonCoherent*AttachmentReadEXT exec modes. */
+   bool tile_image_color_non_coherent;
+   bool tile_image_depth_non_coherent;
+   bool tile_image_stencil_non_coherent;
 
    /* True if we need to fix up CS OpControlBarrier */
    bool wa_glslang_cs_barrier;
@@ -699,6 +705,10 @@ struct vtn_builder {
 
    /* memory model specified by OpMemoryModel */
    unsigned mem_model;
+
+   /* Shader hash stored by dxvk/vkd3d-proton in OpString */
+   enum shader_info_hash_type shader_hash_type;
+   uint64_t shader_hash;
 };
 
 const char *

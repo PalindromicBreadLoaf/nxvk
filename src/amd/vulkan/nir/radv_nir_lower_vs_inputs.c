@@ -4,12 +4,10 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "ac_gpu_info.h"
 #include "ac_nir.h"
 #include "nir.h"
 #include "nir_builder.h"
 #include "nir_deref.h"
-#include "radv_constants.h"
 #include "radv_nir.h"
 #include "radv_shader.h"
 #include "radv_shader_args.h"
@@ -18,7 +16,7 @@ typedef struct {
    const struct radv_shader_args *args;
    const struct radv_shader_info *info;
    const struct radv_graphics_state_key *gfx_state;
-   const struct radeon_info *gpu_info;
+   const struct radv_compiler_info *compiler_info;
 } lower_vs_inputs_state;
 
 static nir_def *
@@ -267,16 +265,16 @@ lower_load_vs_input(nir_builder *b, nir_intrinsic_instr *intrin, lower_vs_inputs
 
    const uint32_t attrib_binding = s->gfx_state->vi.vertex_attribute_bindings[location];
    const uint32_t attrib_offset = s->gfx_state->vi.vertex_attribute_offsets[location];
-   const uint32_t attrib_stride = s->gfx_state->vi.vertex_attribute_strides[location];
    const enum pipe_format attrib_format = adjust_format(s->gfx_state->vi.vertex_attribute_formats[location]);
    const struct util_format_description *f = util_format_description(attrib_format);
    const struct ac_vtx_format_info *vtx_info = ac_get_vtx_format_info(
-      s->gpu_info->gfx_level, s->gpu_info->compiler_info.has_vtx_format_alpha_adjust_bug, attrib_format);
+      s->compiler_info->ac->gfx_level, s->compiler_info->ac->has_vtx_format_alpha_adjust_bug, attrib_format);
    const unsigned binding_index = s->info->vs.use_per_attribute_vb_descs ? location : attrib_binding;
    const unsigned desc_index = util_bitcount(s->info->vs.vb_desc_usage_mask & BITFIELD_MASK(binding_index));
 
    nir_def *vertex_buffers_arg = ac_nir_load_arg(b, &s->args->ac, s->args->ac.vertex_buffers);
-   nir_def *vertex_buffers = nir_pack_64_2x32_split(b, vertex_buffers_arg, nir_imm_int(b, s->gpu_info->address32_hi));
+   nir_def *vertex_buffers =
+      nir_pack_64_2x32_split(b, vertex_buffers_arg, nir_imm_int(b, s->compiler_info->hw.address32_hi));
    nir_def *descriptor =
       ac_nir_load_smem(b, 4, vertex_buffers, nir_imm_int(b, desc_index * 16), 4, ACCESS_CAN_SPECULATE);
    nir_def *base_index = calc_vs_input_index(b, location, s);
@@ -314,85 +312,68 @@ lower_load_vs_input(nir_builder *b, nir_intrinsic_instr *intrin, lower_vs_inputs
 
    /* Load VS inputs from VRAM.
     *
-    * For the vast majority of cases this will only create 1x load_(typed)_buffer_amd
-    * intrinsic and the backend is responsible for further splitting that
+    * Only create 1x load_(typed)_buffer_amd when necessary.
+    * The backend is responsible for further splitting that
     * to as many HW instructions as needed based on alignment.
-    *
-    * Take care to prevent loaded components from failing the range check,
-    * by emitting several load intrinsics with different index sources.
-    * This is necessary because the backend can't further roll the const offset
-    * into the index source of MUBUF / MTBUF instructions.
     */
-   nir_def *loads[NIR_MAX_VEC_COMPONENTS] = {0};
-   unsigned num_loads = 0;
-   for (unsigned x = 0, channels; x < fetch_num_channels; x += channels) {
-      channels = fetch_num_channels - x;
-      const unsigned start = skipped_start + x;
-      enum pipe_format fetch_format = attrib_format;
-      nir_def *index = base_index;
+   nir_def *load = NULL;
+   enum pipe_format fetch_format = attrib_format;
 
-      /* Add excess constant offset to the index. */
-      unsigned const_off = attrib_offset + high_dvec2 * 16 + count_format_bytes(f, 0, start);
-      if (attrib_stride && const_off >= attrib_stride) {
-         index = nir_iadd_imm(b, base_index, const_off / attrib_stride);
-         const_off %= attrib_stride;
-      }
+   const unsigned base_offset = attrib_offset + high_dvec2 * 16;
+   const unsigned skipped_elements = MIN2(skipped_start, f->nr_channels - 1);
+   const unsigned offset_within_element = count_format_bytes(f, 0, skipped_elements);
 
-      /* Reduce the number of loaded channels until we can pass the range check.
-       * Only for array formats. VK spec mandates proper alignment for packed formats.
-       * Note, NONE seems to occur in real use and is considered an array format.
-       */
-      if (f->is_array && fetch_format != PIPE_FORMAT_NONE) {
-         while (channels > 1 && attrib_stride && (const_off + count_format_bytes(f, start, channels)) > attrib_stride) {
-            channels--;
-         }
+   unsigned inst_offset = 0;
+   nir_def *sgpr_offset = zero;
 
-         /* Keep the fetch format as large as possible to let the backend emit
-          * larger load instructions when it deems them beneficial.
-          */
-         fetch_format = util_format_get_array(f->channel[0].type, f->channel[0].size, f->nr_channels - start,
-                                              f->is_unorm || f->is_snorm, f->channel[0].pure_integer);
-      }
+   /* Bounds checking behaviour:
+    * GFX10+: can select different modes, we use OOB_SELECT_STRUCTURED
+    * GFX8-9: equivalent to OOB_SELECT_STRUCTURED
+    * GFX6-7: equivalent to OOB_SELECT_STRUCTURED_WITH_OFFSET,
+    *         which means we should avoid using the instruction offset
+    *         because it is included in the bounds check
+    */
+   if (s->compiler_info->ac->gfx_level >= GFX8)
+      inst_offset = base_offset + offset_within_element;
+   else
+      sgpr_offset = nir_imm_int(b, base_offset + offset_within_element);
 
-      assert(f->is_array || channels == fetch_num_channels);
+   unsigned align_mul = MAX2(1, s->gfx_state->vi.vertex_binding_align[attrib_binding]);
+   unsigned align_offset = (base_offset + offset_within_element) % align_mul;
 
-      unsigned align_mul = MAX2(1, s->gfx_state->vi.vertex_binding_align[attrib_binding]);
-      unsigned align_offset = const_off % align_mul;
-
-      /* The alignment might be lower than the minimum if it's unknown. */
-      const unsigned min_channel_align = vtx_info->chan_byte_size ? vtx_info->chan_byte_size : vtx_info->element_size;
-      if (nir_combined_align(align_mul, align_offset) < min_channel_align) {
-         align_mul = min_channel_align;
-         align_offset = 0;
-      }
-
-      /* Prefer using untyped buffer loads if possible, to avoid potential alignment issues.
-       * Typed loads can cause GPU hangs when used with improper alignment.
-       */
-      if (can_use_untyped_load(f, bit_size)) {
-         loads[num_loads++] = nir_load_buffer_amd(
-            b, channels, bit_size, descriptor, zero, zero, index, .base = const_off, .memory_modes = nir_var_shader_in,
-            .align_mul = align_mul, .align_offset = align_offset, .access = ACCESS_CAN_REORDER | ACCESS_CAN_SPECULATE);
-      } else {
-         loads[num_loads++] = nir_load_typed_buffer_amd(
-            b, channels, bit_size, descriptor, zero, zero, index, .base = const_off, .format = fetch_format,
-            .align_mul = align_mul, .align_offset = align_offset, .memory_modes = nir_var_shader_in,
-            .access = ACCESS_CAN_REORDER | ACCESS_CAN_SPECULATE);
-      }
+   /* The alignment might be lower than the minimum if it's unknown. */
+   const unsigned min_channel_align = vtx_info->chan_byte_size ? vtx_info->chan_byte_size : vtx_info->element_size;
+   if (nir_combined_align(align_mul, align_offset) < min_channel_align) {
+      align_mul = min_channel_align;
+      align_offset = 0;
    }
 
-   nir_def *load = loads[0];
+   /* Prefer using untyped buffer loads if possible, to avoid potential alignment issues.
+    * Typed loads can cause GPU hangs when used with improper alignment.
+    */
+   if (fetch_num_channels) {
+      if (can_use_untyped_load(f, bit_size)) {
+         load = nir_load_buffer_amd(b, fetch_num_channels, bit_size, descriptor, zero, sgpr_offset, base_index,
+                                    .base = inst_offset, .memory_modes = nir_var_shader_in, .align_mul = align_mul,
+                                    .align_offset = align_offset, .access = ACCESS_CAN_REORDER | ACCESS_CAN_SPECULATE);
+      } else {
+         load = nir_load_typed_buffer_amd(b, fetch_num_channels, bit_size, descriptor, zero, sgpr_offset, base_index,
+                                          .base = inst_offset, .format = fetch_format, .align_mul = align_mul,
+                                          .align_offset = align_offset, .memory_modes = nir_var_shader_in,
+                                          .access = ACCESS_CAN_REORDER | ACCESS_CAN_SPECULATE);
+      }
+   }
 
    /* Extract the channels we actually need when we couldn't skip starting
     * components or had to emit more than one load intrinsic.
     */
-   if (num_loads > 0 && (first_used_channel > skipped_start || num_loads != 1))
-      load = nir_extract_bits(b, loads, num_loads, (first_used_channel - skipped_start) * bit_size,
+   if (load && (first_used_channel > skipped_start))
+      load = nir_extract_bits(b, &load, 1, (first_used_channel - skipped_start) * bit_size,
                               max_loaded_channels - first_used_channel, bit_size);
 
    /* Return early if possible to avoid generating unnecessary IR. */
-   if (num_loads > 0 && first_used_channel == component && load->num_components == dest_num_components &&
-       !needs_swizzle && alpha_adjust == AC_ALPHA_ADJUST_NONE)
+   if (load && first_used_channel == component && load->num_components == dest_num_components && !needs_swizzle &&
+       alpha_adjust == AC_ALPHA_ADJUST_NONE)
       return load;
 
    /* Fill unused and OOB components.
@@ -453,8 +434,8 @@ lower_vs_input_instr(nir_builder *b, nir_intrinsic_instr *intrin, void *state)
 }
 
 bool
-radv_nir_lower_vs_inputs(nir_shader *shader, const struct radv_shader_stage *vs_stage,
-                         const struct radv_graphics_state_key *gfx_state, const struct radeon_info *gpu_info)
+radv_nir_lower_vs_inputs(nir_shader *shader, const struct radv_compiler_info *compiler_info,
+                         const struct radv_shader_stage *vs_stage, const struct radv_graphics_state_key *gfx_state)
 {
    assert(shader->info.stage == MESA_SHADER_VERTEX);
 
@@ -462,7 +443,7 @@ radv_nir_lower_vs_inputs(nir_shader *shader, const struct radv_shader_stage *vs_
       .info = &vs_stage->info,
       .args = &vs_stage->args,
       .gfx_state = gfx_state,
-      .gpu_info = gpu_info,
+      .compiler_info = compiler_info,
    };
 
    return nir_shader_intrinsics_pass(shader, lower_vs_input_instr, nir_metadata_control_flow, &state);

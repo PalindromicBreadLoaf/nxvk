@@ -328,9 +328,18 @@ v3d_rasterizer_state_bind(struct pipe_context *pctx, void *hwcso)
 {
         struct v3d_context *v3d = v3d_context(pctx);
         struct v3d_rasterizer_state *rasterizer = hwcso;
-        if (v3d->rasterizer == NULL || rasterizer == NULL ||
-            v3d->rasterizer->base.scissor != rasterizer->base.scissor) {
+        if (rasterizer == NULL) {
+                /* Nothing to do: without rasterizer state nothing rasterizes,
+                 * so scissor and viewport are irrelevant.
+                 */
+        } else if (v3d->rasterizer == NULL) {
                 v3d->dirty |= V3D_DIRTY_RASTERIZER_SCISSOR;
+                v3d->dirty |= V3D_DIRTY_VIEWPORT;
+        } else {
+                if (v3d->rasterizer->base.scissor != rasterizer->base.scissor)
+                        v3d->dirty |= V3D_DIRTY_RASTERIZER_SCISSOR;
+                if (v3d->rasterizer->base.clip_halfz != rasterizer->base.clip_halfz)
+                        v3d->dirty |= V3D_DIRTY_VIEWPORT;
         }
         v3d->rasterizer = hwcso;
         v3d->dirty |= V3D_DIRTY_RASTERIZER;
@@ -1166,6 +1175,7 @@ v3d_create_sampler_view(struct pipe_context *pctx, struct pipe_resource *prsc,
                  */
                 prsc = v3d_resource_create(pctx->screen, &tmpl);
                 if (!prsc) {
+                        pipe_resource_reference(&so->base.texture, NULL);
                         free(so);
                         return NULL;
                 }

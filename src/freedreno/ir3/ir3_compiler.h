@@ -179,9 +179,6 @@ struct ir3_compiler {
    /* Whether SSBOs have descriptors for sampling with ISAM */
    bool has_isam_ssbo;
 
-   /* Is lock/unlock sequence needed for CS? */
-   bool cs_lock_unlock_quirk;
-
    /* True if the shfl instruction is supported. Needed for subgroup rotate and
     * (more efficient) shuffle.
     */
@@ -314,12 +311,13 @@ enum ir3_shader_debug {
    IR3_DBG_NODESCPREFETCH = BITFIELD_BIT(18),
    IR3_DBG_EXPANDRPT = BITFIELD_BIT(19),
    IR3_DBG_ASM_ROUNDTRIP = BITFIELD_BIT(20),
+   IR3_DBG_THREAD64 = BITFIELD_BIT(21),
 
    /* MESA_DEBUG-only options: */
-   IR3_DBG_SCHEDMSGS = BITFIELD_BIT(21),
-   IR3_DBG_RAMSGS = BITFIELD_BIT(22),
-   IR3_DBG_NOALIASTEX = BITFIELD_BIT(23),
-   IR3_DBG_NOALIASRT = BITFIELD_BIT(24),
+   IR3_DBG_SCHEDMSGS = BITFIELD_BIT(22),
+   IR3_DBG_RAMSGS = BITFIELD_BIT(23),
+   IR3_DBG_NOALIASTEX = BITFIELD_BIT(24),
+   IR3_DBG_NOALIASRT = BITFIELD_BIT(25),
 };
 
 extern enum ir3_shader_debug ir3_shader_debug;

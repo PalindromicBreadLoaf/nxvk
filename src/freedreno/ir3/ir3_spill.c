@@ -1032,6 +1032,13 @@ update_max_pressure(struct ra_spill_ctx *ctx)
       MAX2(ctx->max_pressure.shared_half, ctx->cur_pressure.shared_half);
 }
 
+static bool
+is_killed(struct ra_spill_ctx *ctx, struct ir3_register *src)
+{
+   struct ra_spill_interval *interval = ctx->intervals[src->def->name];
+   return ir3_ra_src_is_killed(src, &interval->interval);
+}
+
 static void
 handle_instr(struct ra_spill_ctx *ctx, struct ir3_instruction *instr)
 {
@@ -1064,7 +1071,7 @@ handle_instr(struct ra_spill_ctx *ctx, struct ir3_instruction *instr)
 
    ra_foreach_dst (dst, instr) {
       struct ir3_register *tied_src = dst->tied;
-      if ((tied_src && !(tied_src->flags & IR3_REG_FIRST_KILL)) ||
+      if ((tied_src && !is_killed(ctx, tied_src)) ||
           (dst->flags & IR3_REG_EARLY_CLOBBER))
          insert_dst(ctx, dst);
    }

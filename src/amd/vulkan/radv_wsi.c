@@ -7,12 +7,18 @@
  */
 
 #include "radv_wsi.h"
-#include "meta/radv_meta.h"
-#include "util/macros.h"
-#include "radv_debug.h"
-#include "vk_fence.h"
-#include "vk_semaphore.h"
-#include "vk_util.h"
+#include "radv_buffer.h"
+#include "radv_buffer_view.h"
+#include "radv_device.h"
+#include "radv_device_memory.h"
+#include "radv_entrypoints.h"
+#include "radv_physical_device.h"
+#include "radv_pipeline.h"
+#include "radv_pipeline_compute.h"
+#include "radv_queue.h"
+#include "radv_shader.h"
+
+#include "tools/radv_debug.h"
 #include "wsi_common.h"
 
 static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
@@ -91,7 +97,7 @@ radv_init_wsi(struct radv_physical_device *pdev)
 
    VkResult result =
       wsi_device_init(&pdev->wsi_device, radv_physical_device_to_handle(pdev), radv_wsi_proc_addr, &instance->vk.alloc,
-                      pdev->master_fd, &instance->drirc.options, &(struct wsi_device_options){.sw_device = false});
+                      pdev->wsi_master_fd, &instance->drirc.options, &(struct wsi_device_options){.sw_device = false});
    if (result != VK_SUCCESS)
       return result;
 
@@ -99,7 +105,11 @@ radv_init_wsi(struct radv_physical_device *pdev)
    pdev->wsi_device.set_memory_ownership = radv_wsi_set_memory_ownership;
    pdev->wsi_device.get_blit_queue = radv_wsi_get_prime_blit_queue;
 
-   wsi_device_setup_syncobj_fd(&pdev->wsi_device, pdev->local_fd);
+   for (uint32_t i = 0; i < ARRAY_SIZE(pdev->wsi_device.supports_protected); i++) {
+      pdev->wsi_device.supports_protected[i] = radv_tmz_enabled(pdev);
+   }
+
+   wsi_device_setup_syncobj_fd(&pdev->wsi_device, pdev->wsi_syncobj_fd);
 
    pdev->vk.wsi_device = &pdev->wsi_device;
 

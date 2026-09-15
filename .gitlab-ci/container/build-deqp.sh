@@ -24,7 +24,7 @@ set -x
 # - the GLES release produces `deqp-gles*` and `deqp-egl`
 
 DEQP_MAIN_COMMIT=634a3fc62d82c34de68c3b1add25e6b7f5777524
-DEQP_VK_VERSION=1.4.4.2
+DEQP_VK_VERSION=1.4.6.1
 DEQP_GL_VERSION=4.6.8.0
 DEQP_GLES_VERSION=3.2.14.0
 
@@ -38,6 +38,8 @@ DEQP_GLES_VERSION=3.2.14.0
 main_cts_commits_to_backport=(
   # If you find yourself wanting to add something in here, consider whether
   # bumping DEQP_MAIN_COMMIT is not a better solution :)
+  # Use -frounding-math by default with GCC
+  ded32883bf36e5bdf7ac6b0512d5314adc0849d4
 )
 
 # shellcheck disable=SC2034
@@ -46,8 +48,14 @@ main_cts_patch_files=(
 
 # shellcheck disable=SC2034
 vk_cts_commits_to_backport=(
-  # Add an option to print to logcat in Android executable builds
-  fc51668efdfd0dffa30b3eddee34aa26172969fb
+  # android: Implement headless WSI fallback using AImageReader
+  6368ee8503dd9ca46eabfa2df293075d9034a214
+  # Check requirements in checkSupport, part 11 (binding_model module)
+  541ed0874565d642069c59fe3b31fc42f495a470
+  # Enable VK_KHR_display when needed in compression control tests
+  629745a58d31bc5c810f014c0975e176e2791ae0
+  # Use -frounding-math by default with GCC
+  ded32883bf36e5bdf7ac6b0512d5314adc0849d4
 )
 
 # shellcheck disable=SC2034
@@ -56,11 +64,17 @@ vk_cts_patch_files=(
 
 # shellcheck disable=SC2034
 gl_cts_commits_to_backport=(
+  # android: Implement headless WSI fallback using AImageReader
+  6368ee8503dd9ca46eabfa2df293075d9034a214
 )
 
 # shellcheck disable=SC2034
 gl_cts_patch_files=(
   build-deqp-gl_Build-Don-t-build-Vulkan-utilities-for-GL-builds.patch
+  build-deqp-Fix-a-memory-leak-with-the-atomic-counter-tests.patch
+  build-deqp-Fix-a-memory-leak-with-the-direct-state-access-textu.patch
+  build-deqp-Fix-a-memory-leak-with-the-sparse-buffer-storage-tes.patch
+  build-deqp-Fix-a-memory-leak-with-the-texture-image-sample-test.patch
 )
 
 # shellcheck disable=SC2034
@@ -70,11 +84,17 @@ gles_cts_commits_to_backport=(
   b5ed8718f19492781f8e9be3eb9d3346e961efa9
   # Fix glGetnUniform* error codes when bufSize < 0
   34259553e0cc77061465ae0c4bcd4c4658a0fb4a
+  # android: Implement headless WSI fallback using AImageReader
+  6368ee8503dd9ca46eabfa2df293075d9034a214
 )
 
 # shellcheck disable=SC2034
 gles_cts_patch_files=(
   build-deqp-gl_Build-Don-t-build-Vulkan-utilities-for-GL-builds.patch
+  build-deqp-Fix-a-memory-leak-with-the-atomic-counter-tests.patch
+  build-deqp-Fix-a-memory-leak-with-the-direct-state-access-textu.patch
+  build-deqp-Fix-a-memory-leak-with-the-sparse-buffer-storage-tes.patch
+  build-deqp-Fix-a-memory-leak-with-the-texture-image-sample-test.patch
 )
 
 

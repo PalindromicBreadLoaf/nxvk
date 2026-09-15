@@ -513,6 +513,9 @@ kopper_destroy_drawable(struct dri_drawable *drawable)
       xcb_connection_t *conn = xcb->connection;
       xcb_unregister_for_special_event(conn, drawable->special_event);
    }
+
+   FREE(drawable->image);
+   drawable->image = NULL;
 #endif
 }
 

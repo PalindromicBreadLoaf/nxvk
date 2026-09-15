@@ -45,7 +45,7 @@ blake3_hash_func(const void *blake3)
 static bool
 blake3_compare_func(const void *blake3_a, const void *blake3_b)
 {
-   return memcmp(blake3_a, blake3_b, 20) == 0;
+   return memcmp(blake3_a, blake3_b, BLAKE3_KEY_LEN) == 0;
 }
 
 struct serialized_nir {
@@ -310,7 +310,7 @@ v3dv_pipeline_cache_search_for_pipeline(struct v3dv_pipeline_cache *cache,
     */
    if (disk_cache && device->instance->pipeline_cache_enabled) {
       cache_key cache_key;
-      disk_cache_compute_key(disk_cache, blake3_key, 20, cache_key);
+      disk_cache_compute_key(disk_cache, blake3_key, BLAKE3_KEY_LEN, cache_key);
 
       size_t buffer_size;
       uint8_t *buffer = disk_cache_get(disk_cache, cache_key, &buffer_size);
@@ -480,7 +480,7 @@ pipeline_cache_upload_shared_data(struct v3dv_pipeline_cache *cache,
       blob_init(&binary);
       if (v3dv_pipeline_shared_data_write_to_blob(shared_data, &binary)) {
          cache_key cache_key;
-         disk_cache_compute_key(disk_cache, shared_data->blake3_key, 20, cache_key);
+         disk_cache_compute_key(disk_cache, shared_data->blake3_key, BLAKE3_KEY_LEN, cache_key);
 
          if (V3D_DBG(CACHE)) {
             char blake3buf[BLAKE3_HEX_LEN];

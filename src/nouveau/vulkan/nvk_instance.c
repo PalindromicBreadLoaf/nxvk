@@ -6,6 +6,7 @@
 
 #include "nvk_entrypoints.h"
 #include "nvk_physical_device.h"
+#include "nvk_drirc.h"
 
 #include "vulkan/wsi/wsi_common.h"
 
@@ -13,8 +14,8 @@
 
 #include "util/build_id.h"
 #include "util/detect_os.h"
-#include "util/driconf.h"
 #include "util/mesa-blake3.h"
+#include "util/os_misc.h"
 #include "util/u_debug.h"
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -96,6 +97,7 @@ nvk_init_debug_flags(struct nvk_instance *instance)
       { "edb_bview", NVK_DEBUG_FORCE_EDB_BVIEW },
       { "gart", NVK_DEBUG_FORCE_GART },
       { "coherent", NVK_DEBUG_FORCE_COHERENT },
+      { "no_compression", NVK_DEBUG_NO_COMPRESSION },
       { "errors", NVK_DEBUG_ERRORS },
       { "gpu_uncached", NVK_DEBUG_GPU_UNCACHED },
       { "cpu_wait", NVK_DEBUG_CPU_WAIT },
@@ -103,48 +105,55 @@ nvk_init_debug_flags(struct nvk_instance *instance)
       { "full_arena_flush", NVK_DEBUG_FULL_ARENA_FLUSH },
       { "wsi", NVK_DEBUG_WSI },
       { "cpu_present", NVK_DEBUG_CPU_PRESENT },
+      { "full_cmd_flush", NVK_DEBUG_FULL_CMD_FLUSH },
+      { "meta_copy", NVK_DEBUG_META_COPY },
+      { "dense_warmup", NVK_DEBUG_DENSE_WARMUP },
+      { "split_ce_copy", NVK_DEBUG_SPLIT_CE_COPY },
+      { "no_sector_promotion", NVK_DEBUG_NO_SECTOR_PROMOTION },
+      { "no_ubo_cbuf", NVK_DEBUG_NO_UBO_CBUF },
+      { "full_push_desc", NVK_DEBUG_FULL_PUSH_DESC },
+      { "no_zcull", NVK_DEBUG_NO_ZCULL },
+      { "cpu_uncached", NVK_DEBUG_CPU_UNCACHED },
+      { "no_cpu_uncached", NVK_DEBUG_NO_CPU_UNCACHED },
+      { "no_t210_subtiling", NVK_DEBUG_NO_T210_SUBTILING },
       { NULL, 0 },
    };
 
    instance->debug_flags = parse_debug_string(os_get_option("NVK_DEBUG"), flags);
 
+   const char *knob = os_get_option("NVK_SUBTILING_KNOB");
+   instance->subtiling_knob = knob != NULL ? strtoul(knob, NULL, 0) : 0;
+
    if (instance->debug_flags & NVK_DEBUG_ERRORS)
       instance->vk.enable_debug_logging = true;
 }
 
-static const driOptionDescription nvk_dri_options[] = {
-   DRI_CONF_SECTION_PERFORMANCE
-      DRI_CONF_ADAPTIVE_SYNC(true)
-      DRI_CONF_VK_X11_OVERRIDE_MIN_IMAGE_COUNT(0)
-      DRI_CONF_VK_X11_STRICT_IMAGE_COUNT(false)
-      DRI_CONF_VK_X11_ENSURE_MIN_IMAGE_COUNT(false)
-      DRI_CONF_VK_XWAYLAND_WAIT_READY(false)
-   DRI_CONF_SECTION_END
+static void
+nvk_init_experimental_flags(struct nvk_instance *instance)
+{
+   const struct debug_control flags[] = {
+      { "dlss", NVK_EXPERIMENTAL_DLSS },
+      { "dlss_backwards_compat", NVK_EXPERIMENTAL_DLSS_BACK_COMPAT },
+      { NULL, 0 },
+   };
 
-   DRI_CONF_SECTION_DEBUG
-      DRI_CONF_FORCE_VK_VENDOR()
-      DRI_CONF_VK_WSI_FORCE_SWAPCHAIN_TO_CURRENT_EXTENT(false)
-      DRI_CONF_VK_X11_IGNORE_SUBOPTIMAL(false)
-      DRI_CONF_VK_ZERO_VRAM(false)
-      DRI_CONF_NVK_APP_LAYER()
-   DRI_CONF_SECTION_END
-};
+   instance->experimental_flags = parse_debug_string(os_get_option("NVK_EXPERIMENTAL"), flags);
+}
 
 static void
 nvk_init_dri_options(struct nvk_instance *instance)
 {
-   driParseOptionInfo(&instance->available_dri_options, nvk_dri_options, ARRAY_SIZE(nvk_dri_options));
-   driParseConfigFiles(&instance->dri_options, &instance->available_dri_options, 0, "nvk", NULL, NULL,
-                       instance->vk.app_info.app_name, instance->vk.app_info.app_version,
-                       instance->vk.app_info.engine_name, instance->vk.app_info.engine_version);
+   nvk_parse_dri_options(&instance->drirc,
+                         &(driConfigFileParseParams){
+                            .driverName = "nvk",
+                            .applicationName = instance->vk.app_info.app_name,
+                            .applicationVersion = instance->vk.app_info.app_version,
+                            .engineName = instance->vk.app_info.engine_name,
+                            .engineVersion = instance->vk.app_info.engine_version,
+                         });
 
-   instance->force_vk_vendor =
-      driQueryOptioni(&instance->dri_options, "force_vk_vendor");
-
-   if (driQueryOptionb(&instance->dri_options, "vk_zero_vram"))
+   if (instance->drirc.debug.zero_vram)
       instance->debug_flags |= NVK_DEBUG_ZERO_MEMORY;
-
-   instance->app_layer = driQueryOptionstr(&instance->dri_options, "nvk_app_layer");
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -177,6 +186,7 @@ nvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       goto fail_alloc;
 
    nvk_init_debug_flags(instance);
+   nvk_init_experimental_flags(instance);
    nvk_init_dri_options(instance);
 
 #if DETECT_OS_HORIZON
@@ -239,8 +249,8 @@ nvk_DestroyInstance(VkInstance _instance,
    if (!instance)
       return;
 
-   driDestroyOptionCache(&instance->dri_options);
-   driDestroyOptionInfo(&instance->available_dri_options);
+   driDestroyOptionCache(&instance->drirc.options);
+   driDestroyOptionInfo(&instance->drirc.available_options);
 
    vk_instance_finish(&instance->vk);
    vk_free(&instance->vk.alloc, instance);

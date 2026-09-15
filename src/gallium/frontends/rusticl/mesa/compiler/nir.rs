@@ -307,6 +307,10 @@ impl NirShader {
         nir_pass!(self, nir_inline_functions);
     }
 
+    pub fn fully_linked(&self) -> bool {
+        unsafe { nir_shader_fully_linked(self.nir.as_ptr()) }
+    }
+
     pub fn gather_info(&mut self) {
         unsafe { nir_shader_gather_info(self.nir.as_ptr(), self.entrypoint()) }
     }
@@ -315,8 +319,17 @@ impl NirShader {
         unsafe { nir_remove_non_entrypoints(self.nir.as_ptr()) };
     }
 
-    pub fn cleanup_functions(&mut self) {
+    // This functions returns None when it detects a not fully linked nir shader.
+    pub fn cleanup_functions(self) -> Option<Self> {
+        if !self.fully_linked() {
+            return None;
+        }
+
+        // SAFETY: This is only safe to call when all remaining call instructions call into
+        //         functions with a definition, a.k.a. the shader was linked resolving all
+        //         functions.
         unsafe { nir_cleanup_functions(self.nir.as_ptr()) };
+        Some(self)
     }
 
     pub fn variables(&mut self) -> ExecListIter<'_, nir_variable> {
@@ -471,22 +484,6 @@ impl NirShader {
         }
     }
 
-    pub fn preserve_fp16_denorms(&mut self) {
-        unsafe {
-            self.nir.as_mut().info.float_controls_execution_mode |=
-                float_controls::FLOAT_CONTROLS_DENORM_PRESERVE_FP16 as u32;
-        }
-    }
-
-    pub fn set_fp_rounding_mode_rtne(&mut self) {
-        unsafe {
-            self.nir.as_mut().info.float_controls_execution_mode |=
-                float_controls::FLOAT_CONTROLS_ROUNDING_MODE_RTE_FP16 as u32
-                    | float_controls::FLOAT_CONTROLS_ROUNDING_MODE_RTE_FP32 as u32
-                    | float_controls::FLOAT_CONTROLS_ROUNDING_MODE_RTE_FP64 as u32;
-        }
-    }
-
     pub fn reads_sysval(&self, sysval: gl_system_value) -> bool {
         let nir = unsafe { self.nir.as_ref() };
         bitset::test_bit(&nir.info.system_values_read, sysval as u32)
@@ -503,6 +500,14 @@ impl NirShader {
             let var = nir_variable_create(self.nir.as_ptr(), mode, glsl_type, name.as_ptr());
             (*var).data.location = loc.try_into().unwrap();
         }
+    }
+
+    pub fn source_hash(&self) -> &[u8] {
+        &unsafe { self.nir.as_ref() }.info.source_blake3
+    }
+
+    pub fn has_function(&self, name: &CStr) -> bool {
+        unsafe { !nir_shader_get_function_for_name(self.nir.as_ptr(), name.as_ptr()).is_null() }
     }
 }
 

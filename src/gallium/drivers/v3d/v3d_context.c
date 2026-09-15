@@ -100,7 +100,6 @@ v3d_memory_barrier(struct pipe_context *pctx, unsigned int flags)
          * else we flush the job automatically when we needed.
          */
         const unsigned int flush_flags = PIPE_BARRIER_SHADER_BUFFER |
-                                         PIPE_BARRIER_GLOBAL_BUFFER |
                                          PIPE_BARRIER_IMAGE;
 
 	if (!(flags & flush_flags))

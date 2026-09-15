@@ -202,6 +202,8 @@ ir3_should_double_threadsize(struct ir3_shader_variant *v, unsigned regs_count)
       return false;
    if (v->shader_options.real_wavesize == IR3_DOUBLE_ONLY)
       return true;
+   if (ir3_shader_debug & IR3_DBG_THREAD64)
+      return false;
 
    /* We can't support more than compiler->max_branchstack diverging threads
     * in a wave. Thus, doubling the threadsize is only possible if we don't
@@ -296,6 +298,20 @@ ir3_get_reg_independent_max_waves(struct ir3_shader_variant *v,
             v->name);
          exit(1);
       }
+
+      /* Due to round_robin_errata we may be unable to support forward progress
+       * guarantees between waves if there are more than 8 waves active.
+       */
+      if (v->cs.round_robin_mode && compiler->info->props.round_robin_errata) {
+         if (waves_per_wg > 8 && v->has_barrier) {
+            mesa_loge(
+               "Compute shader (%s) requires forward progress but uses more "
+               "than 8 waves.",
+               v->name);
+            exit(1);
+         }
+         max_waves = MIN2(max_waves, 8);
+      }
    }
 
    return max_waves;
@@ -311,6 +327,29 @@ ir3_get_reg_dependent_max_waves(const struct ir3_compiler *compiler,
                        (reg_count * (double_threadsize ? 2 : 1)) *
                        compiler->info->wave_granularity)
                     : compiler->info->max_waves;
+}
+
+/* Get the minimum number of registers a shader must declare, even if it doesn't
+ * actually use as many.
+ */
+unsigned
+ir3_get_min_reg_count(const struct ir3_shader_variant *v, bool double_threadsize)
+{
+   if (!ir3_shader_compute(v) || !v->cs.round_robin_mode ||
+       !v->compiler->info->props.round_robin_errata)
+      return 0;
+
+   /* Limit occupancy to work around the round-robin errata. */
+   unsigned max_waves = 8;
+
+   /* We want to find the smallest register size where no more than
+    * (max_waves / wave_granularity) waves fit in reg_size_vec4. Calculate the
+    * maximum register size where (max_waves / wave_granularity + 1) waves fit,
+    * then add 1.
+    */
+   return (v->compiler->info->props.reg_size_vec4 /
+      ((max_waves / v->compiler->info->wave_granularity) *
+       (double_threadsize ? 2 : 1) + 1)) + 1;
 }
 
 void
@@ -553,8 +592,14 @@ ir3_collect_info(struct ir3_shader_variant *v)
 
    info->double_threadsize = ir3_should_double_threadsize(v, regs_count);
 
+   /* Limit occupancy if necessary by increasing max_reg. */
+   unsigned min_reg_count = ir3_get_min_reg_count(v, info->double_threadsize);
+   if (min_reg_count > 0)
+      info->max_reg = MAX2(info->max_reg, min_reg_count - 1);
+
    /* TODO this is different for earlier gens, but earlier gens don't use this */
-   info->subgroup_size = v->info.double_threadsize ? 128 : 64;
+   info->subgroup_size = compiler->info->threadsize_base *
+                         (info->double_threadsize ? 2 : 1);
 
    unsigned reg_independent_max_waves =
       ir3_get_reg_independent_max_waves(v, info->double_threadsize);
@@ -1837,6 +1882,12 @@ ir3_valid_flags(struct ir3_instruction *instr, unsigned n, unsigned flags)
          else if (n == 1)
             valid_flags |= IR3_REG_SHARED;
       }
+      if (compiler->gen >= 7 &&
+          (instr->opc == OPC_LDG_A || instr->opc == OPC_STG_A ||
+           instr->opc == OPC_RAY_INTERSECTION) &&
+          n == 0) {
+         valid_flags |= IR3_REG_CONST;
+      }
 
       if (flags & ~valid_flags)
          return false;
@@ -1907,6 +1958,7 @@ ir3_valid_flags(struct ir3_instruction *instr, unsigned n, unsigned flags)
                return false;
             break;
          case OPC_RESINFO:
+         case OPC_RESBASE:
             if (n != 0)
                return false;
             break;
@@ -1962,6 +2014,25 @@ ir3_valid_immediate(struct ir3_instruction *instr, int32_t immed)
 
    /* Other than cat1 (mov) we can only encode up to 10 bits, sign-extended: */
    return !(immed & ~0x1ff) || !(-(uint32_t)immed & ~0x1ff);
+}
+
+/* Some instructions (e.g., cat6) don't support the full range of const
+ * registers as src.
+ */
+bool
+ir3_valid_const(struct ir3_instruction *instr, unsigned src_n, unsigned num)
+{
+   assert(ir3_valid_flags(instr, src_n, IR3_REG_CONST));
+
+   switch (instr->opc) {
+   case OPC_LDG_A:
+   case OPC_STG_A:
+   case OPC_RAY_INTERSECTION:
+      assert(src_n == 0);
+      return num < (1 << 8);
+   default:
+      return true;
+   }
 }
 
 struct ir3_instruction *

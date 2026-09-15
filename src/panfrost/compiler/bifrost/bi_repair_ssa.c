@@ -324,7 +324,7 @@ bi_repair_ssa(bi_context *ctx)
             };
 
             bi_replace_src(phi, s,
-                            resolve_read(&rctx, read_block, phi->src[s]));
+                           resolve_read(&rctx, read_block, phi->src[s]));
          }
       }
    }

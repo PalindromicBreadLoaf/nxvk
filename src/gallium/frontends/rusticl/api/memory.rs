@@ -13,6 +13,7 @@ use crate::core::event::EventSig;
 use crate::core::format::*;
 use crate::core::gl::*;
 use crate::core::memory::*;
+use crate::core::platform::Platform;
 use crate::core::queue::*;
 use crate::rusticl_warn_once;
 
@@ -52,6 +53,14 @@ fn validate_mem_flags(flags: cl_mem_flags, validation: MemFlagValidationType) ->
             | CL_MEM_IMMUTABLE_EXT
             | CL_MEM_ALLOW_UNRESTRICTED_SIZE_INTEL,
     );
+
+    if Platform::features().intel {
+        valid_flags |= cl_bitfield::from(
+            CL_MEM_FORCE_HOST_MEMORY_INTEL
+                | CL_MEM_COMPRESSED_HINT_INTEL
+                | CL_MEM_UNCOMPRESSED_HINT_INTEL,
+        );
+    }
 
     if validation != MemFlagValidationType::Imported {
         valid_flags |= cl_bitfield::from(
@@ -327,6 +336,9 @@ unsafe impl CLInfo<cl_mem_info> for cl_mem {
             }),
             CL_MEM_SIZE => v.write::<usize>(mem.size),
             CL_MEM_TYPE => v.write::<cl_mem_object_type>(mem.mem_type),
+            CL_MEM_USES_COMPRESSION_INTEL if Platform::features().intel => {
+                v.write::<cl_bool>(CL_FALSE)
+            }
             CL_MEM_USES_SVM_POINTER | CL_MEM_USES_SVM_POINTER_ARM => {
                 v.write::<cl_bool>(mem.is_svm().into())
             }
@@ -850,10 +862,10 @@ unsafe impl CLInfo<cl_image_info> for cl_mem {
             CL_IMAGE_NUM_MIP_LEVELS => v.write::<cl_uint>(mem.image_desc.num_mip_levels),
             CL_IMAGE_NUM_SAMPLES => v.write::<cl_uint>(mem.image_desc.num_samples),
             CL_IMAGE_ROW_PITCH => v.write::<usize>(mem.image_desc.image_row_pitch),
-            CL_IMAGE_SLICE_PITCH => v.write::<usize>(if mem.image_desc.dims() == 1 {
-                0
-            } else {
-                mem.image_desc.image_slice_pitch
+            CL_IMAGE_SLICE_PITCH => v.write::<usize>(match mem.image_desc.image_type {
+                // For a 1D image, 1D image buffer and 2D image object return 0.
+                CL_MEM_OBJECT_IMAGE1D | CL_MEM_OBJECT_IMAGE1D_BUFFER | CL_MEM_OBJECT_IMAGE2D => 0,
+                _ => mem.image_desc.image_slice_pitch,
             }),
             CL_IMAGE_WIDTH => v.write::<usize>(mem.image_desc.image_width),
             _ => Err(CL_INVALID_VALUE),
@@ -1768,13 +1780,14 @@ fn enqueue_fill_buffer(
     // `slice::from_raw_parts()`. The caller is responsible for providing a
     // pointer to appropriately-sized, initialized memory.
     let pattern = unsafe { cl_slice::from_raw_parts(pattern.cast(), pattern_size)? }.to_vec();
+    let dev = q.device;
     create_and_queue(
         q,
         CL_COMMAND_FILL_BUFFER,
         evs,
         event,
         false,
-        Box::new(move |_, ctx| b.fill(ctx, &pattern, offset, size)),
+        b.fill(dev, pattern, offset, size)?,
     )
 
     // TODO
@@ -2141,13 +2154,14 @@ fn enqueue_fill_image(
         unsafe { fill_color.cast::<[u32; 4]>().read() }
     };
 
+    let dev = q.device;
     create_and_queue(
         q,
         CL_COMMAND_FILL_BUFFER,
         evs,
         event,
         false,
-        Box::new(move |_, ctx| i.fill(ctx, fill_color, &origin, &region)),
+        i.fill(dev, fill_color, origin, region)?,
     )
 
     //• CL_INVALID_IMAGE_SIZE if image dimensions (image width, height, specified or compute row and/or slice pitch) for image are not supported by device associated with queue.
@@ -2847,7 +2861,7 @@ fn enqueue_svm_mem_fill_impl(
             let pattern = unsafe { pattern_ptr.read_unaligned() };
             let svm_ptr = svm_ptr as usize;
 
-            Box::new(move |cl_ctx, ctx| cl_ctx.clear_svm(ctx, svm_ptr, size, pattern.0))
+            q.context.clear_svm(q.device, svm_ptr, size, pattern.0)?
         }};
     }
 

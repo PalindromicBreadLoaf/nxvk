@@ -51,6 +51,7 @@ enum mesa_vk_dynamic_graphics_state {
    MESA_VK_DYNAMIC_VI_BINDING_STRIDES,
    MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY,
    MESA_VK_DYNAMIC_IA_PRIMITIVE_RESTART_ENABLE,
+   MESA_VK_DYNAMIC_IA_PRIMITIVE_RESTART_INDEX,
    MESA_VK_DYNAMIC_TS_PATCH_CONTROL_POINTS,
    MESA_VK_DYNAMIC_TS_DOMAIN_ORIGIN,
    MESA_VK_DYNAMIC_VP_VIEWPORT_COUNT,
@@ -184,6 +185,12 @@ struct vk_input_assembly_state {
      * MESA_VK_DYNAMIC_GRAPHICS_STATE_IA_PRIMITIVE_RESTART_ENABLE
      */
    bool primitive_restart_enable;
+
+   /** vkCmdBindIndexBuffer(indexType) or vkCmdSetPrimitiveRestartIndexEXT()
+     *
+     * MESA_VK_DYNAMIC_GRAPHICS_STATE_IA_PRIMITIVE_RESTART_INDEX
+     */
+   uint32_t primitive_restart_index;
 };
 
 /***/
@@ -966,6 +973,9 @@ struct vk_dynamic_graphics_state {
    /** MESA_VK_DYNAMIC_ATTACHMENT_FEEDBACK_LOOP_ENABLE */
    VkImageAspectFlags feedback_loops;
 
+   /** Rasterization order attachment access flags (from pipeline state) */
+   VkImageAspectFlags rasterization_order_access;
+
    /** MESA_VK_DYNAMIC_INPUT_ATTACHMENT_MAP */
    struct vk_input_attachment_location_state ial;
 
@@ -1021,6 +1031,14 @@ struct vk_graphics_pipeline_state {
     * attachments for emulated renderpasses cannot be managed by the driver).
     */
    bool feedback_loop_not_input_only;
+
+   /** Rasterization order attachment access flags.
+    *
+    * Tracks which attachment types require rasterization-order access,
+    * as declared by VK_EXT_rasterization_order_attachment_access pipeline
+    * create flags or subpass description flags.
+    */
+   VkImageAspectFlags rasterization_order_access;
 
    /** Vertex input state */
    const struct vk_vertex_input_state *vi;
@@ -1310,6 +1328,18 @@ vk_cmd_set_vertex_binding_strides2(struct vk_command_buffer *cmd,
                                    uint32_t first_binding,
                                    uint32_t binding_count,
                                    const VkBindVertexBuffer3InfoKHR *bindings);
+
+/** Set index buffer type on a command buffer
+ *
+ * This is the dynamic state part of vkCmdBindIndexBuffers2() &
+ * vkCmdSetPrimitiveRestartIndexEXT().
+ *
+ * :param cmd:            |inout|  Command buffer to update
+ * :param index_type:     |in|
+ */
+void
+vk_cmd_set_index_buffer_type(struct vk_command_buffer *cmd,
+                             VkIndexType index_type);
 
 /* Set color attachment count for blending on a command buffer.
  *

@@ -627,11 +627,13 @@ is_access_out_of_bounds(nir_loop_terminator *term, nir_deref_instr *deref,
 
       /* We have already unrolled the loop and the new one will be imbedded in
        * the innermost continue branch. So unless the array is greater than
-       * the trip count any iteration over the loop will be an out of bounds
-       * access of the array.
+       * the initial value plus the trip count any iteration over the loop
+       * will be an out of bounds access of the array.
        */
       unsigned length = glsl_type_is_vector(parent->type) ? glsl_get_vector_elements(parent->type) : glsl_get_length(parent->type);
-      return length <= trip_count;
+      unsigned init_value = nir_src_is_const(*term->init_src) ?
+                            nir_src_as_uint(*term->init_src) : 0;
+      return length <= init_value + trip_count;
    }
 
    return false;
@@ -750,7 +752,7 @@ remove_out_of_bounds_induction_use(nir_shader *shader, nir_loop *loop,
 /* Partially unrolls loops that don't have a known trip count.
  */
 static void
-partial_unroll(nir_shader *shader, nir_loop *loop, unsigned trip_count)
+partial_unroll(nir_function_impl *impl, nir_loop *loop, unsigned trip_count)
 {
    assert(list_is_singular(&loop->info->loop_terminator_list));
 
@@ -777,7 +779,7 @@ partial_unroll(nir_shader *shader, nir_loop *loop, unsigned trip_count)
                                remap_table, trip_count);
 
    /* Attempt to remove out of bounds array access */
-   remove_out_of_bounds_induction_use(shader, loop, terminator, &lp_header,
+   remove_out_of_bounds_induction_use(impl->function->shader, loop, terminator, &lp_header,
                                       &lp_body, trip_count);
 
    nir_cursor cursor =
@@ -787,7 +789,7 @@ partial_unroll(nir_shader *shader, nir_loop *loop, unsigned trip_count)
    /* Reinsert the loop in the innermost nested continue branch of the unrolled
     * loop.
     */
-   nir_loop *new_loop = nir_loop_create(shader);
+   nir_loop *new_loop = nir_loop_create(impl);
    nir_cf_node_insert(cursor, &new_loop->cf_node);
    new_loop->partially_unrolled = true;
 
@@ -802,7 +804,7 @@ partial_unroll(nir_shader *shader, nir_loop *loop, unsigned trip_count)
                                   remap_table);
 
    /* Insert break back into terminator */
-   nir_jump_instr *brk = nir_jump_instr_create(shader, nir_jump_break);
+   nir_jump_instr *brk = nir_jump_instr_create(impl->function->shader, nir_jump_break);
    nir_block *break_block = _mesa_hash_table_search(remap_table, terminator->break_block)->data;
    nir_instr_insert_after_block(break_block, &brk->instr);
 
@@ -828,7 +830,9 @@ is_indirect_load(nir_instr *instr)
          return true;
       }
 
-      if (intrin->intrinsic == nir_intrinsic_load_global)
+      if (intrin->intrinsic == nir_intrinsic_load_global ||
+          intrin->intrinsic == nir_intrinsic_load_global_transpose_amd ||
+          intrin->intrinsic == nir_intrinsic_load_deref_transpose_amd)
          return true;
 
       if (intrin->intrinsic == nir_intrinsic_load_deref ||
@@ -927,11 +931,12 @@ check_unrolling_restrictions(nir_shader *shader, nir_loop *loop)
 }
 
 static bool
-process_loops(nir_shader *sh, nir_cf_node *cf_node, bool *has_nested_loop_out,
+process_loops(nir_function_impl *impl, nir_cf_node *cf_node, bool *has_nested_loop_out,
               bool *unrolled_this_block);
 
 static bool
-process_loops_in_block(nir_shader *sh, struct exec_list *block,
+process_loops_in_block(nir_function_impl *impl,
+                       struct exec_list *block,
                        bool *has_nested_loop_out)
 {
    /* We try to unroll as many loops in one pass as possible.
@@ -963,7 +968,7 @@ process_loops_in_block(nir_shader *sh, struct exec_list *block,
    bool unrolled_this_block = false;
 
    foreach_list_typed(nir_cf_node, nested_node, node, block) {
-      if (process_loops(sh, nested_node,
+      if (process_loops(impl, nested_node,
                         has_nested_loop_out, &unrolled_this_block)) {
          progress = true;
 
@@ -982,7 +987,7 @@ process_loops_in_block(nir_shader *sh, struct exec_list *block,
 }
 
 static bool
-process_loops(nir_shader *sh, nir_cf_node *cf_node, bool *has_nested_loop_out,
+process_loops(nir_function_impl *impl, nir_cf_node *cf_node, bool *has_nested_loop_out,
               bool *unrolled_this_block)
 {
    bool progress = false;
@@ -994,16 +999,16 @@ process_loops(nir_shader *sh, nir_cf_node *cf_node, bool *has_nested_loop_out,
       return progress;
    case nir_cf_node_if: {
       nir_if *if_stmt = nir_cf_node_as_if(cf_node);
-      progress |= process_loops_in_block(sh, &if_stmt->then_list,
+      progress |= process_loops_in_block(impl, &if_stmt->then_list,
                                          has_nested_loop_out);
-      progress |= process_loops_in_block(sh, &if_stmt->else_list,
+      progress |= process_loops_in_block(impl, &if_stmt->else_list,
                                          has_nested_loop_out);
       return progress;
    }
    case nir_cf_node_loop: {
       loop = nir_cf_node_as_loop(cf_node);
       assert(!nir_loop_has_continue_construct(loop));
-      progress |= process_loops_in_block(sh, &loop->body, &has_nested_loop);
+      progress |= process_loops_in_block(impl, &loop->body, &has_nested_loop);
 
       break;
    }
@@ -1077,8 +1082,8 @@ process_loops(nir_shader *sh, nir_cf_node *cf_node, bool *has_nested_loop_out,
          bool one_lt = list_is_singular(&loop->info->loop_terminator_list);
          if (!has_nested_loop && one_lt && !loop->partially_unrolled &&
              loop->info->guessed_trip_count &&
-             check_unrolling_restrictions(sh, loop)) {
-            partial_unroll(sh, loop, loop->info->guessed_trip_count);
+             check_unrolling_restrictions(impl->function->shader, loop)) {
+            partial_unroll(impl, loop, loop->info->guessed_trip_count);
             progress = true;
          }
       }
@@ -1108,7 +1113,7 @@ process_loops(nir_shader *sh, nir_cf_node *cf_node, bool *has_nested_loop_out,
           (!breaks_after_first_iteration && has_nested_loop))
          goto exit;
 
-      if (!check_unrolling_restrictions(sh, loop))
+      if (!check_unrolling_restrictions(impl->function->shader, loop))
          goto exit;
 
       if (loop->info->exact_trip_count_known) {
@@ -1170,7 +1175,7 @@ nir_opt_loop_unroll_impl(nir_function_impl *impl,
    nir_metadata_require(impl, nir_metadata_block_index);
 
    bool has_nested_loop = false;
-   progress |= process_loops_in_block(impl->function->shader, &impl->body,
+   progress |= process_loops_in_block(impl, &impl->body,
                                       &has_nested_loop);
 
    if (progress) {

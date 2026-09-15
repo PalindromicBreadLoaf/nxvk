@@ -100,6 +100,7 @@ c_args = []
 cpp_args = []
 
 with_moltenvk_dir = get_option('moltenvk-dir')
+with_vulkan_loader_rpath = get_option('vulkan-loader-rpath')
 with_vulkan_icd_dir = get_option('vulkan-icd-dir')
 with_tests = get_option('build-tests')
 with_glcpp_tests = get_option('enable-glcpp-tests')
@@ -115,6 +116,7 @@ with_vulkan_anti_lag_layer = get_option('vulkan-layers').contains('anti-lag')
 with_tools = get_option('tools')
 if with_tools.contains('all')
   with_tools = [
+    'amd',
     'asahi',
     'dlclose-skip',
     'drm-shim',
@@ -128,13 +130,14 @@ if with_tools.contains('all')
     'nir',
     'nouveau',
     'panfrost',
+    'gamma',
     'zink',
   ]
 endif
 
 with_any_vulkan_layers = get_option('vulkan-layers').length() != 0
 with_intel_tools = with_tools.contains('intel') or with_tools.contains('intel-ui')
-with_imgui = with_intel_tools or with_vulkan_overlay_layer
+with_imgui = with_intel_tools or with_vulkan_overlay_layer or with_tools.contains('gamma')
 
 dri_drivers_path = get_option('dri-drivers-path')
 if dri_drivers_path == ''
@@ -237,10 +240,14 @@ foreach gallium_driver : gallium_drivers
   pre_args += '-DHAVE_@0@'.format(gallium_driver.to_upper())
 endforeach
 draw_with_llvm = with_llvm.allowed() and get_option('draw-use-llvm')
+r300_needs_draw = host_machine.cpu_family().startswith('x86')
+if with_gallium_r300 and r300_needs_draw and not draw_with_llvm
+  warning('r300 built without LLVM will be slow on integrated chipsets requiring software vertex processing.')
+endif
 with_llvm = with_llvm \
   .enable_if(with_gallium_i915, error_message : 'i915 Gallium driver requires LLVM for vertex shaders') \
   .enable_if(with_gallium_llvmpipe, error_message : 'LLVMPipe Gallium driver requires LLVM') \
-  .enable_if(with_gallium_r300 and draw_with_llvm, error_message : 'R300 Gallium driver requires LLVM for vertex shaders on IGP parts') \
+  .enable_if(with_gallium_r300 and r300_needs_draw and draw_with_llvm, error_message : 'R300 Gallium driver requires LLVM for vertex shaders on IGP parts') \
   .enable_if(with_gallium_radeonsi and amd_with_llvm, error_message : 'RadeonSI Gallium driver configured to require LLVM')
 
 # compatibility for "swrast" as an internal-ish driver name
@@ -354,7 +361,7 @@ with_vdrm = [
 ].contains(true)
 
 with_dri = false
-if with_gallium and (system_has_kms_drm or (freedreno_kmds.contains('kgsl') and with_gallium_zink))
+if with_gallium and (system_has_kms_drm or (with_gallium_zink and (freedreno_kmds.contains('kgsl') or host_machine.system() == 'darwin')))
   _glx = get_option('glx')
   _egl = get_option('egl')
   if _glx == 'dri' or _egl.enabled() or (_glx == 'disabled' and _egl.allowed())
@@ -443,6 +450,15 @@ if _codecs.contains('all')
 elif _codecs.contains('all_free')
   _codecs += free_codecs
 endif
+
+with_video_encode = false
+foreach c : _codecs
+  if c.contains('enc')
+    with_video_encode = true
+    break
+  endif
+endforeach
+
 foreach c : all_codecs
    pre_args += '-DVIDEO_CODEC_@0@=@1@'.format(c.to_upper(), _codecs.contains(c).to_int())
 endforeach
@@ -469,7 +485,6 @@ endif
 
 with_platform_android = _platforms.contains('android')
 with_platform_x11 = _platforms.contains('x11')
-with_platform_xcb = _platforms.contains('xcb')
 with_platform_wayland = _platforms.contains('wayland')
 with_platform_haiku = _platforms.contains('haiku')
 with_platform_windows = _platforms.contains('windows')
@@ -565,14 +580,37 @@ if with_egl
     endif
   endif
 
-  egl_native_platform = get_option('egl-native-platform')
-  if egl_native_platform.contains('auto')
-    egl_native_platform = _platforms[0]
-  endif
-endif
+  # All the other platforms can be detected and cannot reach the native platform code
+  _undetectable_platforms = ['x11', 'haiku', 'android', 'surfaceless', 'horizon']
 
-if with_egl and not _platforms.contains(egl_native_platform)
-  error('-Degl-native-platform does not specify an enabled platform')
+  # Don't enforce the native platform if none of the undetectable platforms are enabled
+  _undetectable_platforms_enabled = []
+  foreach _platform : _platforms
+    if _platform in _undetectable_platforms
+      _undetectable_platforms_enabled += _platform
+    endif
+  endforeach
+
+  egl_native_platform = ''
+
+  if _undetectable_platforms_enabled.length() > 0
+    egl_native_platform = get_option('egl-native-platform')
+
+    if egl_native_platform.contains('auto')
+      egl_native_platform = _undetectable_platforms_enabled[0]
+
+    # Since we always add surfaceless without the user's ability to
+    # enable/disable it, if this is the only undetectable platform enabled,
+    # silently select it as the native platform.
+    elif _undetectable_platforms_enabled == ['surfaceless']
+      _undetectable_platforms_enabled = []
+      egl_native_platform = 'surfaceless'
+
+    # Make sure the native platform is one of the ones that can't be detected
+    elif egl_native_platform not in _undetectable_platforms
+      error('`-D egl-native-platform=...` must be one of: ' + ', '.join(_undetectable_platforms_enabled))
+    endif
+  endif
 endif
 
 if 'x11' in _platforms
@@ -743,7 +781,6 @@ _va_drivers = [
 ]
 
 allow_fallback_for_libva = get_option('allow-fallback-for').contains('libva')
-fallback_libva_options = []
 _va = get_option('gallium-va') \
   .require(_va_drivers.contains(true),
            error_message : 'VA state tracker requires at least one of the following gallium drivers: r600, radeonsi, nouveau, d3d12 (with option gallium-d3d12-video), virgl.')
@@ -751,8 +788,8 @@ _dep_va_name = host_machine.system() == 'windows' ? 'libva-win32' : 'libva'
 dep_va = dependency(
   _dep_va_name, version : '>= 1.8.0',
   required : _va,
-  allow_fallback: allow_fallback_for_libva,
-  default_options: fallback_libva_options
+  allow_fallback : allow_fallback_for_libva,
+  default_options : [ 'c_std=none' ]
 )
 if dep_va.found()
   dep_va_headers = dep_va.partial_dependency(compile_args : true, includes : true)
@@ -822,6 +859,8 @@ endif
 
 _rtti = get_option('cpp_rtti')
 
+with_panfrost_rust = (with_gallium_panfrost or with_panfrost_vk) and get_option('panfrost-rust')
+
 with_gallium_rusticl = get_option('gallium-rusticl')
 if with_gallium_rusticl
   if not with_gallium
@@ -829,16 +868,8 @@ if with_gallium_rusticl
   endif
 endif
 
-# Do built drivers need to include gfx/compute queues support?
-# TODO: add a separate option to allow to build a VA-API driver without the features
-# that depend on these queues. When added a lightweight decode-only VA-API driver could be built
-with_gfx_compute = with_any_opengl or get_option('vulkan-drivers').length() > 0 or with_gallium_rusticl or with_gallium_va
-if with_gfx_compute
-  pre_args += '-DHAVE_GFX_COMPUTE'
-endif
-
 with_virtgpu_kumquat = get_option('virtgpu_kumquat') and with_gfxstream_vk
-if with_gallium_rusticl or with_nouveau_vk or with_tools.contains('etnaviv') or with_virtgpu_kumquat
+if with_gallium_rusticl or with_nouveau_vk or with_tools.contains('etnaviv') or with_virtgpu_kumquat or with_panfrost_rust
   # rust.bindgen() does not pass `--rust-target` to bindgen until 1.7.0.
   if meson.version().version_compare('< 1.7.0')
     error('Mesa Rust support requires Meson 1.7.0 or newer')
@@ -849,8 +880,8 @@ if with_gallium_rusticl or with_nouveau_vk or with_tools.contains('etnaviv') or 
   rust = import('rust')
 
   # Keep this in sync with the `msrv` in clippy.toml
-  if rustc.version().version_compare('< 1.82')
-    error('Mesa requires Rust 1.82.0 or newer')
+  if rustc.version().version_compare('< 1.85')
+    error('Mesa requires Rust 1.85.0 or newer')
   endif
 
   # bindgen 0.71 is the first version that knows about `editions`
@@ -908,6 +939,8 @@ if with_gallium_rusticl or with_nouveau_vk or with_tools.contains('etnaviv') or 
     '-Dkeyword_idents_2024',
     '-Dmissing_unsafe_on_extern',
     '-Dnever_type_fallback_flowing_into_unsafe',
+    '-Drust_2024_guarded_string_incompatible_syntax',
+    '-Drust_2024_incompatible_pat',
     '-Drust_2024_prelude_collisions',
     '-Dstatic_mut_refs',
     '-Dunsafe_op_in_unsafe_fn',
@@ -917,8 +950,6 @@ if with_gallium_rusticl or with_nouveau_vk or with_tools.contains('etnaviv') or 
 
     # 1.83+
     # '-Dif_let_rescope',
-    # '-Drust_2024_guarded_string_incompatible_syntax',
-    # '-Drust_2024_incompatible_pat',
   ]
 endif
 
@@ -932,6 +963,7 @@ with_driver_using_cl = [
   with_gallium_iris, with_gallium_crocus, with_intel_vk, with_intel_hasvk,
   with_gallium_asahi, with_asahi_vk, with_tools.contains('asahi'),
   with_gallium_panfrost, with_panfrost_vk,
+  with_gallium_rusticl,
   with_nouveau_vk, with_imagination_vk,
   with_kosmickrisp_vk,
 ].contains(true)
@@ -943,7 +975,7 @@ if get_option('mesa-clc') == 'system'
   with_clc = with_gallium_rusticl
 else
   with_clc = get_option('mesa-clc') != 'auto' or \
-             with_microsoft_clc or with_gallium_rusticl or \
+             with_microsoft_clc or \
              with_drivers_clc or with_driver_using_cl
 endif
 
@@ -952,11 +984,29 @@ with_llvm = with_llvm \
 
 with_poly = [
   with_gallium_asahi, with_asahi_vk, with_tools.contains('asahi'),
+  with_kosmickrisp_vk,
 ].contains(true)
 
 dep_clc = null_dep
-if with_clc
-  dep_clc = dependency('libclc')
+if with_gallium_rusticl or with_microsoft_clc
+  dep_clc = dependency('mesa-libclc', required : false,
+    not_found_message :
+    'mesa-libclc not found. Build will fall back to upstream libclc, however ' +
+    'this is not recommended for most use cases.')
+  if not dep_clc.found()
+    dep_clc = dependency('libclc')
+  endif
+endif
+
+with_gfx_compute = [
+  with_any_opengl,
+  with_any_vk,
+  with_clc,
+  with_gallium_va and with_video_encode,
+  with_gallium_mediafoundation and with_video_encode,
+].contains(true)
+if with_gfx_compute
+  pre_args += '-DHAVE_GFX_COMPUTE'
 endif
 
 gl_pkgconfig_c_flags = []
@@ -974,12 +1024,6 @@ if with_platform_x11
       pre_args += '-DGLX_USE_DRM'
     elif with_dri_platform == 'apple'
       pre_args += '-DGLX_USE_APPLEGL'
-      # Check to see if more than just the default 'swrast' is required
-      if (not with_gallium_softpipe) or 1 < gallium_drivers.length()
-        # Switch the MacOS code from "forwarding to the OpenGL.framework" mode
-        # and into actual Gallium Driver mode
-        pre_args += '-DGLX_USE_APPLE'
-      endif
     elif with_dri_platform == 'windows'
       pre_args += '-DGLX_USE_WINDOWSGL'
     endif
@@ -1258,6 +1302,8 @@ endif
 c_msvc_compat_args = []
 no_override_init_args = []
 cpp_msvc_compat_args = []
+soong_compat_c_args = []
+soong_compat_cpp_args = []
 ld_args_gc_sections = []
 if cc.get_argument_syntax() == 'msvc'
   _trial = [
@@ -1377,6 +1423,40 @@ else
   ]
   c_msvc_compat_args += cc.get_supported_arguments(_trial_msvc)
   cpp_msvc_compat_args += cpp.get_supported_arguments(_trial_msvc)
+
+  # Check for C and C++ arguments for Soong compatibility.
+  _trial_soong_c = [
+    '-Werror=date-time',
+    '-Werror=gnu-alignof-expression',
+    '-Werror=ignored-qualifiers',
+    '-Werror=implicit-fallthrough',
+    '-Werror=int-conversion',
+    '-Werror=missing-prototypes',
+    '-Werror=pragma-pack',
+    '-Werror=pragma-pack-suspicious-include',
+    '-Werror=sizeof-array-div',
+    '-Werror=string-plus-int',
+    '-Werror=unreachable-code-loop-increment',
+  ]
+  _trial_soong_cpp = [
+    '-D_LIBCPP_ENABLE_THREAD_SAFETY_ANNOTATIONS',
+    '-Werror=date-time',
+    '-Werror=gnu-alignof-expression',
+    '-Werror=ignored-qualifiers',
+    '-Werror=implicit-fallthrough',
+    '-Werror=pragma-pack',
+    '-Werror=pragma-pack-suspicious-include',
+    '-Werror=sizeof-array-div',
+    '-Werror=string-plus-int',
+    '-Werror=unreachable-code-loop-increment',
+  ]
+  if cpp.get_id() == 'gcc'
+    _trial_soong_cpp += '-Werror=missing-declarations'
+  else
+    _trial_soong_cpp += '-Werror=missing-prototypes'
+  endif
+  soong_compat_c_args += cc.get_supported_arguments(_trial_soong_c)
+  soong_compat_cpp_args += cpp.get_supported_arguments(_trial_soong_cpp)
 endif
 
 # set linker arguments
@@ -1817,7 +1897,7 @@ endif
 dep_libdrm_amdgpu = null_dep
 dep_libdrm_intel = null_dep
 
-_drm_amdgpu_ver = '2.4.121'
+_drm_amdgpu_ver = '2.4.133'
 _drm_intel_ver = '2.4.75'
 _drm_ver = '2.4.109'
 
@@ -1848,6 +1928,11 @@ if system_has_kms_drm
     'libdrm', version : '>=' + _drm_ver,
     required : with_dri2 or with_dri or with_gbm,
     allow_fallback: allow_fallback_for_libdrm,
+    default_options : {
+      'auto_features' : 'disabled',
+      'intel' : _libdrm_checks[0][1] ? 'enabled' : 'disabled',
+      'amdgpu' : _libdrm_checks[1][1] ? 'enabled' : 'disabled',
+    },
   )
 else
   # We should prevent libdrm from being available when the target doesn't have it to avoid transitive
@@ -1896,6 +1981,12 @@ if draw_with_llvm
   llvm_modules += 'native'
   # lto is needded with LLVM>=15, but we don't know what LLVM verrsion we are using yet
   llvm_optional_modules += ['lto']
+  if host_machine.system() == 'darwin'
+    # Apple systems frequently cross-compile and build fat binaries with multiple
+    # archs, so lp_build_create_jit_compiler_for_module() initializes every target
+    # instead of just the native one. Link all of them, not just the native one.
+    llvm_modules += 'all-targets'
+  endif
 endif
 
 # MCJIT is deprecated in LLVM and will not accept new architecture ports,
@@ -1937,10 +2028,6 @@ if dep_llvm.found()
 
   if with_gallium_i915 and not draw_with_llvm
     error('i915 requires LLVM draw support for vertex shaders.')
-  endif
-
-  if with_gallium_r300 and not draw_with_llvm and host_machine.cpu_family() == 'x86'
-    error('r300 requires LLVM draw support for vertex shaders.')
   endif
 
   if host_machine.system() != 'windows'
@@ -2069,8 +2156,10 @@ if not with_platform_windows and not dep_elf.found()
 endif
 if dep_elf.found()
   pre_args += '-DUSE_LIBELF'
-elif with_gallium_radeonsi
+elif with_gallium_radeonsi and with_gfx_compute
   error('Gallium driver radeonsi requires libelf')
+elif with_nouveau_vk and host_machine.system() != 'horizon'
+  error('NVK requires libelf')
 endif
 
 dep_valgrind = dependency('valgrind', required : get_option('valgrind'))
@@ -2238,6 +2327,9 @@ if with_platform_x11
     dep_xext = dependency('xext')
     dep_xcb_glx = dependency('xcb-glx', version : dep_xcb_glx_version)
     dep_xcb_shm = dependency('xcb-shm')
+    if with_gallium_zink
+      dep_xcb_present = dependency('xcb-present', version : dep_xcb_present_version)
+    endif
   elif with_gallium_rusticl
     # needed for GL sharing extension
     dep_x11 = dependency('x11', version : dep_xlib_version)
@@ -2328,10 +2420,11 @@ with_perfetto = get_option('perfetto')
 with_datasources = get_option('datasources')
 with_any_datasource = with_datasources.length() != 0
 if with_perfetto
-  dep_perfetto = dependency(
+  dep_perfetto_sdk = dependency(
       'perfetto',
-      fallback: allow_fallback_for_perfetto ? ['perfetto', 'dep_perfetto'] : [],
+      fallback: allow_fallback_for_perfetto ? ['perfetto-sdk', 'dep_perfetto_sdk'] : [],
   )
+  dep_perfetto = dep_perfetto_sdk
   pre_args += '-DHAVE_PERFETTO'
 endif
 
@@ -2347,10 +2440,6 @@ renderdoc_integration_supported = [
 pre_args += '-DHAVE_RENDERDOC_INTEGRATION=@0@'.format(renderdoc_integration_supported.to_int())
 
 with_teflon = get_option('teflon')
-if with_teflon and with_tests
-  dep_flatbuffers = dependency('flatbuffers')
-  prog_flatc = find_program('flatc')
-endif
 
 with_gpuvis = get_option('gpuvis')
 if with_gpuvis
@@ -2522,6 +2611,7 @@ if with_egl
   endif
   egl_summary += {'Drivers': egl_drivers}
   egl_summary += {'Platforms': _platforms}
+  egl_summary += {'Native platform': egl_native_platform}
 endif
 summary(egl_summary, section: 'EGL', bool_yn: true, list_sep: ' ')
 
@@ -2554,6 +2644,7 @@ if with_any_vk
   video_apis += 'vulkan'
 endif
 video_summary += {'APIs': video_apis.length() != 0 ? video_apis : false}
+video_summary += {'Encoding': with_video_encode}
 summary(video_summary, section: 'Video', bool_yn: true, list_sep: ' ')
 
 llvm_summary = {'Required': with_llvm}
@@ -2579,6 +2670,7 @@ if with_gallium
   endif
   gallium_summary += {'Frontends': gallium_frontends}
   gallium_summary += {'HUD lm-sensors': dep_lmsensors.found()}
+  gallium_summary += {'GFX/Compute': with_gfx_compute}
 endif
 summary(gallium_summary, section: 'Gallium', bool_yn: true, list_sep: ' ')
 

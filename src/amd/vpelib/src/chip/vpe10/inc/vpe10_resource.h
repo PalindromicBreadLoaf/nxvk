@@ -37,12 +37,6 @@ enum vpe_status vpe10_set_num_segments(struct vpe_priv *vpe_priv, struct stream_
     struct scaler_data *scl_data, struct vpe_rect *src_rect, struct vpe_rect *dst_rect,
     uint32_t *max_seg_width, uint32_t recout_width_alignment);
 
-bool vpe10_get_dcc_compression_output_cap(
-    const struct vpe_dcc_surface_param *params, struct vpe_surface_dcc_cap *cap);
-
-bool vpe10_get_dcc_compression_input_cap(
-    const struct vpe_dcc_surface_param *params, struct vpe_surface_dcc_cap *cap);
-
 bool vpe10_check_input_format(enum vpe_surface_pixel_format format);
 
 bool vpe10_check_output_format(enum vpe_surface_pixel_format format);
@@ -65,6 +59,9 @@ uint16_t vpe10_get_bg_stream_idx(struct vpe_priv *vpe_priv);
 
 enum vpe_status vpe10_calculate_segments(
     struct vpe_priv *vpe_priv, const struct vpe_build_param *params);
+
+uint32_t vpe10_get_max_seg_width(struct output_ctx *output_ctx,
+    enum vpe_surface_pixel_format format, enum vpe_scan_direction scan);
 
 int32_t vpe10_program_frontend(struct vpe_priv *vpe_priv, uint32_t pipe_idx, uint32_t cmd_idx,
     uint32_t cmd_input_idx, bool seg_only);
@@ -102,6 +99,9 @@ struct cdc_fe *vpe10_cdc_fe_create(struct vpe_priv *vpe_priv, int inst);
 struct cdc_be *vpe10_cdc_be_create(struct vpe_priv *vpe_priv, int inst);
 
 bool vpe10_validate_cached_param(struct vpe_priv *vpe_priv, const struct vpe_build_param *param);
+
+enum vpe_status vpe10_check_alpha_fill_support(
+    struct vpe *vpe, const struct vpe_build_param *param);
 
 void vpe10_setup_check_funcs(struct vpe_check_support_funcs *funcs);
 

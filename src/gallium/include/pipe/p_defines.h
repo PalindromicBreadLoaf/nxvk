@@ -436,10 +436,9 @@ enum pipe_flush_flags
 #define PIPE_BARRIER_IMAGE             (1 << 8)
 #define PIPE_BARRIER_FRAMEBUFFER       (1 << 9)
 #define PIPE_BARRIER_STREAMOUT_BUFFER  (1 << 10)
-#define PIPE_BARRIER_GLOBAL_BUFFER     (1 << 11)
-#define PIPE_BARRIER_UPDATE_BUFFER     (1 << 12)
-#define PIPE_BARRIER_UPDATE_TEXTURE    (1 << 13)
-#define PIPE_BARRIER_ALL               ((1 << 14) - 1)
+#define PIPE_BARRIER_UPDATE_BUFFER     (1 << 11)
+#define PIPE_BARRIER_UPDATE_TEXTURE    (1 << 12)
+#define PIPE_BARRIER_ALL               ((1 << 13) - 1)
 
 #define PIPE_BARRIER_UPDATE \
    (PIPE_BARRIER_UPDATE_BUFFER | PIPE_BARRIER_UPDATE_TEXTURE)
@@ -802,6 +801,7 @@ struct pipe_shader_caps {
    bool fp16;
    bool fp16_derivatives;
    bool fp16_const_buffers;
+   bool fp16_no_denorms;
    bool int16;
    bool glsl_16bit_consts;
    bool glsl_16bit_load_dst; /* fp16 or int16 is AND'ed with this */
@@ -926,6 +926,7 @@ struct pipe_caps {
    bool texture_float_linear;
    bool texture_half_float_linear;
    bool depth_bounds_test;
+   bool native_fp32_depth;
    bool texture_query_samples;
    bool force_persample_interp;
    bool shareable_shaders;
@@ -960,7 +961,6 @@ struct pipe_caps {
    bool fp16;
    bool doubles;
    bool int64;
-   bool tgsi_tex_txf_lz;
    bool shader_clock;
    bool shader_realtime_clock;
    bool polygon_mode_fill_rectangle;
@@ -1063,6 +1063,7 @@ struct pipe_caps {
    bool representative_fragment_test;
    bool prefer_persp;
    bool blit_3d;
+   bool glsl_bindless_handles_are_32bit;
 
    int accelerated;
    int min_texel_offset;
@@ -1152,6 +1153,9 @@ struct pipe_caps {
    /** for CL SVM */
    uint64_t min_vma;
    uint64_t max_vma;
+
+   /** Which POT pattern sizes are accelerated? This is a bitmask of sizes */
+   uint16_t hw_clear_buffer_sizes;
 
    enum pipe_vertex_input_alignment vertex_input_alignment;
    enum pipe_endian endianness;

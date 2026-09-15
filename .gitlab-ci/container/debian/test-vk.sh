@@ -47,6 +47,7 @@ EPHEMERAL=(
     python3-pip
     python3-setuptools
     python3-wheel
+    unzip
     xz-utils
 )
 
@@ -108,12 +109,17 @@ if [ "$DEBIAN_ARCH" != "armhf" ]; then
   . .gitlab-ci/container/build-gfxreconstruct.sh
 fi
 
+############### Build Wine
+
+# Wine isn't available on 32-bit ARM
+if [ "$DEBIAN_ARCH" != "armhf" ]; then
+  . .gitlab-ci/container/build-wine.sh
+fi
+
 ############### Build VKD3D-Proton
 
 # Wine isn't available on 32-bit ARM
 if [ "$DEBIAN_ARCH" != "armhf" ]; then
-  uncollapsed_section_switch proton "Installing Proton (Wine/D3DVK emulation)"
-  . .gitlab-ci/container/setup-wine.sh "/vkd3d-proton-wine64"
   . .gitlab-ci/container/build-vkd3d-proton.sh
 fi
 

@@ -1633,7 +1633,7 @@ v3dX(cmd_buffer_emit_blend)(struct v3dv_cmd_buffer *cmd_buffer)
       return;
 
    const struct v3d_device_info *devinfo = &cmd_buffer->device->devinfo;
-   const uint32_t max_color_rts = V3D_MAX_RENDER_TARGETS(devinfo->ver);
+   const uint32_t max_color_rts = devinfo->max_render_targets;
 
    const uint32_t blend_packets_size =
       cl_packet_length(BLEND_ENABLES) +
@@ -2612,12 +2612,16 @@ v3dX(cmd_buffer_emit_gl_shader_state)(struct v3dv_cmd_buffer *cmd_buffer)
 
       cl_emit_with_prepacked(&job->indirect, GL_SHADER_STATE_ATTRIBUTE_RECORD,
                              &pipeline->vertex_attrs[i * packet_length], attr) {
-
-         assert(c_vb->buffer->mem->bo);
-         attr.address = v3dv_cl_address(c_vb->buffer->mem->bo,
-                                        c_vb->buffer->mem_offset +
-                                        pipeline->va[i].offset +
-                                        c_vb->offset);
+         if (c_vb->buffer) {
+            assert(c_vb->buffer->mem->bo);
+            attr.address = v3dv_cl_address(c_vb->buffer->mem->bo,
+                                           c_vb->buffer->mem_offset +
+                                           pipeline->va[i].offset +
+                                           c_vb->offset);
+         } else {
+            assert(cmd_buffer->device->null_bo);
+            attr.address = v3dv_cl_address(cmd_buffer->device->null_bo, 0);
+         }
 
          attr.number_of_values_read_by_coordinate_shader =
             prog_data_vs_bin->vattr_sizes[location];

@@ -44,7 +44,7 @@ traces:
     freedreno-a618:
       checksum: e0e18dcc50ab2e23cead650d64469178
     zink-a618:
-      checksum: b7e0cdb0db74ea9a31fb7a75ae0d76fc
+      checksum: b007c69ad3d9ede36bac6b2fe356722b
 
   valve/counterstrike-source-v2.trace:
     freedreno-a306:
@@ -167,7 +167,7 @@ traces:
       checksum: d25edb433abfcde517b626b3071906ff
     zink-a618:
       label: [no-perf]
-      checksum: d25edb433abfcde517b626b3071906ff
+      checksum: a8a714fd7017fb07be6c3e904595eb0f
 
   glxgears/glxgears-2-v2.trace:
     freedreno-a306:
@@ -248,13 +248,13 @@ traces:
 
   gputest/plot3d-v2.trace:
     freedreno-a306:
-      checksum: f6ecd9b8afc692b0cdb459b9b30db8d4
+      checksum: 4e9d4eae83618e47b655de9fd8536e84
     freedreno-a530:
-      checksum: 4faafe5fab0d8ec6d7b549c94f663c92
+      checksum: 512da39a517434eaaf9d8daaf7b736ea
     freedreno-a618:
-      checksum: 0a6a16c394a413f02ec2ebcc3251e366
+      checksum: 361926f700dac2db7e95a983f1d63e62
     zink-a618:
-      checksum: 0a6a16c394a413f02ec2ebcc3251e366
+      checksum: 361926f700dac2db7e95a983f1d63e62
 
   gputest/tessmark-v2.trace:
     freedreno-a306:
@@ -297,7 +297,7 @@ traces:
     freedreno-a618:
       checksum: b0ac8fb4b2b2268cfb87944730125886
     zink-a618:
-      checksum: bd713b79eaa2a7ebbf4ebebab3577e40
+      checksum: 47c816354d1ea4dcb64827394abf089e
 
   humus/DynamicBranching3-v2.trace:
     freedreno-a306:
@@ -520,16 +520,6 @@ traces:
       label: [crash]
     zink-a618:
       label: [crash]
-
-  thedarkmod/thedarkmod.trace:
-    freedreno-a306:
-      label: [unsupported]
-    freedreno-a530:
-      label: [unsupported]
-    freedreno-a618:
-      label: [skip, broken, slow]
-    zink-a618:
-      label: [skip]
 
   jvgs/jvgs-d27fb67-v2.trace:
     freedreno-a306:

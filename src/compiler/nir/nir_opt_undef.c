@@ -199,7 +199,7 @@ visit_undef_use(nir_src *src, struct visit_info *info)
       return;
    }
 
-   nir_instr *instr = nir_src_parent_instr(src);
+   nir_instr *instr = nir_src_use_instr(src);
 
    if (instr->type == nir_instr_type_alu) {
       /* Replacing undef with a constant is only beneficial with ALU
@@ -222,7 +222,7 @@ visit_undef_use(nir_src *src, struct visit_info *info)
          info->replace_undef_with_constant = true;
          if (nir_op_infos[alu->op].input_types[i] & nir_type_float &&
              alu->op != nir_op_fmulz &&
-             (alu->op != nir_op_ffmaz || i == 2) &&
+             (!nir_alu_instr_is_mul_add_z(alu) || i == 2) &&
              alu->op != nir_op_pack_half_2x16_rtz_split)
             info->prefer_nan = true;
       }

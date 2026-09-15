@@ -49,7 +49,7 @@ static struct vc4_compiled_shader *
 vc4_get_compiled_shader(struct vc4_context *vc4, enum qstage stage,
                         struct vc4_key *key);
 
-static int
+static unsigned
 type_size(const struct glsl_type *type, bool bindless)
 {
    return glsl_count_attribute_slots(type, false);
@@ -2135,9 +2135,6 @@ static const nir_shader_compiler_options nir_options = {
         .lower_insert_byte = true,
         .lower_insert_word = true,
         .lower_fdiv = true,
-        .lower_ffma16 = true,
-        .lower_ffma32 = true,
-        .lower_ffma64 = true,
         .lower_flrp32 = true,
         .lower_fmod = true,
         .lower_fpow = true,

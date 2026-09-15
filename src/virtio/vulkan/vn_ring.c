@@ -17,6 +17,9 @@
 
 #define VN_RING_IDLE_TIMEOUT_NS (1ull * 1000 * 1000)
 
+/* for better recycle of the vn_ring_submit batch */
+#define VN_MIN_SHMEM_COUNT (2)
+
 static_assert(ATOMIC_INT_LOCK_FREE == 2 && sizeof(atomic_uint) == 4,
               "vn_ring_shared requires lock-free 32-bit atomic_uint");
 
@@ -168,7 +171,12 @@ vn_ring_retire_submits(struct vn_ring *ring, uint32_t seqno)
       for (uint32_t i = 0; i < submit->shmem_count; i++)
          vn_renderer_shmem_unref(renderer, submit->shmems[i]);
 
-      list_move_to(&submit->head, &ring->free_submits);
+      if (submit->shmem_count <= VN_MIN_SHMEM_COUNT) {
+         list_move_to(&submit->head, &ring->free_submits);
+      } else {
+         list_del(&submit->head);
+         free(submit);
+      }
    }
 }
 
@@ -418,18 +426,21 @@ vn_ring_get_id(struct vn_ring *ring)
 static struct vn_ring_submit *
 vn_ring_get_submit(struct vn_ring *ring, uint32_t shmem_count)
 {
-   list_for_each_entry_safe(struct vn_ring_submit, submit,
-                            &ring->free_submits, head) {
-      if (submit->shmem_count >= shmem_count) {
-         list_del(&submit->head);
-         return submit;
-      }
+   struct vn_ring_submit *submit;
+
+   if (shmem_count <= VN_MIN_SHMEM_COUNT &&
+       !list_is_empty(&ring->free_submits)) {
+      submit =
+         list_first_entry(&ring->free_submits, struct vn_ring_submit, head);
+      list_del(&submit->head);
+   } else {
+      const size_t submit_size =
+         offsetof(struct vn_ring_submit,
+                  shmems[MAX2(shmem_count, VN_MIN_SHMEM_COUNT)]);
+      submit = malloc(submit_size);
    }
 
-   const uint32_t min_shmem_count = 2;
-   const size_t submit_size = offsetof(
-      struct vn_ring_submit, shmems[MAX2(shmem_count, min_shmem_count)]);
-   return malloc(submit_size);
+   return submit;
 }
 
 static bool

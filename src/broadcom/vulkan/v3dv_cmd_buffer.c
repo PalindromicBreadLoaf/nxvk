@@ -251,6 +251,16 @@ v3dv_cmd_buffer_add_private_obj(struct v3dv_cmd_buffer *cmd_buffer,
    list_addtail(&pobj->list_link, &cmd_buffer->private_objs);
 }
 
+void
+v3dv_cmd_buffer_destroy_bo_cb(VkDevice _device,
+                              uint64_t pobj,
+                              VkAllocationCallbacks *alloc)
+{
+   V3DV_FROM_HANDLE(v3dv_device, device, _device);
+   struct v3dv_bo *bo = (struct v3dv_bo *)((uintptr_t) pobj);
+   v3dv_bo_free(device, bo);
+}
+
 static void
 cmd_buffer_destroy_private_obj(struct v3dv_cmd_buffer *cmd_buffer,
                                struct v3dv_cmd_buffer_private_obj *pobj)
@@ -268,8 +278,7 @@ cmd_buffer_free_resources(struct v3dv_cmd_buffer *cmd_buffer)
 {
    list_for_each_entry_safe(struct v3dv_job, job,
                             &cmd_buffer->jobs, list_link) {
-      if (job->type == V3DV_JOB_TYPE_CPU_CSD_INDIRECT &&
-          cmd_buffer->device->pdevice->caps.cpu_queue)
+      if (job->type == V3DV_JOB_TYPE_CPU_CSD_INDIRECT)
          v3dv_job_destroy(job->cpu.csd_indirect.csd_job);
       v3dv_job_destroy(job);
    }
@@ -329,7 +338,7 @@ cmd_buffer_can_merge_subpass(struct v3dv_cmd_buffer *cmd_buffer,
    if (cmd_buffer->state.job->always_flush)
       return false;
 
-   if (!physical_device->options.merge_jobs)
+   if (!physical_device->merge_jobs)
       return false;
 
    /* Each render pass starts a new job */
@@ -397,6 +406,21 @@ job_compute_frame_tiling(struct v3dv_job *job,
 {
    assert(job);
    struct v3dv_frame_tiling *tiling = &job->frame_tiling;
+
+   /* With V3D_WEBGPU_OVERRIDE=1 the advertised framebuffer width/height
+    * is 8192 (to satisfy Dawn/Chromium) but the actual HW rendering
+    * limit is lower (7680 on RPi5, 4096 on RPi4). Warn when a render
+    * job exceeds the real limit — meta fill/copy paths are already
+    * clamped by framebuffer_size_for_pixel_count, but image blits and
+    * render passes may legitimately use the advertised limit.
+    */
+   const uint32_t max_fb_dim =
+      job->device->devinfo.max_framebuffer_size;
+   if (width > max_fb_dim || height > max_fb_dim) {
+      mesa_loge("V3D_WEBGPU_OVERRIDE:"
+                " job_compute_frame_tiling: %ux%u exceeds real HW limit %ux%u",
+                width, height, max_fb_dim, max_fb_dim);
+   }
 
    tiling->width = width;
    tiling->height = height;
@@ -1073,12 +1097,13 @@ cmd_buffer_begin_render_pass_secondary(
     *     rendering is contained within the render area."
     */
    const struct v3dv_framebuffer *framebuffer = cmd_buffer->state.framebuffer;
+   const uint32_t max_fb_size = cmd_buffer->device->devinfo.max_framebuffer_size;
    cmd_buffer->state.render_area.offset.x = 0;
    cmd_buffer->state.render_area.offset.y = 0;
    cmd_buffer->state.render_area.extent.width =
-      framebuffer ? framebuffer->width : V3D_MAX_IMAGE_DIMENSION;
+      framebuffer ? framebuffer->width : max_fb_size;
    cmd_buffer->state.render_area.extent.height =
-      framebuffer ? framebuffer->height : V3D_MAX_IMAGE_DIMENSION;
+      framebuffer ? framebuffer->height : max_fb_size;
 
    /* We only really execute double-buffer mode in primary jobs, so allow this
     * mode in render pass secondaries to keep track of the double-buffer mode
@@ -2520,7 +2545,7 @@ v3dv_cmd_buffer_meta_state_push(struct v3dv_cmd_buffer *cmd_buffer,
     * we are no longer in a subpass because Vulkan disallows image resolves
     * via vkCmdResolveImage during subpasses, but we still need to preserve
     * attachment state because we may have more subpasses to go through
-    * after processing resolves in the current subass.
+    * after processing resolves in the current subpass.
     */
    const uint32_t attachment_state_item_size =
       sizeof(struct v3dv_cmd_buffer_attachment_state);
@@ -2569,6 +2594,8 @@ v3dv_cmd_buffer_meta_state_push(struct v3dv_cmd_buffer *cmd_buffer,
       if (gfx_descriptor_state->valid != 0) {
          memcpy(&state->meta.gfx.descriptor_state, gfx_descriptor_state,
                 sizeof(state->gfx.descriptor_state));
+      } else {
+         state->meta.gfx.descriptor_state.valid = 0;
       }
       state->meta.has_descriptor_state = true;
    } else {
@@ -3472,6 +3499,8 @@ v3dv_CmdBindVertexBuffers2(VkCommandBuffer commandBuffer,
 
    for (uint32_t i = 0; i < bindingCount; i++) {
       struct v3dv_buffer *buffer = v3dv_buffer_from_handle(pBuffers[i]);
+      assert(buffer || cmd_buffer->device->vk.enabled_features.nullDescriptor);
+
       if (vb[firstBinding + i].buffer != buffer) {
          vb[firstBinding + i].buffer = v3dv_buffer_from_handle(pBuffers[i]);
          vb_state_changed = true;
@@ -3481,14 +3510,19 @@ v3dv_CmdBindVertexBuffers2(VkCommandBuffer commandBuffer,
          vb[firstBinding + i].offset = pOffsets[i];
          vb_state_changed = true;
       }
-      assert(pOffsets[i] <= buffer->size);
 
       VkDeviceSize size;
-      if (!pSizes || pSizes[i] == VK_WHOLE_SIZE)
-         size = buffer->size - pOffsets[i];
-      else
-         size = pSizes[i];
-      assert(pOffsets[i] + size <= buffer->size);
+      if (!buffer) {
+         size = 0;
+      } else {
+         assert(pOffsets[i] <= buffer->size);
+
+         if (!pSizes || pSizes[i] == VK_WHOLE_SIZE)
+            size = buffer->size - pOffsets[i];
+         else
+            size = pSizes[i];
+         assert(pOffsets[i] + size <= buffer->size);
+      }
 
       if (vb[firstBinding + i].size != size) {
          vb[firstBinding + i].size = size;
@@ -4204,58 +4238,6 @@ cmd_buffer_emit_pre_dispatch(struct v3dv_cmd_buffer *cmd_buffer)
    cmd_buffer->state.dirty_push_constants_stages &= ~VK_SHADER_STAGE_COMPUTE_BIT;
 }
 
-void
-v3dv_cmd_buffer_rewrite_indirect_csd_job(
-   struct v3dv_device *device,
-   struct v3dv_csd_indirect_cpu_job_info *info,
-   const uint32_t *wg_counts)
-{
-   assert(info->csd_job);
-   struct v3dv_job *job = info->csd_job;
-
-   assert(job->type == V3DV_JOB_TYPE_GPU_CSD);
-   assert(wg_counts[0] > 0 && wg_counts[1] > 0 && wg_counts[2] > 0);
-
-   struct drm_v3d_submit_csd *submit = &job->csd.submit;
-
-   job->csd.wg_count[0] = wg_counts[0];
-   job->csd.wg_count[1] = wg_counts[1];
-   job->csd.wg_count[2] = wg_counts[2];
-
-   submit->cfg[0] = wg_counts[0] << V3D_CSD_CFG012_WG_COUNT_SHIFT;
-   submit->cfg[1] = wg_counts[1] << V3D_CSD_CFG012_WG_COUNT_SHIFT;
-   submit->cfg[2] = wg_counts[2] << V3D_CSD_CFG012_WG_COUNT_SHIFT;
-
-   uint32_t num_batches = DIV_ROUND_UP(info->wg_size, 16) *
-                          (wg_counts[0] * wg_counts[1] * wg_counts[2]);
-   /* V3D 7.1.6 and later don't subtract 1 from the number of batches */
-   if (device->devinfo.ver < 71 ||
-       (device->devinfo.ver == 71 && device->devinfo.rev < 6)) {
-      submit->cfg[4] = num_batches - 1;
-   } else {
-      submit->cfg[4] = num_batches;
-   }
-   assert(submit->cfg[4] != ~0);
-
-   if (info->needs_wg_uniform_rewrite) {
-      /* Make sure the GPU is not currently accessing the indirect CL for this
-       * job, since we are about to overwrite some of the uniform data.
-       */
-      v3dv_bo_wait(job->device, job->indirect.bo, OS_TIMEOUT_INFINITE);
-
-      for (uint32_t i = 0; i < 3; i++) {
-         if (info->wg_uniform_offsets[i]) {
-            /* Sanity check that our uniform pointers are within the allocated
-             * BO space for our indirect CL.
-             */
-            assert(info->wg_uniform_offsets[i] >= (uint32_t *) job->indirect.base);
-            assert(info->wg_uniform_offsets[i] < (uint32_t *) job->indirect.next);
-            *(info->wg_uniform_offsets[i]) = wg_counts[i];
-         }
-      }
-   }
-}
-
 static struct v3dv_job *
 cmd_buffer_create_csd_job(struct v3dv_cmd_buffer *cmd_buffer,
                           uint32_t base_offset_x,
@@ -4461,16 +4443,10 @@ cmd_buffer_dispatch_indirect(struct v3dv_cmd_buffer *cmd_buffer,
       job->cpu.csd_indirect.wg_uniform_offsets[1] ||
       job->cpu.csd_indirect.wg_uniform_offsets[2];
 
-   list_addtail(&job->list_link, &cmd_buffer->jobs);
-
-   /* If we have a CPU queue we submit the CPU job directly to the
-    * queue and the CSD job will be dispatched from within the kernel
-    * queue, otherwise we will have to dispatch the CSD job manually
-    * right after the CPU job by adding it to the list of jobs in the
-    * command buffer.
+   /* We only add the CPU job to the command buffer's job list. The actual
+    * CSD job is linked inside it and will be spawned by the kernel queue.
     */
-   if (!cmd_buffer->device->pdevice->caps.cpu_queue)
-      list_addtail(&csd_job->list_link, &cmd_buffer->jobs);
+   list_addtail(&job->list_link, &cmd_buffer->jobs);
 
    cmd_buffer->state.job = NULL;
 }

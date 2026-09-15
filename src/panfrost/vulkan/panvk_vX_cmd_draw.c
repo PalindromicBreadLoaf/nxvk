@@ -360,8 +360,10 @@ render_state_set_zs_attachments(struct panvk_cmd_buffer *cmdbuf,
       assert(z_iview->pview.dim == s_iview->pview.dim);
       assert(z_iview->pview.first_level == s_iview->pview.first_level);
       assert(z_iview->pview.last_level == s_iview->pview.last_level);
-      assert(z_iview->pview.first_layer == s_iview->pview.first_layer);
-      assert(z_iview->pview.last_layer == s_iview->pview.last_layer);
+      assert(z_iview->pview.first_layer_or_z_slice ==
+             s_iview->pview.first_layer_or_z_slice);
+      assert(z_iview->pview.last_layer_or_z_slice ==
+             s_iview->pview.last_layer_or_z_slice);
       assert(z_iview->pview.nr_samples == s_iview->pview.nr_samples);
    }
 
@@ -811,11 +813,10 @@ prepare_iam_sysvals(struct panvk_cmd_buffer *cmdbuf, BITSET_WORD *dirty_sysvals)
 
 void
 panvk_per_arch(cmd_prepare_draw_sysvals)(struct panvk_cmd_buffer *cmdbuf,
-                                         const struct panvk_draw_info *info)
+                                         const struct panvk_draw_info *info,
+                                         const struct panvk_shader_variant *fs)
 {
    struct vk_color_blend_state *cb = &cmdbuf->vk.dynamic_graphics_state.cb;
-   const struct panvk_shader_variant *fs =
-      panvk_shader_only_variant(get_fs(cmdbuf));
    uint32_t noperspective_varyings = fs ? fs->info.varyings.noperspective : 0;
    BITSET_DECLARE(dirty_sysvals, MAX_SYSVAL_FAUS) = {0};
 
@@ -937,10 +938,12 @@ panvk_per_arch(cmd_prepare_draw_sysvals)(struct panvk_cmd_buffer *cmdbuf,
                      fs_desc_state->dyn_ssbos);
    }
 
-   for (uint32_t i = 0; i < MAX_SETS; i++) {
-      uint32_t used_set_mask =
-         vs->desc_info.used_set_mask | (fs ? fs->desc_info.used_set_mask : 0);
+   uint32_t used_set_mask = 0;
+   used_set_mask |= cmdbuf->state.gfx.vs.shader->desc_info.used_set_mask;
+   if (fs)
+      used_set_mask |= cmdbuf->state.gfx.fs.shader->desc_info.used_set_mask;
 
+   for (uint32_t i = 0; i < MAX_SETS; i++) {
       if (used_set_mask & BITFIELD_BIT(i)) {
          set_gfx_sysval(cmdbuf, dirty_sysvals, desc.sets[i],
                         desc_state->sets[i]->descs.dev);
@@ -1027,6 +1030,4 @@ panvk_per_arch(CmdBindIndexBuffer2)(VkCommandBuffer commandBuffer,
       cmdbuf->state.gfx.ib.dev_addr = PAN_ARCH >= 10 ? 0x1000 : 0;
    }
    cmdbuf->state.gfx.ib.index_size = vk_index_type_to_bytes(indexType);
-
-   gfx_state_set_dirty(cmdbuf, IB);
 }

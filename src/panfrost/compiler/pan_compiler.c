@@ -12,6 +12,7 @@
 #include "bifrost/valhall/disassemble.h"
 #include "midgard/disassemble.h"
 #include "midgard/midgard_compile.h"
+#include "kraid/kraid.h"
 
 #include "panfrost/model/pan_model.h"
 
@@ -33,9 +34,54 @@ pan_want_debug_info(unsigned arch)
       return false;
 }
 
-const nir_shader_compiler_options *
-pan_get_nir_shader_compiler_options(unsigned arch, bool merge_wg)
+#ifdef WITH_PANFROST_RUST
+#define USE_KRAID_INTERNAL (1ull << 31)
+
+static const struct debug_named_value pan_use_kraid_flags[] = {
+   { "cs", 1 << MESA_SHADER_COMPUTE, "Use Kraid for compute shaders" },
+   { "fs", 1 << MESA_SHADER_FRAGMENT, "Use Kraid for fragment shaders" },
+   { "vs", 1 << MESA_SHADER_VERTEX, "Use Kraid for vertex shaders" },
+   { "internal", USE_KRAID_INTERNAL, "Use Kraid for internal shaders" },
+   { "all", ~0, "Use Kraid for all shader stages" },
+   DEBUG_NAMED_VALUE_END,
+};
+
+DEBUG_GET_ONCE_FLAGS_OPTION(kraid_stages, "PAN_USE_KRAID",
+                            pan_use_kraid_flags, 0)
+#endif
+
+bool
+pan_use_kraid(unsigned arch, mesa_shader_stage stage, bool internal)
 {
+#ifdef WITH_PANFROST_RUST
+   if (arch < 9)
+      return false;
+
+   uint64_t use_kraid = debug_get_option_kraid_stages();
+   if (internal && !(use_kraid & USE_KRAID_INTERNAL))
+      return false;
+
+   return use_kraid & (1 << stage);
+#else
+   return false;
+#endif
+}
+
+const nir_shader_compiler_options *
+pan_get_nir_shader_compiler_options(unsigned arch,
+                                    mesa_shader_stage stage,
+                                    bool merge_wg)
+{
+#ifdef WITH_PANFROST_RUST
+   /* Only return the Kraid options if we're also using it for internal
+    * shaders.  We have no internal/external flag here so we have to assume
+    * the worst case.  Kraid can generally handle Bifrost NIR but Bifrost
+    * can't handle Kraid NIR.
+    */
+   if (pan_use_kraid(arch, stage, false) && pan_use_kraid(arch, stage, true))
+      return kraid_get_nir_shader_compiler_options(arch, merge_wg);
+#endif
+
    switch (arch) {
    case 4:
    case 5:
@@ -52,6 +98,7 @@ pan_get_nir_shader_compiler_options(unsigned arch, bool merge_wg)
    case 11:
    case 12:
    case 13:
+   case 14:
       return merge_wg ? &bifrost_nir_options_v11_merge_wg :
                         &bifrost_nir_options_v11;
    default:
@@ -77,26 +124,21 @@ pan_preprocess_nir(nir_shader *nir, uint64_t gpu_id)
       .lower_txd = pan_arch(gpu_id) < 6,
       .lower_txd_cube_map = true,
       .lower_invalid_implicit_lod = true,
-      .lower_index_to_offset = pan_arch(gpu_id) >= 6,
    };
 
    NIR_PASS(_, nir, nir_lower_tex, &lower_tex_options);
 }
 
 void
-pan_optimize_nir(nir_shader *nir, uint64_t gpu_id)
+pan_postprocess_nir(nir_shader *nir, const struct pan_compile_inputs *inputs,
+                    struct pan_shader_info *info)
 {
-   assert(pan_arch(gpu_id) >= 6);
-   bifrost_optimize_nir(nir, gpu_id);
-}
+   memset(info, 0, sizeof(*info));
 
-void
-pan_postprocess_nir(nir_shader *nir, uint64_t gpu_id)
-{
-   if (pan_arch(gpu_id) >= 6)
-      bifrost_postprocess_nir(nir, gpu_id);
+   if (pan_arch(inputs->gpu_id) >= 6)
+      bifrost_postprocess_nir(nir, inputs, info);
    else
-      midgard_postprocess_nir(nir, gpu_id);
+      midgard_postprocess_nir(nir, inputs->gpu_id);
 }
 
 /** Converts a per-component mask to a byte mask */
@@ -141,16 +183,28 @@ pan_to_bytemask(unsigned bytes, unsigned mask)
 
 /* Could optimize with a better data structure if anyone cares, TODO: profile */
 unsigned
-pan_lookup_pushed_ubo(struct pan_ubo_push *push, unsigned ubo, unsigned offs)
+pan_lookup_pushed_ubo(const struct pan_fau_layout *fau,
+                      unsigned ubo, unsigned offs)
 {
-   struct pan_ubo_word word = {.ubo = ubo, .offset = offs};
+   struct pan_ubo_relocation word = {.ubo = ubo, .offset = offs};
 
-   for (unsigned i = 0; i < push->count; ++i) {
-      if (memcmp(push->words + i, &word, sizeof(word)) == 0)
+   pan_fau_foreach_reloc(fau, i) {
+      if (memcmp(fau->words + i, &word, sizeof(word)) == 0)
          return i;
    }
 
    UNREACHABLE("UBO not pushed");
+}
+
+int
+pan_lookup_pushed_imm(const struct pan_fau_layout *fau, uint32_t imm)
+{
+   pan_fau_foreach_imm(fau, i) {
+      if (fau->words[i].constant == imm)
+         return i;
+   }
+
+   return -1;
 }
 
 void
@@ -272,8 +326,6 @@ pan_shader_compile(nir_shader *s, struct pan_compile_inputs *inputs,
                    struct util_dynarray *binary, struct pan_shader_info *info)
 {
    unsigned arch = pan_arch(inputs->gpu_id);
-
-   memset(info, 0, sizeof(*info));
 
    NIR_PASS(_, s, nir_inline_sysval, nir_intrinsic_load_printf_buffer_size,
             PAN_PRINTF_BUFFER_SIZE - 8);

@@ -846,7 +846,6 @@ PVR_PER_ARCH(CreateRenderPass2)(VkDevice _device,
 
       attachment->vk_format = desc->format;
       attachment->sample_count = desc->samples;
-      attachment->initial_layout = desc->initialLayout;
       attachment->index = i;
 
       /* On cores without gs_rta_support, PBE resolves might depend on writes
@@ -1107,14 +1106,5 @@ void PVR_PER_ARCH(GetRenderAreaGranularity)(VkDevice _device,
                                             VkExtent2D *pGranularity)
 {
    VK_FROM_HANDLE(pvr_device, device, _device);
-   const struct pvr_device_info *dev_info = &device->pdevice->dev_info;
-
-   /* Granularity does not depend on any settings in the render pass, so return
-    * the tile granularity.
-    *
-    * The default value is based on the minimum value found in all existing
-    * cores.
-    */
-   pGranularity->width = PVR_GET_FEATURE_VALUE(dev_info, tile_size_x, 16);
-   pGranularity->height = PVR_GET_FEATURE_VALUE(dev_info, tile_size_y, 16);
+   pvr_get_render_area_granularity(device->pdevice, pGranularity);
 }

@@ -38,7 +38,7 @@ is_slab_parent_memory_mapped_placeable(struct anv_device *device,
 {
    if ((alloc_flags & ANV_BO_ALLOC_SLAB_PARENT) == false)
       return false;
-   if (device->physical->instance->debug & ANV_DEBUG_NO_SLAB)
+   if (ANV_DEBUG(NO_SLAB))
       return false;
    if (!device->vk.enabled_features.memoryMapPlaced)
       return false;
@@ -343,8 +343,8 @@ xe_vm_bind_op(struct anv_device *device,
       if (errno_ == ENOMEM || errno_ == ENOBUFS)
          result = VK_ERROR_OUT_OF_HOST_MEMORY;
       else
-         result = vk_device_set_lost(&device->vk,
-                                     "vm_bind failed with errno %d", errno_);
+         result = anv_device_set_lost(device, errno_,
+                                      "vm_bind failed with errno %d", errno_);
       goto out_stackarray;
    }
 
@@ -390,13 +390,26 @@ xe_vm_bind_bo(struct anv_device *device, struct anv_bo *bo)
 static VkResult
 xe_vm_unbind_bo(struct anv_device *device, struct anv_bo *bo)
 {
-   struct anv_vm_bind bind = {
-      .bo = bo,
-      .address = 0,
-      .bo_offset = 0,
-      .size = 0,
-      .op = ANV_VM_UNBIND_ALL,
-   };
+   struct anv_vm_bind bind;
+   if (bo->alloc_flags & ANV_BO_ALLOC_NULL_INITIALIZED_HEAP) {
+      bind = (struct anv_vm_bind) {
+         .address = bo->offset,
+         .size = bo->actual_size,
+         .op = ANV_VM_BIND,
+      };
+   } else if (bo->from_host_ptr) {
+      bind = (struct anv_vm_bind) {
+         .bo = bo,
+         .address = bo->offset,
+         .size = bo->actual_size,
+         .op = ANV_VM_UNBIND,
+      };
+   } else {
+      bind = (struct anv_vm_bind) {
+         .bo = bo,
+         .op = ANV_VM_UNBIND_ALL,
+      };
+   }
    struct anv_sparse_submission submit = {
       .queue = NULL,
       .binds = &bind,
@@ -405,11 +418,6 @@ xe_vm_unbind_bo(struct anv_device *device, struct anv_bo *bo)
       .wait_count = 0,
       .signal_count = 0,
    };
-   if (bo->from_host_ptr) {
-      bind.address = bo->offset;
-      bind.size = bo->actual_size;
-      bind.op = ANV_VM_UNBIND;
-   }
    return xe_vm_bind_op(device, &submit,
                         ANV_VM_BIND_FLAG_SIGNAL_BIND_TIMELINE);
 }

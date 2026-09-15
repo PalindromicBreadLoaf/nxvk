@@ -30,14 +30,17 @@ struct kk_queue_family {
 
 struct kk_memory_heap {
    uint64_t size;
-   uint64_t used;
    VkMemoryHeapFlags flags;
-   uint64_t (*available)(struct kk_physical_device *pdev);
+   uint64_t (*budget)(struct kk_physical_device *pdev);
+   uint64_t (*used)(struct kk_physical_device *pdev);
 };
 
 struct kk_device_info {
    uint32_t max_workgroup_count[3];
    uint32_t max_workgroup_invocations;
+   uint32_t max_compute_shared_memory_size;
+   uint32_t gpu_apple_family;
+   uint64_t max_buffer_size;
 };
 
 struct kk_physical_device {
@@ -61,6 +64,8 @@ struct kk_physical_device {
 
    struct kk_queue_family queue_families[3];
    uint8_t queue_family_count;
+
+   VkSampleCountFlags supported_sample_counts;
 };
 
 static inline uint32_t

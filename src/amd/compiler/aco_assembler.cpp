@@ -7,7 +7,7 @@
 #include "aco_builder.h"
 #include "aco_ir.h"
 
-#include "common/sid.h"
+#include "common/amdgfxregs.h"
 
 #include "util/memstream.h"
 
@@ -54,6 +54,8 @@ struct asm_context {
          opcode = &instr_info.opcode_gfx10[0];
       else if (gfx_level <= GFX11_5)
          opcode = &instr_info.opcode_gfx11[0];
+      else if (gfx_level <= GFX11_7)
+         opcode = &instr_info.opcode_gfx11_7[0];
       else
          opcode = &instr_info.opcode_gfx12[0];
    }
@@ -274,11 +276,11 @@ emit_smem_instruction(asm_context& ctx, std::vector<uint32_t>& out, const Instru
       /* We don't use the NV bit. */
    } else {
       encoding = (0b111101 << 26);
-      if (ctx.gfx_level <= GFX11_5)
+      if (ctx.gfx_level < GFX12)
          encoding |= dlc ? 1 << (ctx.gfx_level >= GFX11 ? 13 : 14) : 0;
    }
 
-   if (ctx.gfx_level <= GFX11_5) {
+   if (ctx.gfx_level < GFX12) {
       encoding |= opcode << 18;
       encoding |= glc ? 1 << (ctx.gfx_level >= GFX11 ? 14 : 16) : 0;
    } else {
@@ -1123,8 +1125,12 @@ emit_vop3_instruction(asm_context& ctx, std::vector<uint32_t>& out, const Instru
    else if (instr->opcode == aco_opcode::v_swap_b16)
       num_ops = 1;
 
-   for (unsigned i = 0; i < num_ops; i++)
-      encoding |= reg(ctx, instr->operands[i]) << (i * 9);
+   /* RDNA: Set unused operands to inline constant 0. */
+   unsigned encoded_ops = ctx.gfx_level >= GFX10 ? 3 : num_ops;
+   for (unsigned i = 0; i < encoded_ops; i++) {
+      Operand op = i < num_ops ? instr->operands[i] : Operand::zero();
+      encoding |= reg(ctx, op) << (i * 9);
+   }
    encoding |= vop3.omod << 27;
    for (unsigned i = 0; i < 3; i++)
       encoding |= vop3.neg[i] << (29 + i);
@@ -1155,8 +1161,13 @@ emit_vop3p_instruction(asm_context& ctx, std::vector<uint32_t>& out, const Instr
    encoding |= reg(ctx, instr->definitions[0], 8);
    out.push_back(encoding);
    encoding = 0;
-   for (unsigned i = 0; i < instr->operands.size(); i++)
-      encoding |= reg(ctx, instr->operands[i]) << (i * 9);
+
+   /* RDNA: Set unused operands to inline constant 0. */
+   unsigned encoded_ops = ctx.gfx_level >= GFX10 ? 3 : instr->operands.size();
+   for (unsigned i = 0; i < encoded_ops; i++) {
+      Operand op = i < instr->operands.size() ? instr->operands[i] : Operand::zero();
+      encoding |= reg(ctx, op) << (i * 9);
+   }
    encoding |= (vop3.opsel_hi & 0x3) << 27;
    for (unsigned i = 0; i < 3; i++)
       encoding |= vop3.neg_lo[i] << (29 + i);
@@ -1486,9 +1497,10 @@ fix_exports(asm_context& ctx, std::vector<uint32_t>& out, Program* program)
 
 static void
 insert_code(asm_context& ctx, std::vector<uint32_t>& out, unsigned insert_before,
-            unsigned insert_count, const uint32_t* insert_data)
+            const std::vector<uint32_t>& code)
 {
-   out.insert(out.begin() + insert_before, insert_data, insert_data + insert_count);
+   out.insert(out.begin() + insert_before, code.begin(), code.end());
+   unsigned insert_count = code.size();
 
    /* Update the offset of each affected block */
    for (Block& block : ctx.program->blocks) {
@@ -1542,8 +1554,8 @@ fix_branches_gfx10(asm_context& ctx, std::vector<uint32_t>& out)
 
       if (gfx10_3f_bug) {
          /* Insert an s_nop after the branch */
-         constexpr uint32_t s_nop_0 = 0xbf800000u;
-         insert_code(ctx, out, buggy_branch_it->pos + 1, 1, &s_nop_0);
+         std::vector<uint32_t> s_nop_0 = {0xbf800000u};
+         insert_code(ctx, out, buggy_branch_it->pos + 1, s_nop_0);
       }
    } while (gfx10_3f_bug);
 }
@@ -1656,7 +1668,7 @@ chain_branches(asm_context& ctx, std::vector<uint32_t>& out, branch_info& branch
 
    branch_instr = bld.sopp(aco_opcode::s_branch, 0);
    emit_sopp_instruction(ctx, code, branch_instr, true);
-   insert_code(ctx, out, insert_at, code.size(), code.data());
+   insert_code(ctx, out, insert_at, code);
 
    new_block->offset = block_offset;
    if (skip_branch_target) {
@@ -1753,7 +1765,7 @@ align_block(asm_context& ctx, std::vector<uint32_t>& code, Block& block)
          int16_t prefetch_mode = loop_num_cl == 3 ? 0x1 : 0x2;
          Instruction* instr = bld.sopp(aco_opcode::s_inst_prefetch, prefetch_mode);
          emit_instruction(ctx, nops, instr);
-         insert_code(ctx, code, offset, nops.size(), nops.data());
+         insert_code(ctx, code, offset, nops);
 
          /* Change prefetch mode back to default (0x3) at the loop exit. */
          bld.reset(&loop_exit.instructions, loop_exit.instructions.begin());
@@ -1761,7 +1773,7 @@ align_block(asm_context& ctx, std::vector<uint32_t>& code, Block& block)
          if (ctx.loop_exit < block.index) {
             nops.clear();
             emit_instruction(ctx, nops, instr);
-            insert_code(ctx, code, loop_exit.offset, nops.size(), nops.data());
+            insert_code(ctx, code, loop_exit.offset, nops);
          }
       }
 
@@ -1777,7 +1789,7 @@ align_block(asm_context& ctx, std::vector<uint32_t>& code, Block& block)
       if (align_loop) {
          nops.clear();
          nops.resize(16 - (loop_latch.offset % 16), 0xbf800000u);
-         insert_code(ctx, code, loop_latch.offset, nops.size(), nops.data());
+         insert_code(ctx, code, loop_latch.offset, nops);
       }
    }
 

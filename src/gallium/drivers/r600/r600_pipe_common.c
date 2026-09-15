@@ -69,7 +69,7 @@ void r600_gfx_write_event_eop(struct r600_common_context *ctx,
 
 	if (buf)
 		r600_emit_reloc(ctx, &ctx->gfx, buf, RADEON_USAGE_WRITE |
-				RADEON_PRIO_QUERY);
+				RADEON_PRIO_QUERY, 0);
 }
 
 unsigned r600_gfx_write_fence_dwords(struct r600_common_screen *screen)
@@ -98,7 +98,7 @@ void r600_gfx_wait_fence(struct r600_common_context *ctx,
 
 	if (buf)
 		r600_emit_reloc(ctx, &ctx->gfx, buf, RADEON_USAGE_READ |
-				RADEON_PRIO_QUERY);
+				RADEON_PRIO_QUERY, 0);
 }
 
 void r600_draw_rectangle(struct blitter_context *blitter,
@@ -1083,10 +1083,12 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		printf("max_alignment = %u\n", (unsigned)rscreen->info.max_alignment);
 	}
 
+	const bool fp64_emulation = rscreen->info.gfx_level < CAYMAN;
+
 	const struct nir_shader_compiler_options nir_options = {
-		.fuse_ffma16 = true,
-		.fuse_ffma32 = true,
-		.fuse_ffma64 = true,
+		.float_mul_add16 = nir_float_muladd_support_has_fmad | nir_float_muladd_support_fuse,
+		.float_mul_add32 = nir_float_muladd_support_has_fmad | nir_float_muladd_support_fuse,
+		.float_mul_add64 = fp64_emulation ? 0 : nir_float_muladd_support_has_ffma | nir_float_muladd_support_fuse,
 		.lower_flrp32 = true,
 		.lower_flrp64 = true,
 		.lower_fdiv = true,
@@ -1152,7 +1154,7 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		rscreen->nir_options.lower_bitfield_reverse = true;
 	}
 
-	if (rscreen->info.gfx_level < CAYMAN) {
+	if (fp64_emulation) {
 		rscreen->nir_options.lower_atomic_offset_to_range_base = true;
 
 		rscreen->nir_options.lower_doubles_options =

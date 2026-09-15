@@ -210,17 +210,16 @@ egl_def = custom_target(
   command : gen_vs_module_defs_normal_command,
 )
 
-_egl_c_args = [
-  c_args_for_egl,
-  '-D_EGL_NATIVE_PLATFORM=_EGL_PLATFORM_@0@'.format(egl_native_platform.to_upper()),
-]
+if egl_native_platform != ''
+  c_args_for_egl += '-D_EGL_NATIVE_PLATFORM=_EGL_PLATFORM_@0@'.format(egl_native_platform.to_upper())
+endif
 
 if with_platform_horizon
   # Horizon links the whole stack statically into an .nro
   libegl = static_library(
     egl_lib_name,
     files_egl,
-    c_args : _egl_c_args,
+    c_args : [c_args_for_egl],
     cpp_args : [cpp_args_for_egl],
     include_directories : incs_for_egl,
     dependencies : [deps_for_egl, dep_clock, dep_thread, idep_mesautil],
@@ -230,7 +229,9 @@ else
 libegl = shared_library(
   egl_lib_name,
   files_egl,
-  c_args : _egl_c_args,
+  c_args : [
+    c_args_for_egl,
+  ],
   cpp_args : [cpp_args_for_egl],
   gnu_symbol_visibility : 'hidden',
   include_directories : incs_for_egl,

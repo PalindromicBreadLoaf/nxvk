@@ -121,6 +121,8 @@ init_program(Program* program, Stage stage, const struct aco_shader_info* info,
    program->dev.fused_mad_mix = options->compiler_info->has_fma_mix;
    program->dev.has_mad32 = options->compiler_info->has_mad32;
 
+   program->dev.has_desc_resource_level = options->compiler_info->has_desc_resource_level;
+
    if (program->gfx_level >= GFX12) {
       program->dev.scratch_global_offset_min = -8388608;
       program->dev.scratch_global_offset_max = 8388607;
@@ -225,15 +227,12 @@ is_ordered_ps_done_sendmsg(const Instruction* instr)
 
 uint16_t
 is_atomic_or_control_instr(Program* program, const Instruction* instr, memory_sync_info sync,
-                           unsigned semantic)
+                           unsigned semantic, sync_scope ignore_scope)
 {
    bool is_acquire = semantic & semantic_acquire;
    bool is_release = semantic & semantic_release;
 
-   bool is_atomic = sync.semantics & semantic_atomic;
-   // TODO: NIR doesn't have any atomic load/store, so we assume any load/store is atomic
-   is_atomic |= !(sync.semantics & semantic_private) && sync.storage;
-   if (is_atomic) {
+   if (sync.semantics & semantic_atomic) {
       bool is_load = !instr->definitions.empty() || (sync.semantics & semantic_rmw);
       bool is_store = instr->definitions.empty() || (sync.semantics & semantic_rmw);
       return ((is_release && is_store) || (is_acquire && is_load)) ? sync.storage : 0;
@@ -253,8 +252,19 @@ is_atomic_or_control_instr(Program* program, const Instruction* instr, memory_sy
       if (is_pops_end_export(program, instr) || is_ordered_ps_done_sendmsg(instr) ||
           instr->opcode == aco_opcode::p_pops_gfx9_ordered_section_done)
          return cls & ~storage_shared;
+
+      if (instr->opcode == aco_opcode::s_sethalt)
+         return cls & ~storage_shared;
    }
-   return (instr->isBarrier() && instr->barrier().exec_scope > scope_invocation) ? cls : 0;
+
+   if (instr->isBarrier() && instr->barrier().exec_scope > ignore_scope) {
+      bool is_signal = instr->opcode != aco_opcode::p_barrier_wait;
+      bool is_wait = instr->opcode != aco_opcode::p_barrier_signal;
+      if ((is_acquire && is_wait) || (is_release && is_signal))
+         return cls;
+   }
+
+   return 0;
 }
 
 memory_sync_info
@@ -285,7 +295,7 @@ get_sync_info(const Instruction* instr)
 }
 
 bool
-can_use_SDWA(amd_gfx_level gfx_level, const aco_ptr<Instruction>& instr, bool pre_ra)
+can_use_SDWA(amd_gfx_level gfx_level, const Instruction* instr, bool pre_ra)
 {
    if (!instr->isVALU())
       return false;
@@ -297,7 +307,7 @@ can_use_SDWA(amd_gfx_level gfx_level, const aco_ptr<Instruction>& instr, bool pr
       return true;
 
    if (instr->isVOP3()) {
-      VALU_instruction& vop3 = instr->valu();
+      const VALU_instruction& vop3 = instr->valu();
       if (instr->format == Format::VOP3)
          return false;
       if (vop3.clamp && instr->isVOPC() && gfx_level != GFX8)
@@ -349,6 +359,12 @@ can_use_SDWA(amd_gfx_level gfx_level, const aco_ptr<Instruction>& instr, bool pr
           instr->opcode != aco_opcode::v_fmamk_f16 && instr->opcode != aco_opcode::v_fmaak_f16 &&
           instr->opcode != aco_opcode::v_readfirstlane_b32 &&
           instr->opcode != aco_opcode::v_clrexcp && instr->opcode != aco_opcode::v_swap_b32;
+}
+
+bool
+can_use_SDWA(amd_gfx_level gfx_level, const aco_ptr<Instruction>& instr, bool pre_ra)
+{
+   return can_use_SDWA(gfx_level, instr.get(), pre_ra);
 }
 
 /* updates "instr" and returns the old instruction (or NULL if no update was needed) */
@@ -834,6 +850,159 @@ get_gfx11_true16_mask(aco_opcode op)
    case aco_opcode::v_sat_pk_u8_i16: return 0x8;
    default: return 0x0;
    }
+}
+
+unsigned
+get_subdword_operand_stride(Program* program, const Instruction* instr, unsigned idx, RegClass rc)
+{
+   assert(rc.is_subdword());
+   assert(program->gfx_level >= GFX8);
+
+   /* Pseudo instructions are a bit special here, because instr might just be a dummy instruction,
+    * so we shouldn't try accessing it's operands. */
+   if (instr->isPseudo()) {
+      /* v_readfirstlane_b32 cannot use SDWA */
+      if (instr->opcode == aco_opcode::p_as_uniform ||
+          instr->opcode == aco_opcode::p_permlane64_shared_vgpr)
+         return 4;
+      else
+         return rc.bytes() % 2 == 0 ? 2 : 1;
+   }
+
+   assert(instr->operands[idx].regClass() == rc);
+
+   if (rc.bytes() > 2)
+      return 4;
+
+   if (instr->isVALU()) {
+      if (can_use_SDWA(program->gfx_level, instr, false))
+         return rc.bytes();
+      if (can_use_opsel(program->gfx_level, instr->opcode, idx))
+         return 2;
+      if (instr->isVOP3P())
+         return 2;
+   }
+
+   switch (instr->opcode) {
+   case aco_opcode::v_mov_b32:
+   case aco_opcode::v_not_b32:
+   case aco_opcode::v_and_b32:
+   case aco_opcode::v_or_b32:
+   case aco_opcode::v_xor_b32:
+   case aco_opcode::v_cndmask_b32:
+      return program->gfx_level >= GFX11 && instr->definitions[0].bytes() <= 2 ? 2 : 4;
+   case aco_opcode::v_cvt_f32_ubyte0: return 1;
+   case aco_opcode::ds_write_b8:
+   case aco_opcode::ds_write_b16:
+   case aco_opcode::buffer_store_byte:
+   case aco_opcode::buffer_store_short:
+   case aco_opcode::buffer_store_format_d16_x:
+   case aco_opcode::flat_store_byte:
+   case aco_opcode::flat_store_short:
+   case aco_opcode::scratch_store_byte:
+   case aco_opcode::scratch_store_short:
+   case aco_opcode::global_store_byte:
+   case aco_opcode::global_store_short: return program->gfx_level >= GFX9 ? 2 : 4;
+   default: return 4;
+   }
+}
+
+SubdwordCaps
+get_subdword_definition_caps(Program* program, const Instruction* instr, unsigned idx, RegClass rc)
+{
+   amd_gfx_level gfx_level = program->gfx_level;
+   assert(rc.is_subdword());
+   assert(gfx_level >= GFX8);
+
+   SubdwordCaps caps;
+   caps.placement_stride = rc.bytes() % 2 == 0 ? 2 : 1;
+   caps.overwrite_bytes = rc.bytes();
+
+   /* Pseudo instructions are a bit special here, because instr might just be a dummy instruction,
+    * so we shouldn't try accessing it's definitions. Pseudo instructions are also the only ones
+    * with multiple definitions, and "idx" isn't always correct. */
+   if (instr->isPseudo()) {
+      if (instr->opcode == aco_opcode::p_interp_gfx11 ||
+          instr->opcode == aco_opcode::p_permlane64_shared_vgpr) {
+         caps.overwrite_bytes = rc.size() * 4;
+         caps.placement_stride = 4;
+      }
+      return caps;
+   }
+
+   assert(instr->definitions[idx].regClass() == rc);
+
+   if (instr->isVALU()) {
+      if (rc.bytes() == 3) {
+         caps.overwrite_bytes = 4;
+         caps.placement_stride = 4;
+         return caps;
+      }
+      assert(rc.bytes() <= 2);
+
+      if (can_use_SDWA(gfx_level, instr, false))
+         return caps;
+
+      if ((instr->opcode == aco_opcode::v_cndmask_b32 || instr->opcode == aco_opcode::v_mov_b32 ||
+           instr->opcode == aco_opcode::v_not_b32 || instr->opcode == aco_opcode::v_and_b32 ||
+           instr->opcode == aco_opcode::v_or_b32 || instr->opcode == aco_opcode::v_xor_b32) &&
+          program->gfx_level >= GFX11) {
+         /* Convert to 16bit opcode on demand. */
+         caps.overwrite_bytes = 2;
+         caps.placement_stride = 2;
+         return caps;
+      }
+
+      bool preserve = instr_is_16bit(gfx_level, instr->opcode);
+      bool can_write_hi16 = instr->opcode == aco_opcode::v_fma_mixlo_f16 ||
+                            instr->opcode == aco_opcode::p_v_fma_mixlo_f16_rtz ||
+                            can_use_opsel(gfx_level, instr->opcode, -1);
+      caps.placement_stride = can_write_hi16 ? 2 : 4;
+      caps.overwrite_bytes = preserve ? 2 : 4;
+      return caps;
+   }
+
+   switch (instr->opcode) {
+   case aco_opcode::v_interp_p2_f16: assert(rc.bytes() == 2); return caps;
+   /* D16 loads with _hi version */
+   case aco_opcode::ds_read_u8_d16:
+   case aco_opcode::ds_read_i8_d16:
+   case aco_opcode::ds_read_u16_d16:
+   case aco_opcode::flat_load_ubyte_d16:
+   case aco_opcode::flat_load_sbyte_d16:
+   case aco_opcode::flat_load_short_d16:
+   case aco_opcode::global_load_ubyte_d16:
+   case aco_opcode::global_load_sbyte_d16:
+   case aco_opcode::global_load_short_d16:
+   case aco_opcode::scratch_load_ubyte_d16:
+   case aco_opcode::scratch_load_sbyte_d16:
+   case aco_opcode::scratch_load_short_d16:
+   case aco_opcode::buffer_load_ubyte_d16:
+   case aco_opcode::buffer_load_sbyte_d16:
+   case aco_opcode::buffer_load_short_d16:
+   case aco_opcode::buffer_load_format_d16_x: {
+      assert(gfx_level >= GFX9);
+      caps.overwrite_bytes = program->dev.sram_ecc_enabled ? 4 : 2;
+      caps.placement_stride = 2;
+      return caps;
+   }
+   /* 3-component D16 loads */
+   case aco_opcode::buffer_load_format_d16_xyz:
+   case aco_opcode::tbuffer_load_format_d16_xyz: {
+      assert(gfx_level >= GFX9);
+      caps.overwrite_bytes = program->dev.sram_ecc_enabled ? 8 : 6;
+      caps.placement_stride = 4;
+      return caps;
+   }
+   default: break;
+   }
+
+   caps.placement_stride = 4;
+   if (instr->isMIMG() && instr->mimg().d16 && !program->dev.sram_ecc_enabled)
+      assert(gfx_level >= GFX9);
+   else
+      caps.overwrite_bytes = rc.size() * 4;
+   return caps;
 }
 
 uint32_t
@@ -1786,6 +1955,7 @@ load_scratch_resource(Program* program, Builder& bld, unsigned resume_idx,
    ac_state.index_stride = program->wave_size == 64 ? 3u : 2u;
    ac_state.add_tid = true;
    ac_state.gfx10_oob_select = V_008F0C_OOB_SELECT_RAW;
+   ac_state.has_desc_resource_level = program->dev.has_desc_resource_level;
 
    ac_build_buffer_descriptor(program->gfx_level, &ac_state, desc);
 

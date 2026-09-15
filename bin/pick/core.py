@@ -27,6 +27,7 @@ import pathlib
 import re
 import subprocess
 import typing
+from functools import cached_property
 
 import attr
 from packaging.version import Version
@@ -144,6 +145,7 @@ class Commit:
             c.resolution = Resolution(data['resolution'])
         return c
 
+    @cached_property
     def date(self) -> str:
         # Show commit date, ie. when the commit actually landed
         # (as opposed to when it was first written)
@@ -151,6 +153,26 @@ class Commit:
             ['git', 'show', '--no-patch', '--format=%cs', self.sha],
             stderr=subprocess.DEVNULL
         ).decode("ascii").strip()
+
+    @cached_property
+    def body(self) -> str:
+        return subprocess.check_output(
+            ['git', 'show', '--no-patch', '--format=%b', self.sha],
+            stderr=subprocess.DEVNULL
+        ).decode()
+
+    @cached_property
+    def mr_url(self) -> str | None:
+        for line in self.body.splitlines():
+            if match := re.fullmatch(r'Part-of: <(?P<url>https://.*/merge_requests/\d+)/?>', line):
+                return match.group('url')
+        return None
+
+    @cached_property
+    def mr_number(self) -> str | None:
+        if url := self.mr_url:
+            return url.rsplit('/', maxsplit=1)[1]
+        return None
 
     async def apply(self, ui: 'UI') -> typing.Tuple[bool, str]:
         # FIXME: This isn't really enough if we fail to cherry-pick because the

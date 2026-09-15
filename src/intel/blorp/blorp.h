@@ -41,6 +41,8 @@ typedef struct nir_shader nir_shader;
 enum blorp_op {
    BLORP_OP_BLIT,
    BLORP_OP_COPY,
+   BLORP_OP_COPY_INDIRECT,
+   BLORP_OP_COPY_IMAGE_INDIRECT,
    BLORP_OP_CCS_AMBIGUATE,
    BLORP_OP_CCS_COLOR_CLEAR,
    BLORP_OP_CCS_PARTIAL_RESOLVE,
@@ -79,6 +81,20 @@ enum blorp_dynamic_state {
    BLORP_DYNAMIC_STATE_COUNT,
 };
 
+struct blorp_address {
+   void *buffer;
+   int64_t offset;
+   unsigned reloc_flags;
+   uint32_t mocs;
+
+   /**
+    * True if this buffer is intended to live in device-local memory.
+    * This is only a performance hint; it's OK to set it to true even
+    * if eviction has temporarily forced the buffer to system memory.
+    */
+   bool local_hint;
+};
+
 struct blorp_context {
    void *driver_ctx;
 
@@ -105,6 +121,8 @@ struct blorp_context {
                          const void *prog_data,
                          uint32_t prog_data_size,
                          uint32_t *kernel_out, void *prog_data_out);
+   uint64_t (*get_surface_address)(struct blorp_batch *batch,
+                                   struct blorp_address addr);
    void (*exec)(struct blorp_batch *batch, const struct blorp_params *params);
 
    struct blorp_config config;
@@ -155,6 +173,10 @@ enum blorp_batch_flags {
     * Mostly for debug
     */
    BLORP_BATCH_DISABLE_VF_DISTRIBUTION = BITFIELD_BIT(6),
+
+   /** Source buffer is unpadded and needs careful accesses
+    */
+   BLORP_BATCH_SRC_UNPADDED          = BITFIELD_BIT(7),
 };
 
 struct blorp_batch {
@@ -185,20 +207,6 @@ blorp_batch_isl_copy_usage(const struct blorp_batch *batch, bool is_dest,
 
    return usage;
 }
-
-struct blorp_address {
-   void *buffer;
-   int64_t offset;
-   unsigned reloc_flags;
-   uint32_t mocs;
-
-   /**
-    * True if this buffer is intended to live in device-local memory.
-    * This is only a performance hint; it's OK to set it to true even
-    * if eviction has temporarily forced the buffer to system memory.
-    */
-   bool local_hint;
-};
 
 static inline bool
 blorp_address_is_null(struct blorp_address address)
@@ -292,6 +300,22 @@ blorp_buffer_copy(struct blorp_batch *batch,
                   struct blorp_address src,
                   struct blorp_address dst,
                   uint64_t size);
+
+void
+blorp_copy_memory_indirect(struct blorp_batch *batch,
+                           uint64_t indirect_buf_addr,
+                           uint32_t copy_count,
+                           uint64_t stride);
+
+void
+blorp_copy_memory_to_image_indirect(struct blorp_batch *batch,
+                                    const struct blorp_surf *img_blorp_surf,
+                                    uint64_t indirect_buf_addr,
+                                    uint64_t indirect_buf_stride,
+                                    uint32_t first_copy_idx,
+                                    uint32_t img_mip_level,
+                                    int layer_count,
+                                    int forced_layer_or_z);
 
 void
 blorp_fast_clear(struct blorp_batch *batch,

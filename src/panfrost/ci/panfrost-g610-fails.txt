@@ -1,13 +1,6 @@
 dEQP-VK.glsl.loops.special.do_while_dynamic_iterations.dowhile_trap_vertex,Crash
 asan-dEQP-VK.glsl.loops.special.do_while_dynamic_iterations.dowhile_trap_vertex,Crash
 
-# New failures with VKCTS 1.4.4.0
-dEQP-VK.binding_model.unused_invalid_descriptor.write.invalid.combined_image_sampler,Crash
-dEQP-VK.binding_model.unused_invalid_descriptor.write.invalid.sampled_image,Crash
-asan-dEQP-VK.binding_model.unused_invalid_descriptor.write.invalid.combined_image_sampler,Crash
-asan-dEQP-VK.binding_model.unused_invalid_descriptor.write.invalid.sampled_image,Crash
-
-
 afbcp-spec@arb_shader_texture_lod@execution@arb_shader_texture_lod-texgradcube,Fail
 afbcp-spec@arb_shader_texture_lod@execution@arb_shader_texture_lod-texgrad,Fail
 afbcp-spec@arb_shader_texture_lod@execution@tex-miplevel-selection *gradarb 1d,Fail
@@ -22,15 +15,6 @@ afbcp-spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 
 afbcp-spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 2d_projvec4,Fail
 afbcp-spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 2dshadow,Fail
 afbcp-spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 3d,Fail
-afbcp-spec@arb_texture_query_levels@execution@fs-baselevel,Crash
-afbcp-spec@arb_texture_query_levels@execution@fs-maxlevel,Crash
-afbcp-spec@arb_texture_query_levels@execution@fs-miptree,Crash
-afbcp-spec@arb_texture_query_levels@execution@fs-nomips,Crash
-afbcp-spec@arb_texture_query_levels@execution@vs-baselevel,Crash
-afbcp-spec@arb_texture_query_levels@execution@vs-maxlevel,Crash
-afbcp-spec@arb_texture_query_levels@execution@vs-miptree,Crash
-afbcp-spec@arb_texture_query_levels@execution@vs-nomips,Crash
-afbcp-spec@ext_image_dma_buf_import@ext_image_dma_buf_import-refcount-multithread,Crash
 afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 1darray,Fail
 afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 1darrayshadow,Fail
 afbcp-spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 1d,Fail
@@ -83,7 +67,6 @@ shaders@point-vertex-id gl_vertexid divisor,Fail
 shaders@point-vertex-id gl_vertexid,Fail
 shaders@point-vertex-id gl_vertexid gl_instanceid divisor,Fail
 shaders@point-vertex-id gl_vertexid gl_instanceid,Fail
-spec@arb_arrays_of_arrays@execution@atomic_counters@fs-indirect-index,Fail
 spec@arb_point_sprite@arb_point_sprite-mipmap,Fail
 spec@arb_shader_texture_lod@execution@arb_shader_texture_lod-texgradcube,Fail
 spec@arb_shader_texture_lod@execution@arb_shader_texture_lod-texgrad,Fail
@@ -99,14 +82,6 @@ spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 2d,Fai
 spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 2d_projvec4,Fail
 spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 2dshadow,Fail
 spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 3d,Fail
-spec@arb_texture_query_levels@execution@fs-baselevel,Crash
-spec@arb_texture_query_levels@execution@fs-maxlevel,Crash
-spec@arb_texture_query_levels@execution@fs-miptree,Crash
-spec@arb_texture_query_levels@execution@fs-nomips,Crash
-spec@arb_texture_query_levels@execution@vs-baselevel,Crash
-spec@arb_texture_query_levels@execution@vs-maxlevel,Crash
-spec@arb_texture_query_levels@execution@vs-miptree,Crash
-spec@arb_texture_query_levels@execution@vs-nomips,Crash
 spec@arb_transform_feedback_instanced@draw-auto instanced,Fail
 spec@egl 1.4@egl-ext_egl_image_storage,Fail
 spec@egl 1.4@eglterminate then unbind context,Fail
@@ -134,7 +109,6 @@ spec@ext_framebuffer_multisample@draw-buffers-alpha-to-coverage 8,Fail
 spec@ext_framebuffer_multisample@sample-alpha-to-coverage 16 color,Fail
 spec@ext_framebuffer_multisample@sample-alpha-to-coverage 6 color,Fail
 spec@ext_framebuffer_multisample@sample-alpha-to-coverage 8 color,Fail
-spec@ext_image_dma_buf_import@ext_image_dma_buf_import-refcount-multithread,Crash
 spec@ext_shader_framebuffer_fetch@execution@gles3@discard-ms8,Fail
 spec@ext_shader_framebuffer_fetch_non_coherent@execution@gles3@discard-ms8,Fail
 spec@ext_transform_feedback2@draw-auto,Fail
@@ -317,5 +291,70 @@ spec@!opengl es 3.0@gles-3.0-transform-feedback-uniform-buffer-object,Fail
 
 # uprev Piglit in Mesa
 afbcp-spec@arb_texture_view@tex-view,Fail
+KHR-GLES31.core.draw_indirect.advanced-twoPass-transformFeedback-arrays,Fail
+spec@!opengl 1.1@large-tex,Fail
 spec@arb_texture_view@tex-view,Fail
+spec@glsl-1.30@execution@glsl-packed-back-color,Fail
 
+# OpenCL (rusticl) failures
+api@clgetcommandqueueinfo,Fail
+api@clgetextensionfunctionaddressforplatform,Fail
+api@clgetkernelarginfo,Fail
+api@cllinkprogram,Fail
+api@clsetkernelarg,Fail
+api@clsetkernelarg@Input checks,Fail
+program@execute@builtin@builtin-float-nextafter-1.0.generated,Fail
+program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float1,Fail
+program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float16,Fail
+program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float2,Fail
+program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float4,Fail
+program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float8,Fail
+program@execute@global-offset,Fail
+program@execute@global-offset@3d- input dependent,Fail
+program@execute@vector-conversion,Fail
+
+# OpenCL-CTS quick profile
+Compiler@unload_repeated,Fail
+Compiler@unload_compile_unload_link,Fail
+Compiler@unload_build_unload_create_kernel,Fail
+Compiler@unload_build_threaded,Fail
+Compiler,Fail
+Images (clFillImage max size)@1D,Fail
+# Caused by the outdated SPIR-V LLVM Translator in the test image
+Basic@work_item_functions_out_of_range,Fail
+Basic,Crash
+Images (clCopyImage max size),Fail
+Images (clCopyImage max size)@2D,Fail
+Images (clCopyImage max size)@2Darrayto2D,Fail
+Images (clCopyImage max size)@2Darrayto3D,Fail
+Images (clCopyImage max size)@2Dto2Darray,Fail
+Images (clCopyImage max size)@2Dto3D,Fail
+Images (clCopyImage max size)@3Dto2D,Fail
+Images (clCopyImage max size)@3Dto2Darray,Fail
+Math@ilogb,Fail
+Math,Crash
+Relationals,Crash
+Integer Ops,Crash
+Images (API Info),Fail
+Images (API Info)@1Darray,Fail
+Images (API Info)@2D,Fail
+
+# VKCTS 1.4.5.3 -> 1.4.6.1 uprev
+# [  254.111168] panthor fb000000.gpu: [drm] *ERROR* Unhandled Page fault in AS4 at VA 0x00007FFFFFFF9000
+# [  254.111168] raw fault status: 0x50002C3
+# [  254.111168] decoded fault status: SLAVE FAULT
+# [  254.111168] exception type 0xC3: TRANSLATION_FAULT_3
+dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_debug_utils,Crash
+dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_large2,Crash
+dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_small2,Crash
+dEQP-VK.synchronization2.internally_synchronized_queues.xcb_bind_sparse_wsi,Crash
+dEQP-VK.synchronization2.internally_synchronized_queues.xlib_wsi_bind_sparse,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_bind_sparse,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_debug_utils,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_device_wait_idle,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_large2,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_small2,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.debug_utils_bind_sparse,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.device_wait_idle_bind_sparse,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.large2_bind_sparse,Crash
+asan-dEQP-VK.synchronization2.internally_synchronized_queues.small2_bind_sparse,Crash

@@ -161,6 +161,9 @@ struct tu_render_pass
    bool has_fdm;
    bool allow_ib2_skipping;
    bool has_layered_fdm;
+   bool has_msrtss;
+
+   bool warn_fdm_force_disabled;
 
    struct tu_subpass_barrier end_barrier;
    struct tu_subpass subpasses[0];

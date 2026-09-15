@@ -309,6 +309,9 @@ etna_set_framebuffer_state(struct pipe_context *pctx,
             cs->TS_COLOR_STATUS_BASE.offset = level->ts_offset;
             cs->TS_COLOR_STATUS_BASE.flags = ETNA_RELOC_READ | ETNA_RELOC_WRITE;
 
+            if (util_format_get_blocksizebits(surf->format) == 64)
+               ts_mem_config |= VIVS_TS_MEM_CONFIG_64BPP_FORMAT;
+
             if (level->ts_compress_fmt >= 0) {
                /* overwrite bit breaks v1/v2 compression */
                if (!screen->specs.v4_compression)
@@ -326,7 +329,8 @@ etna_set_framebuffer_state(struct pipe_context *pctx,
          cs->PE_RT_CONFIG[rt - 1] =
             RT_CONFIG_STRIDE(level->stride) |
             RT_CONFIG_FORMAT(fmt) |
-            COND(color_supertiled, RT_CONFIG_SUPER_TILED);
+            COND(color_supertiled, RT_CONFIG_SUPER_TILED) |
+            COND(util_format_is_srgb(surf->format), RT_CONFIG_SRGB);
 
          if (VIV_FEATURE(screen, ETNA_FEATURE_CACHE128B256BPERLINE))
             cs->PE_RT_CONFIG[rt - 1] |= COND(color_supertiled, RT_CONFIG_SUPER_TILED_NEW);
@@ -334,7 +338,8 @@ etna_set_framebuffer_state(struct pipe_context *pctx,
          if (rt_use_ts) {
             cs->RT_TS_MEM_CONFIG[rt - 1] =
                COND(level->ts_compress_fmt >= 0, VIVS_TS_RT_CONFIG_COMPRESSION) |
-               COND(level->ts_compress_fmt >= 0, VIVS_TS_RT_CONFIG_COMPRESSION_FORMAT(level->ts_compress_fmt));
+               COND(level->ts_compress_fmt >= 0, VIVS_TS_RT_CONFIG_COMPRESSION_FORMAT(level->ts_compress_fmt)) |
+               COND(util_format_get_blocksizebits(surf->format) == 64, VIVS_TS_RT_CONFIG_64BPP_FORMAT);
 
             cs->RT_TS_COLOR_CLEAR_VALUE[rt - 1] = level->clear_value;
             cs->RT_TS_COLOR_CLEAR_VALUE_EXT[rt - 1] = level->clear_value >> 32;
@@ -1140,23 +1145,17 @@ etna_update_hwxfb(struct etna_context *ctx)
    const struct etna_shader_variant *fs = ctx->shader.fs;
    struct nir_xfb_info *xfb_info = vs->shader->nir->xfb_info;
 
-   if (!xfb_info)
+   for (unsigned buffer = 0; buffer < 4; buffer++) {
+      ctx->streamout.TFB_DESCRIPTOR_COUNT[buffer] = 0;
+      ctx->streamout.TFB_BUFFER_STRIDE[buffer] = 0;
+      ctx->streamout.TFB_BUFFER_ADDR[buffer].bo = NULL;
+   }
+
+   if (!xfb_info || ctx->streamout.num_targets == 0)
       return true;
 
    assert(xfb_info->streams_written == 1);
    assert(fs);
-
-   for (unsigned i = 0; i < 4; i++)
-      ctx->streamout.TFB_DESCRIPTOR_COUNT[i] = 0;
-
-   if (ctx->streamout.num_targets == 0) {
-      for (unsigned buffer = 0; buffer < 4; buffer++) {
-         ctx->streamout.TFB_BUFFER_STRIDE[buffer] = 0;
-         ctx->streamout.TFB_BUFFER_ADDR[buffer].bo = NULL;
-      }
-
-      return true;
-   }
 
    u_foreach_bit(buffer, xfb_info->buffers_written) {
       const struct pipe_stream_output_target *target = ctx->streamout.targets[buffer];

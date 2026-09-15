@@ -125,20 +125,6 @@ lower_reduction(nir_alu_instr *alu, nir_op chan_op, nir_op merge_op,
    return last;
 }
 
-static inline bool
-will_lower_ffma(nir_shader *shader, unsigned bit_size)
-{
-   switch (bit_size) {
-   case 16:
-      return shader->options->lower_ffma16;
-   case 32:
-      return shader->options->lower_ffma32;
-   case 64:
-      return shader->options->lower_ffma64;
-   }
-   UNREACHABLE("bad bit size");
-}
-
 static nir_def *
 lower_bfdot_to_bfdot2_bfadd(nir_builder *b, nir_alu_instr *alu)
 {
@@ -183,12 +169,12 @@ lower_fdot(nir_alu_instr *alu, nir_builder *builder, bool is_bfloat16)
    /* If we don't want to lower ffma, create several ffma instead of fmul+fadd
     * and fusing later because fusing is not possible for exact fdot instructions.
     */
-   if (!is_bfloat16 && will_lower_ffma(builder->shader, alu->def.bit_size))
+   if (!is_bfloat16 && nir_prefers_fmad(builder->shader, alu->def.bit_size))
       return lower_reduction(alu, nir_op_fmul, nir_op_fadd, builder, reverse_order);
 
    unsigned num_components = nir_op_infos[alu->op].input_sizes[0];
 
-   const nir_op fma_op = is_bfloat16 ? nir_op_bffma : nir_op_ffma;
+   const nir_op fma_op = is_bfloat16 ? nir_op_bffma : nir_op_ffma_weak;
    const nir_op mul_op = is_bfloat16 ? nir_op_bfmul : nir_op_fmul;
 
    nir_def *prev = NULL;
@@ -315,7 +301,7 @@ lower_alu_instr_width(nir_builder *b, nir_instr *instr, void *_data)
 
       /* Only use reverse order for imprecise fdph, see explanation in lower_fdot. */
       bool reverse_order = !(b->fp_math_ctrl & nir_fp_exact);
-      if (will_lower_ffma(b->shader, alu->def.bit_size)) {
+      if (nir_prefers_fmad(b->shader, alu->def.bit_size)) {
          nir_def *sum[4];
          for (unsigned i = 0; i < 3; i++) {
             int dest = reverse_order ? 3 - i : i;
@@ -328,12 +314,12 @@ lower_alu_instr_width(nir_builder *b, nir_instr *instr, void *_data)
       } else if (reverse_order) {
          nir_def *sum = nir_channel(b, src1_vec, 3);
          for (int i = 2; i >= 0; i--)
-            sum = nir_ffma(b, nir_channel(b, src0_vec, i), nir_channel(b, src1_vec, i), sum);
+            sum = nir_ffma_weak(b, nir_channel(b, src0_vec, i), nir_channel(b, src1_vec, i), sum);
          return sum;
       } else {
          nir_def *sum = nir_fmul(b, nir_channel(b, src0_vec, 0), nir_channel(b, src1_vec, 0));
-         sum = nir_ffma(b, nir_channel(b, src0_vec, 1), nir_channel(b, src1_vec, 1), sum);
-         sum = nir_ffma(b, nir_channel(b, src0_vec, 2), nir_channel(b, src1_vec, 2), sum);
+         sum = nir_ffma_weak(b, nir_channel(b, src0_vec, 1), nir_channel(b, src1_vec, 1), sum);
+         sum = nir_ffma_weak(b, nir_channel(b, src0_vec, 2), nir_channel(b, src1_vec, 2), sum);
          return nir_fadd(b, sum, nir_channel(b, src1_vec, 3));
       }
    }
@@ -392,14 +378,6 @@ lower_alu_instr_width(nir_builder *b, nir_instr *instr, void *_data)
       LOWER_REDUCTION(nir_op_ball_iequal, nir_op_ieq, nir_op_iand);
       LOWER_REDUCTION(nir_op_bany_fnequal, nir_op_fneu, nir_op_ior);
       LOWER_REDUCTION(nir_op_bany_inequal, nir_op_ine, nir_op_ior);
-      LOWER_REDUCTION(nir_op_b8all_fequal, nir_op_feq8, nir_op_iand);
-      LOWER_REDUCTION(nir_op_b8all_iequal, nir_op_ieq8, nir_op_iand);
-      LOWER_REDUCTION(nir_op_b8any_fnequal, nir_op_fneu8, nir_op_ior);
-      LOWER_REDUCTION(nir_op_b8any_inequal, nir_op_ine8, nir_op_ior);
-      LOWER_REDUCTION(nir_op_b16all_fequal, nir_op_feq16, nir_op_iand);
-      LOWER_REDUCTION(nir_op_b16all_iequal, nir_op_ieq16, nir_op_iand);
-      LOWER_REDUCTION(nir_op_b16any_fnequal, nir_op_fneu16, nir_op_ior);
-      LOWER_REDUCTION(nir_op_b16any_inequal, nir_op_ine16, nir_op_ior);
       LOWER_REDUCTION(nir_op_b32all_fequal, nir_op_feq32, nir_op_iand);
       LOWER_REDUCTION(nir_op_b32all_iequal, nir_op_ieq32, nir_op_iand);
       LOWER_REDUCTION(nir_op_b32any_fnequal, nir_op_fneu32, nir_op_ior);

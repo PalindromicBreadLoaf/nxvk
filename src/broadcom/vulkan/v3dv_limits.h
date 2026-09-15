@@ -24,6 +24,14 @@
 #define V3DV_LIMITS_H
 
 #include "drm-uapi/v3d_drm.h"
+#include "util/detect_os.h"
+
+#if DETECT_OS_ANDROID
+#define V3DV_MAX_QUEUES 4
+#else
+#define V3DV_MAX_QUEUES 1
+#endif
+
 
 /* From vulkan spec "If the multiple viewports feature is not enabled,
  * scissorCount must be 1", ditto for viewportCount. For now we don't support
@@ -37,7 +45,7 @@
 
 #define MAX_SETS 16
 
-#define MAX_PUSH_CONSTANTS_SIZE 128
+#define MAX_PUSH_CONSTANTS_SIZE 256
 
 #define MAX_SAMPLED_IMAGES 16
 #define MAX_STORAGE_IMAGES 4

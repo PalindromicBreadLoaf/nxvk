@@ -4,11 +4,56 @@
  */
 
 #include "brw_cfg.h"
-#include "brw_disasm.h"
 #include "brw_shader.h"
 #include "brw_private.h"
 #include "dev/intel_debug.h"
+#include "gen/gen_names.h"
 #include "util/half_float.h"
+
+static const char *
+conditional_modifier_to_string(unsigned mod)
+{
+   switch (mod) {
+   case BRW_CONDITIONAL_NONE: return "";
+   case BRW_CONDITIONAL_Z:    return ".z";
+   case BRW_CONDITIONAL_NZ:   return ".nz";
+   case BRW_CONDITIONAL_G:    return ".g";
+   case BRW_CONDITIONAL_GE:   return ".ge";
+   case BRW_CONDITIONAL_L:    return ".l";
+   case BRW_CONDITIONAL_LE:   return ".le";
+   case BRW_CONDITIONAL_R:    return ".r";
+   case BRW_CONDITIONAL_O:    return ".o";
+   case BRW_CONDITIONAL_U:    return ".u";
+   default:                   return "";
+   }
+}
+
+static const char *
+brw_lsc_addr_surftype_to_string(unsigned t)
+{
+   switch (t) {
+   case LSC_ADDR_SURFTYPE_FLAT: return "flat";
+   case LSC_ADDR_SURFTYPE_BSS:  return "bss";
+   case LSC_ADDR_SURFTYPE_SS:   return "ss";
+   case LSC_ADDR_SURFTYPE_BTI:  return "bti";
+   default:                     return "<invalid lsc surface>";
+   }
+}
+
+static const char *
+brw_lsc_data_size_to_string(unsigned s)
+{
+   switch (s) {
+   case LSC_DATA_SIZE_D8:      return "d8";
+   case LSC_DATA_SIZE_D16:     return "d16";
+   case LSC_DATA_SIZE_D32:     return "d32";
+   case LSC_DATA_SIZE_D64:     return "d64";
+   case LSC_DATA_SIZE_D8U32:   return "d8u32";
+   case LSC_DATA_SIZE_D16U32:  return "d16u32";
+   case LSC_DATA_SIZE_D16BF32: return "d16bf32";
+   default:                    return "<invalid lsc data size>";
+   }
+}
 
 void
 brw_print_instructions(const brw_shader &s, FILE *file)
@@ -281,6 +326,7 @@ brw_instruction_name(const struct brw_isa_info *isa, const brw_inst *inst)
 
 /**
  * Pretty-print a source for a SHADER_OPCODE_MEMORY_LOGICAL instruction.
+ * Includes the leading ", " source separator.
  *
  * Returns true if the value is fully printed (i.e. an enum) and false if
  * we only printed a label, and the actual source value still needs printing.
@@ -291,21 +337,21 @@ print_memory_logical_source(FILE *file, const brw_inst *inst, unsigned i)
    switch (i) {
    case MEMORY_LOGICAL_BINDING: {
       lsc_addr_surface_type binding_type = inst->as_mem()->binding_type;
-      fprintf(file, " %s", brw_lsc_addr_surftype_to_string(binding_type));
+      fprintf(file, ", %s", brw_lsc_addr_surftype_to_string(binding_type));
       if (binding_type != LSC_ADDR_SURFTYPE_FLAT)
-         fprintf(file, ":");
+         fprintf(file, ": ");
       return inst->src[i].file == BAD_FILE;
    }
    case MEMORY_LOGICAL_ADDRESS:
-      fprintf(file, " addr: ");
+      fprintf(file, ", addr: ");
       return false;
    case MEMORY_LOGICAL_DATA0:
-      fprintf(file, " data0: ");
+      fprintf(file, ", data0: ");
       return false;
    case MEMORY_LOGICAL_DATA1:
       if (inst->src[i].file == BAD_FILE)
          return true;
-      fprintf(file, " data1: ");
+      fprintf(file, ", data1: ");
       return false;
    default:
       UNREACHABLE("invalid source");
@@ -326,7 +372,7 @@ brw_print_instruction(const brw_shader &s, const brw_inst *inst, FILE *file, con
    if (inst->saturate)
       fprintf(file, ".sat");
    if (inst->conditional_mod) {
-      fprintf(file, "%s", conditional_modifier[inst->conditional_mod]);
+      fprintf(file, "%s", conditional_modifier_to_string(inst->conditional_mod));
       if (!inst->predicate &&
           (inst->opcode != BRW_OPCODE_SEL &&
            inst->opcode != BRW_OPCODE_CSEL &&
@@ -424,7 +470,7 @@ brw_print_instruction(const brw_shader &s, const brw_inst *inst, FILE *file, con
 
    const brw_mem_inst *mem = inst->as_mem();
    if (mem) {
-      fprintf(file, " %s", brw_lsc_op_to_string(mem->lsc_op));
+      fprintf(file, " %s", gen_lsc_opcode_to_string(mem->lsc_op));
 
       static const char *modes[] = {
          [MEMORY_MODE_TYPED]        = "typed",
@@ -460,9 +506,9 @@ brw_print_instruction(const brw_shader &s, const brw_inst *inst, FILE *file, con
       if (mem) {
          if (print_memory_logical_source(file, inst, i))
             continue;
+      } else {
+         fprintf(file, ", ");
       }
-
-      fprintf(file, ", ");
 
       if (tex_payload) {
          switch (i) {
@@ -668,7 +714,7 @@ brw_print_instruction(const brw_shader &s, const brw_inst *inst, FILE *file, con
 
    if (inst->sched.regdist || inst->sched.mode) {
       fprintf(file, " { ");
-      brw_print_swsb(file, s.devinfo, inst->sched);
+      gen_print_swsb(s.devinfo, file, inst->sched);
       fprintf(file, " }");
    }
 
@@ -676,27 +722,3 @@ brw_print_instruction(const brw_shader &s, const brw_inst *inst, FILE *file, con
 }
 
 
-void
-brw_print_swsb(FILE *f, const struct intel_device_info *devinfo, const tgl_swsb swsb)
-{
-   if (swsb.regdist) {
-      fprintf(f, "%s@%d",
-              (devinfo && devinfo->verx10 < 125 ? "" :
-               swsb.pipe == TGL_PIPE_FLOAT ? "F" :
-               swsb.pipe == TGL_PIPE_INT ? "I" :
-               swsb.pipe == TGL_PIPE_LONG ? "L" :
-               swsb.pipe == TGL_PIPE_ALL ? "A"  :
-               swsb.pipe == TGL_PIPE_MATH ? "M" :
-               swsb.pipe == TGL_PIPE_SCALAR ? "S" : "" ),
-              swsb.regdist);
-   }
-
-   if (swsb.mode) {
-      if (swsb.regdist)
-          fprintf(f, " ");
-
-      fprintf(f, "$%d%s", swsb.sbid,
-              (swsb.mode & TGL_SBID_SET ? "" :
-               swsb.mode & TGL_SBID_DST ? ".dst" : ".src"));
-   }
-}

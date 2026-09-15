@@ -15,7 +15,6 @@
 #define NVK_MAX_DYNAMIC_BUFFERS 64
 #define NVK_MAX_RTS 8
 #define NVK_MAX_SAMPLES 8
-#define NVK_MIN_SSBO_ALIGNMENT 16
 #define NVK_MIN_TEXEL_BUFFER_ALIGNMENT 16
 #define NVK_MIN_UBO_ALIGNMENT 64
 #define NVK_MAX_VIEWPORTS 16
@@ -33,7 +32,7 @@
 #define NVK_MAX_DISCARD_RECTANGLES 8
 
 #define NVK_SPARSE_ADDR_SPACE_SIZE (1ull << 39)
-#define NVK_MAX_BUFFER_SIZE (1ull << 31)
+#define NVK_MAX_BUFFER_SIZE (1ull << 32)
 #define NVK_MAX_SHARED_SIZE (48 * 1024)
 
 /* Max size of a bound cbuf */
@@ -48,10 +47,5 @@
 
 /* Device Generated Commands */
 #define NVK_DGC_ALIGN 0x100
-
-struct nvk_addr_range {
-   uint64_t addr;
-   uint64_t range;
-};
 
 #endif

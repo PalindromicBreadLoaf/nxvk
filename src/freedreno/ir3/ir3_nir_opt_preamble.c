@@ -36,7 +36,7 @@ all_uses_float(nir_def *def, bool allow_src2)
       if (nir_src_is_if(use))
          return false;
 
-      nir_instr *use_instr = nir_src_parent_instr(use);
+      nir_instr *use_instr = nir_src_use_instr(use);
       if (use_instr->type != nir_instr_type_alu)
          return false;
       nir_alu_instr *use_alu = nir_instr_as_alu(use_instr);
@@ -66,7 +66,7 @@ all_uses_bit(nir_def *def)
       if (nir_src_is_if(use))
          return false;
 
-      nir_instr *use_instr = nir_src_parent_instr(use);
+      nir_instr *use_instr = nir_src_use_instr(use);
       if (use_instr->type != nir_instr_type_alu)
          return false;
       nir_alu_instr *use_alu = nir_instr_as_alu(use_instr);
@@ -180,6 +180,15 @@ instr_cost(nir_instr *instr, const void *data)
          return 8;
       }
 
+      case nir_intrinsic_load_global_offset: {
+         /* If we can lower this to ldg.k, that should be preferred as it can
+          * use shared sources.
+          */
+         if (ir3_nir_can_lower_to_ldg_k(intrin))
+            return 0;
+         return 8;
+      }
+
       case nir_intrinsic_load_ssbo:
       case nir_intrinsic_load_ssbo_ir3:
       case nir_intrinsic_get_ssbo_size:
@@ -222,7 +231,7 @@ rewrite_cost(nir_def *def, const void *data)
 
    bool mov_needed = false;
    nir_foreach_use (use, def) {
-      nir_instr *parent_instr = nir_src_parent_instr(use);
+      nir_instr *parent_instr = nir_src_use_instr(use);
       if (parent_instr->type == nir_instr_type_alu) {
          nir_alu_instr *alu = nir_instr_as_alu(parent_instr);
          if (alu->op == nir_op_vec2 ||
@@ -714,6 +723,12 @@ get_preamble_offset(nir_def *def)
    return nir_intrinsic_base(nir_def_as_intrinsic(def));
 }
 
+static bool
+should_prefetch_descriptor(nir_def *desc)
+{
+   return desc != NULL && ir3_bindless_resource(nir_src_for_ssa(desc));
+}
+
 /* Prefetch descriptors in the preamble. This is an optimization introduced on
  * a7xx, mainly useful when the preamble is an early preamble, and replaces the
  * use of CP_LOAD_STATE on a6xx to prefetch descriptors in HLSQ.
@@ -765,8 +780,9 @@ ir3_nir_opt_prefetch_descriptors(nir_shader *nir, struct ir3_shader_variant *v)
          nir_def *preamble_descs[2] = { NULL, NULL };
          get_descriptors(instr, descs);
 
-         /* We must have found at least one descriptor */
-         if (!descs[0] && !descs[1])
+         /* Bail unless we found at least one bindless descriptor */
+         if (!(should_prefetch_descriptor(descs[0]) ||
+               should_prefetch_descriptor(descs[1])))
             continue;
 
          /* The instruction itself must be hoistable.
@@ -981,6 +997,7 @@ ir3_nir_lower_preamble(nir_shader *nir, struct ir3_shader_variant *v)
     */
 
    /* @decl_regs need to stay in the first block. */
+   b = &builder_main;
    b->cursor = nir_after_reg_decls(main);
 
    nir_if *outer_if = nir_push_if(b, nir_preamble_start_ir3(b, 1));

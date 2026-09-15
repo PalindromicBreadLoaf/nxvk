@@ -50,7 +50,7 @@
 typedef struct {
    nir_shader *shader;
 
-   int (*type_size)(const struct glsl_type *, bool);
+   unsigned (*type_size)(const struct glsl_type *, bool);
 
    /* Tables of UBOs and SSBOs mapping driver_location/base whether
     * they are too large to use imul24:
@@ -153,6 +153,7 @@ lower_intrinsic(lower_state *state, nir_intrinsic_instr *intr)
    case nir_intrinsic_global_atomic_swap:
    case nir_intrinsic_load_global_constant:
    case nir_intrinsic_load_global:
+   case nir_intrinsic_load_global_transpose_amd:
    case nir_intrinsic_load_pixel_local:
       /* just assume that 24b is not sufficient: */
       lower_large_src(&intr->src[0], state);
@@ -199,7 +200,7 @@ is_large(lower_state *state, nir_variable *var)
 
 bool
 nir_lower_amul(nir_shader *shader,
-               int (*type_size)(const struct glsl_type *, bool))
+               unsigned (*type_size)(const struct glsl_type *, bool))
 {
    assert(shader->options->has_imul24);
    assert(type_size);

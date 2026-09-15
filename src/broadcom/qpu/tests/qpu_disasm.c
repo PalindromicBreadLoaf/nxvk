@@ -41,6 +41,10 @@ static const struct {
         { 42, 0x9c094adef634b000ull, "ffloor.ifb rf30.l, r3         ; fmul.pushz rf43.l, r5, r1.h" },
         { 42, 0xb0044c56ba326840ull, "flpop rf22, rf33              ; fmul.pushz rf49.l, r4.h, r1.abs" },
 
+        /* 32-bit input unpacks */
+        { 71, 0x38000411f9190250ull, "fmov rf17, rf9.sat            ; fmov rf16, rf6.sat" },
+        { 71, 0x3800000af503f168ull, "ffloor rf10, rf5.l            ; nop" },
+
         /* vfmul input packing */
         { 42, 0x101e8b6e8aad4000ull, "fmax.nornn rf46, r4.l, r2.l   ; vfmul.ifnb rf45, r3, r5" },
         { 42, 0x1857d3c219825000ull, "faddnf.norc r2.l, r5.l, r4    ; vfmul.ifb rf15, r0.ll, r4   ; ldunif" },
@@ -55,6 +59,12 @@ static const struct {
         { 42, 0x25ef83d8b166f00full, "vfmin.pushn rf24, 15.ff, r5   ; smul24.ifnb rf15, r1, r3" },
         { 42, 0xadedcdf70839f990ull, "faddnf.pushc rf55, -16.l, r3.abs; fmul.ifb rf55.l, rf38.l, r1.h" },
         { 42, 0x7dff89fa6a01f020ull, "fsub.nornc rf58.h, 0x3b800000.l, r3.l; fmul.ifnb rf39, r0.h, r0.h" },
+
+        /* V3D 7.1 small immediates */
+        { 71, 0x39c0000a3803f042ull, "add rf10, 1, rf2              ; nop" },
+        { 71, 0x39e0000b3c03f0deull, "sub rf11, rf3, -2             ; nop" },
+        { 71, 0x57c00340bb105000ull, "nop                           ; fmul rf13, 4, rf5" },
+        { 71, 0x27e00380bb188000ull, "nop                           ; smul24 rf14, rf6, 8" },
 
         /* branch conditions */
         { 42, 0x02000006002034c0ull, "b.anyap  rf19" },
@@ -85,6 +95,7 @@ static const struct {
         { 42, 0x3de020c7bdfd200dull, "ldvpmg_in rf7, r2, r2         ; mov r3, 13" },
         { 42, 0x3de02040f8ff7201ull, "stvpmv 1, rf8                 ; mov r1, 1" },
         { 42, 0xd8000e50bb2d3000ull, "sampid rf16                   ; fmul rf57.h, r3, r1.l" },
+        { 71, 0x2c000300bb042030ull, "setnnmode_uu                  ; v8dot rf12, rf1, rf2" },
 
         /* SFU instructions. */
         { 42, 0xe98d60c1ba2aef80ull, "recip rf1, rf62               ; fmul r3.h, r2.l, r1.l       ; ldunifrf.rf53" },

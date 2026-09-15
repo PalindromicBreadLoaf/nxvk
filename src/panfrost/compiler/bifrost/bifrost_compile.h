@@ -63,8 +63,9 @@ bifrost_precompiled_kernel_prepare_push_uniforms(
 }
 
 void bifrost_preprocess_nir(nir_shader *nir, uint64_t gpu_id);
-void bifrost_optimize_nir(nir_shader *nir, uint64_t gpu_id);
-void bifrost_postprocess_nir(nir_shader *nir, uint64_t gpu_id);
+void bifrost_postprocess_nir(nir_shader *nir,
+                             const struct pan_compile_inputs *inputs,
+                             struct pan_shader_info *info);
 
 void bifrost_compile_shader_nir(nir_shader *nir,
                                 const struct pan_compile_inputs *inputs,
@@ -98,6 +99,7 @@ bool valhall_can_merge_workgroups(nir_shader *nir);
       .lower_bitfield_extract8 = true,                                         \
       .lower_bitfield_extract16 = true,                                        \
       .lower_insert_byte = true,                                               \
+      .has_bitfield_select = true,                                             \
                                                                                \
       .lower_pack_64_4x16 = true,                                              \
       .lower_pack_half_2x16 = true,                                            \
@@ -123,9 +125,12 @@ bool valhall_can_merge_workgroups(nir_shader *nir);
       .has_ldexp = true,                                                       \
       .has_isub = true,                                                        \
       .vectorize_vec2_16bit = true,                                            \
-      .fuse_ffma16 = true,                                                     \
-      .fuse_ffma32 = true,                                                     \
-      .fuse_ffma64 = true,                                                     \
+      .float_mul_add16 = nir_float_muladd_support_has_ffma |                   \
+          nir_float_muladd_support_fuse,                                       \
+      .float_mul_add32 = nir_float_muladd_support_has_ffma |                   \
+          nir_float_muladd_support_fuse,                                       \
+      .float_mul_add64 = nir_float_muladd_support_has_ffma |                   \
+          nir_float_muladd_support_fuse,                                       \
                                                                                \
       .lower_uniforms_to_ubo = true,                                           \
                                                                                \
@@ -142,6 +147,7 @@ bool valhall_can_merge_workgroups(nir_shader *nir);
                                  BITFIELD_BIT(MESA_SHADER_TESS_EVAL) |         \
                                  BITFIELD_BIT(MESA_SHADER_FRAGMENT),           \
       .lower_hadd = arch >= 11,                                                \
+      .lower_hadd64 = true,                                                    \
       .discard_is_demote = true,                                               \
       .has_udot_4x8 = arch >= 9,                                               \
       .has_udot_4x8_sat = arch >= 9,                                           \

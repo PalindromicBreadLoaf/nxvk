@@ -131,15 +131,18 @@ static nir_function *mangle_and_find(struct vtn_builder *b,
    /* try and find in current shader first. */
    nir_function *found = nir_shader_get_function_for_name(b->shader, mname);
 
-   /* if not found here find in clc shader and create a decl mirroring it */
-   if (!found && b->options->clc_shader && b->options->clc_shader != b->shader) {
-      found = nir_shader_get_function_for_name(b->options->clc_shader, mname);
+   if (!found) {
+      /* if not found here find in clc shader and create a decl mirroring it */
+      if (b->options->clc_shader)
+         found = nir_shader_get_function_for_name(b->options->clc_shader, mname);
 
       /* try upcasting fp16 */
       if (!found && try_fp16_lowering) {
+         /* We might actually be inside libclc in which case clc_shader is NULL */
+         const nir_shader *libclc = b->options->clc_shader ? b->options->clc_shader : b->shader;
          fp16_name = mname;
          vtn_opencl_mangle(name, const_mask, num_srcs, src_types, true, &mname);
-         found = nir_shader_get_function_for_name(b->options->clc_shader, mname);
+         found = nir_shader_get_function_for_name(libclc, mname);
       }
 
       if (found) {
@@ -530,10 +533,12 @@ static uint8_t fp16_lowering_supported(enum OpenCLstd_Entrypoints opcode)
    case OpenCLstd_Ldexp:
    case OpenCLstd_Lgamma_r:
    case OpenCLstd_Pown:
-   case OpenCLstd_Remquo:
    case OpenCLstd_Rootn:
       /* second argument shouldn't be touched at all */
       return 0xff ^ (1 << 2);
+   case OpenCLstd_Remquo:
+      /* third argument is the integer quotient pointer. */
+      return 0xff ^ (1 << 3);
    /* the second argument is a pointer to a float
     * a new enough libclc supports it though
     */
@@ -639,24 +644,11 @@ handle_special(struct vtn_builder *b, uint32_t opcode,
        *
        *    Implemented either as a correctly rounded fma or as a multiply
        *    followed by an add both of which are correctly rounded
-       *
-       * So lower to fmul+fadd if we have to, but fuse to an ffma if the backend
-       * supports that. This can be significantly faster.
        */
-      bool lower =
-         ((nb->shader->options->lower_ffma16 && srcs[0]->bit_size == 16) ||
-          (nb->shader->options->lower_ffma32 && srcs[0]->bit_size == 32) ||
-          (nb->shader->options->lower_ffma64 && srcs[0]->bit_size == 64));
 
       const unsigned save_math_ctrl = nb->fp_math_ctrl;
-      nir_def *res;
-
-      nb->fp_math_ctrl |= nir_fp_exact;
-      if (lower)
-         res = nir_fmad(nb, srcs[0], srcs[1], srcs[2]);
-      else
-         res = nir_ffma(nb, srcs[0], srcs[1], srcs[2]);
-
+      nb->fp_math_ctrl |= nir_fp_no_contract | nir_fp_no_transform;
+      nir_def *res = nir_ffma_weak(nb, srcs[0], srcs[1], srcs[2]);
       nb->fp_math_ctrl = save_math_ctrl;
       return res;
    }
@@ -696,12 +688,11 @@ handle_special(struct vtn_builder *b, uint32_t opcode,
       return nir_ldexp(nb, srcs[0], srcs[1]);
    case OpenCLstd_Fma: {
       /* FIXME: the software implementation only supports fp32 for now. */
-      if ((nb->shader->options->lower_ffma32 && srcs[0]->bit_size == 32) ||
-          (nb->shader->options->lower_ffma16 && srcs[0]->bit_size == 16))
+      if (srcs[0]->bit_size != 64 && !nir_has_ffma(nb->shader, srcs[0]->bit_size))
          break;
 
       /* OpenCL FMA is not allowed to be split. */
-      const bool save_math_ctrl = nb->fp_math_ctrl;
+      const unsigned save_math_ctrl = nb->fp_math_ctrl;
       nb->fp_math_ctrl |= nir_fp_exact;
       nir_def *res = nir_ffma(nb, srcs[0], srcs[1], srcs[2]);
       nb->fp_math_ctrl = save_math_ctrl;

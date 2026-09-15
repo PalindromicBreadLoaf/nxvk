@@ -52,11 +52,13 @@ fi
 if [ -n "$VKD3D_PROTON_TAG" ]; then
   # Are we using the right vkd3d-proton version?
   ci_tag_test_time_check "VKD3D_PROTON_TAG"
+fi
 
-  # Set environment for Wine.
-  export WINEDEBUG="-all"
-  export WINEPREFIX="/vkd3d-proton-wine64"
-  export WINEESYNC=1
+if [ -n "${OPENCL_CTS_TAG:-}" ]; then
+  # Are we using the right OpenCL-CTS version?
+  ci_tag_test_time_check "OPENCL_CTS_TAG"
+elif [ -d "/opencl-cts" ]; then
+  rm -r /opencl-cts
 fi
 
 
@@ -146,6 +148,9 @@ for api in vk-main vk gl gles; do
     cat "$deqp_version_log"
   fi
 done
+if [ -r /opencl-cts/opencl-cts-version ]; then
+  echo "OpenCL-CTS commit: $(cat /opencl-cts/opencl-cts-version)"
+fi
 set -x
 
 # If you change the format of the suite toml filenames or the

@@ -72,6 +72,29 @@ get_new_program_id(struct iris_screen *screen)
    return p_atomic_inc_return(&screen->program_id);
 }
 
+static const unsigned *
+iris_backend_compile(const struct iris_screen *screen,
+                     void *mem_ctx,
+                     struct brw_compile_params *params)
+{
+   assert(screen->brw);
+
+   const struct intel_device_info *devinfo = screen->devinfo;
+   nir_shader *nir = params->nir;
+
+   if (intel_use_jay(devinfo, nir->info.stage)) {
+      struct jay_shader_bin *bin =
+         jay_compile(devinfo, mem_ctx, nir,
+                     (union brw_any_prog_data *)params->prog_data,
+                     (union brw_any_prog_key *)params->key,
+                     params->archiver);
+
+      return bin->kernel;
+   } else {
+      return brw_compile(screen->brw, params);
+   }
+}
+
 static void
 iris_apply_brw_fs_prog_data(struct iris_compiled_shader *shader,
                             const struct brw_fs_prog_data *brw)
@@ -116,8 +139,7 @@ iris_apply_brw_fs_prog_data(struct iris_compiled_shader *shader,
    iris->uses_depth_w_coefficients  = brw->uses_depth_w_coefficients;
 
    iris->uses_nonperspective_interp_modes = brw->uses_nonperspective_interp_modes;
-
-   iris->is_per_sample = brw_fs_prog_data_is_persample(brw, 0);
+   iris->is_per_sample = brw->persample_dispatch;
 }
 
 static void
@@ -145,6 +167,7 @@ iris_apply_brw_cs_prog_data(struct iris_compiled_shader *shader,
    iris->generate_local_id = brw->generate_local_id;
    iris->walk_order        = brw->walk_order;
    iris->uses_barrier      = brw->uses_barrier;
+   iris->uses_fence        = brw->uses_fence;
    iris->uses_sampler      = brw->uses_sampler;
    iris->prog_mask         = brw->prog_mask;
 
@@ -558,7 +581,6 @@ iris_to_brw_fs_key(const struct iris_screen *screen,
       .alpha_to_coverage = key->alpha_to_coverage ? INTEL_ALWAYS : INTEL_NEVER,
       .persample_interp = key->persample_interp ? INTEL_ALWAYS : INTEL_NEVER,
       .multisample_fbo = key->multisample_fbo ? INTEL_ALWAYS : INTEL_NEVER,
-      .force_dual_color_blend = key->force_dual_color_blend,
       .ignore_sample_mask_out = !key->multisample_fbo,
    };
 }
@@ -638,7 +660,6 @@ iris_to_elk_fs_key(const struct iris_screen *screen,
       .alpha_to_coverage = key->alpha_to_coverage ? ELK_ALWAYS : ELK_NEVER,
       .persample_interp = key->persample_interp ? ELK_ALWAYS : ELK_NEVER,
       .multisample_fbo = key->multisample_fbo ? ELK_ALWAYS : ELK_NEVER,
-      .force_dual_color_blend = key->force_dual_color_blend,
       .coherent_fb_fetch = key->coherent_fb_fetch,
       .color_outputs_valid = key->color_outputs_valid,
       .input_slots_valid = key->input_slots_valid,
@@ -1920,25 +1941,15 @@ iris_compile_vs(struct iris_screen *screen,
          .base = {
             .mem_ctx = mem_ctx,
             .nir = nir,
+            .key = &brw_key.base,
+            .prog_data = (struct brw_stage_prog_data *)brw_prog_data,
             .log_data = dbg,
             .source_hash = ish->source_hash,
             .archiver = debug_archiver,
          },
-         .key = &brw_key,
-         .prog_data = brw_prog_data,
       };
 
-      if (intel_use_jay(devinfo, nir->info.stage)) {
-         struct jay_shader_bin *bin =
-            jay_compile(devinfo, mem_ctx, nir,
-                        (union brw_any_prog_data *) brw_prog_data,
-                        (union brw_any_prog_key *) &brw_key);
-
-         program = bin->kernel;
-      } else {
-         program = brw_compile_vs(screen->brw, &params);
-      }
-
+      program = iris_backend_compile(screen, mem_ctx, &params.base);
       error = params.base.error_str;
       if (program) {
          iris_debug_recompile(dbg, ish, key);
@@ -2167,14 +2178,14 @@ iris_compile_tcs(struct iris_screen *screen,
       options = screen->elk->nir_options[MESA_SHADER_TESS_CTRL];
    struct elk_tcs_prog_key elk_key = iris_to_elk_tcs_key(screen, key);
 #endif
-   uint32_t source_hash;
+   uint64_t source_hash;
 
    if (ish) {
       nir = nir_shader_clone(mem_ctx, ish->nir);
       source_hash = ish->source_hash;
    } else {
       nir = iris_create_passthrough_tcs(mem_ctx, options, key);
-      source_hash = *(uint32_t*)nir->info.source_blake3;
+      source_hash = *(uint64_t*)nir->info.source_blake3;
    }
 
    debug_archiver *debug_archiver =
@@ -2198,15 +2209,15 @@ iris_compile_tcs(struct iris_screen *screen,
          .base = {
             .mem_ctx = mem_ctx,
             .nir = nir,
+            .key = &brw_key.base,
+            .prog_data = (struct brw_stage_prog_data *)brw_prog_data,
             .log_data = dbg,
             .source_hash = source_hash,
             .archiver = debug_archiver,
          },
-         .key = &brw_key,
-         .prog_data = brw_prog_data,
       };
 
-      program = brw_compile_tcs(screen->brw, &params);
+      program = iris_backend_compile(screen, mem_ctx, &params.base);
       error = params.base.error_str;
 
       if (program) {
@@ -2408,16 +2419,16 @@ iris_compile_tes(struct iris_screen *screen,
          .base = {
             .mem_ctx = mem_ctx,
             .nir = nir,
+            .key = &brw_key.base,
+            .prog_data = (struct brw_stage_prog_data *)brw_prog_data,
             .log_data = dbg,
             .source_hash = ish->source_hash,
             .archiver = debug_archiver,
          },
-         .key = &brw_key,
-         .prog_data = brw_prog_data,
          .input_vue_map = &input_vue_map,
       };
 
-      program = brw_compile_tes(screen->brw, &params);
+      program = iris_backend_compile(screen, mem_ctx, &params.base);
       error = params.base.error_str;
 
       if (program) {
@@ -2603,15 +2614,15 @@ iris_compile_gs(struct iris_screen *screen,
          .base = {
             .mem_ctx = mem_ctx,
             .nir = nir,
+            .key = &brw_key.base,
+            .prog_data = (struct brw_stage_prog_data *)brw_prog_data,
             .log_data = dbg,
             .source_hash = ish->source_hash,
             .archiver = debug_archiver,
          },
-         .key = &brw_key,
-         .prog_data = brw_prog_data,
       };
 
-      program = brw_compile_gs(screen->brw, &params);
+      program = iris_backend_compile(screen, mem_ctx, &params.base);
       error = params.base.error_str;
       if (program) {
          iris_debug_recompile(dbg, ish, key);
@@ -2734,6 +2745,17 @@ iris_update_compiled_gs(struct iris_context *ice)
    }
 }
 
+static void
+iris_force_dual_color_blend(nir_shader *nir)
+{
+   nir_variable *var = nir_find_variable_with_location(nir, nir_var_shader_out,
+                                                       FRAG_RESULT_DATA1);
+   if (var) {
+      var->data.location = FRAG_RESULT_DATA0;
+      var->data.index = 1;
+   }
+}
+
 /**
  * Compile a fragment (pixel) shader, and upload the assembly.
  */
@@ -2760,12 +2782,17 @@ iris_compile_fs(struct iris_screen *screen,
    iris_setup_uniforms(devinfo, mem_ctx, nir, &system_values,
                        &num_system_values, &num_cbufs);
 
+   if (key->force_dual_color_blend)
+      iris_force_dual_color_blend(nir);
+
+#ifdef INTEL_USE_ELK
    /* Lower output variables to load_output intrinsics before setting up
     * binding tables, so iris_setup_binding_table can map any load_output
     * intrinsics to IRIS_SURFACE_GROUP_RENDER_TARGET_READ on Gfx8 for
     * non-coherent framebuffer fetches.
     */
-   brw_nir_lower_fs_outputs(nir);
+   elk_nir_lower_fs_outputs(nir);
+#endif
 
    int null_rts = key->nr_color_regions == 0 &&
       brw_nir_fs_needs_null_rt(devinfo, nir,
@@ -2791,29 +2818,18 @@ iris_compile_fs(struct iris_screen *screen,
          .base = {
             .mem_ctx = mem_ctx,
             .nir = nir,
+            .key = &brw_key.base,
+            .prog_data = (struct brw_stage_prog_data *)brw_prog_data,
             .log_data = dbg,
             .source_hash = ish->source_hash,
             .archiver = debug_archiver,
          },
-         .key = &brw_key,
-         .prog_data = brw_prog_data,
 
-         .allow_spilling = true,
          .max_polygons = UCHAR_MAX,
          .vue_map = vue_map,
       };
 
-      if (intel_use_jay(devinfo, nir->info.stage)) {
-         struct jay_shader_bin *bin =
-            jay_compile(devinfo, mem_ctx, nir,
-                        (union brw_any_prog_data *) brw_prog_data,
-                        (union brw_any_prog_key *) &brw_key);
-
-         program = bin->kernel;
-      } else {
-         program = brw_compile_fs(screen->brw, &params);
-      }
-
+      program = iris_backend_compile(screen, mem_ctx, &params.base);
       error = params.base.error_str;
       if (program) {
          iris_debug_recompile(dbg, ish, key);
@@ -3155,25 +3171,15 @@ iris_compile_cs(struct iris_screen *screen,
          .base = {
             .mem_ctx = mem_ctx,
             .nir = nir,
+            .key = &brw_key.base,
+            .prog_data = (struct brw_stage_prog_data *)brw_prog_data,
             .log_data = dbg,
             .source_hash = ish->source_hash,
             .archiver = debug_archiver,
          },
-         .key = &brw_key,
-         .prog_data = brw_prog_data,
       };
 
-      if (intel_use_jay(devinfo, nir->info.stage)) {
-         struct jay_shader_bin *bin =
-            jay_compile(devinfo, mem_ctx, nir,
-                        (union brw_any_prog_data *) brw_prog_data,
-                        (union brw_any_prog_key *) &brw_key);
-
-         program = bin->kernel;
-      } else {
-         program = brw_compile_cs(screen->brw, &params);
-      }
-
+      program = iris_backend_compile(screen, mem_ctx, &params.base);
       error = params.base.error_str;
       if (program) {
          iris_debug_recompile(dbg, ish, key);
@@ -3652,7 +3658,11 @@ iris_create_shader_state(struct pipe_context *ctx,
       const uint64_t color_outputs = info->outputs_written &
          ~(BITFIELD64_BIT(FRAG_RESULT_DEPTH) |
            BITFIELD64_BIT(FRAG_RESULT_STENCIL) |
-           BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK));
+           BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK) |
+           BITFIELD64_BIT(FRAG_RESULT_DUAL_SRC_BLEND));
+
+      const bool dual_color =
+         info->outputs_written & BITFIELD64_BIT(FRAG_RESULT_DUAL_SRC_BLEND);
 
       bool can_rearrange_varyings =
          util_bitcount64(info->inputs_read & BRW_FS_VARYING_INPUT_MASK) <= 16;
@@ -3660,7 +3670,7 @@ iris_create_shader_state(struct pipe_context *ctx,
       key.fs = (struct iris_fs_prog_key) {
          KEY_INIT(base),
          .vue_layout = vue_layout(ish->nir->info.separate_shader),
-         .nr_color_regions = util_bitcount(color_outputs),
+         .nr_color_regions = util_bitcount(color_outputs) ?: dual_color,
          .coherent_fb_fetch = devinfo->ver >= 9 && devinfo->ver < 20,
          .input_slots_valid =
             can_rearrange_varyings ? 0 : info->inputs_read | VARYING_BIT_POS,
@@ -4061,8 +4071,7 @@ iris_fs_barycentric_modes(const struct iris_compiled_shader *shader,
                           enum intel_fs_config pushed_fs_config)
 {
    if (shader->brw_prog_data) {
-      return fs_prog_data_barycentric_modes(brw_fs_prog_data(shader->brw_prog_data),
-                                            pushed_fs_config);
+      return brw_fs_prog_data(shader->brw_prog_data)->barycentric_interp_modes;
    } else {
 #ifdef INTEL_USE_ELK
       assert(shader->elk_prog_data);

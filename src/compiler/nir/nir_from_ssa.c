@@ -1074,7 +1074,7 @@ place_phi_read(nir_builder *b, nir_def *reg,
 bool
 nir_lower_phis_to_regs_block(nir_block *block, bool place_writes_in_imm_preds)
 {
-   nir_builder b = nir_builder_create(nir_cf_node_get_function(&block->cf_node));
+   nir_builder b = nir_builder_create(block->impl);
    struct set *visited_blocks = NULL;
    if (!place_writes_in_imm_preds)
       visited_blocks = _mesa_pointer_set_create(NULL);
@@ -1128,8 +1128,8 @@ ssa_def_is_local_to_block(nir_def *def, UNUSED void *state)
    nir_block *block = nir_def_block(def);
    nir_foreach_use_including_if(use_src, def) {
       if (nir_src_is_if(use_src) ||
-          nir_src_parent_instr(use_src)->block != block ||
-          nir_src_parent_instr(use_src)->type == nir_instr_type_phi) {
+          nir_src_use_instr(use_src)->block != block ||
+          nir_src_use_instr(use_src)->type == nir_instr_type_phi) {
          return false;
       }
    }
@@ -1162,7 +1162,7 @@ instr_is_load_new_reg(nir_instr *instr, unsigned old_num_ssa)
 bool
 nir_lower_ssa_defs_to_regs_block(nir_block *block)
 {
-   nir_function_impl *impl = nir_cf_node_get_function(&block->cf_node);
+   nir_function_impl *impl = block->impl;
    nir_builder b = nir_builder_create(impl);
 
    struct ssa_def_to_reg_state state = {

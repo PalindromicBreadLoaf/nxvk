@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "panvk_buffer.h"
 #include "panvk_cmd_meta.h"
 #include "panvk_entrypoints.h"
 #include "panvk_meta.h"
@@ -44,6 +45,8 @@ meta_compute_start(struct panvk_cmd_buffer *cmdbuf,
    if (push_set0 && push_set0 == set0) {
       save_ctx->push_set0.desc_count = push_set0->desc_count;
       save_ctx->push_set0.descs_dev_addr = push_set0->descs.dev;
+      save_ctx->push_set0.dirty =
+         BITSET_TEST(cmdbuf->state.compute.desc_state.dirty_push_sets, 0);
       memcpy(save_ctx->push_set0.desc_storage, push_set0->descs.host,
              push_set0->desc_count * PANVK_DESCRIPTOR_SIZE);
    }
@@ -84,6 +87,11 @@ meta_compute_end(struct panvk_cmd_buffer *cmdbuf,
              save_ctx->push_set0.desc_count * PANVK_DESCRIPTOR_SIZE);
       push_set0->descs.dev = save_ctx->push_set0.descs_dev_addr;
       push_set0->desc_count = save_ctx->push_set0.desc_count;
+
+      if (save_ctx->push_set0.dirty)
+         BITSET_SET(cmdbuf->state.compute.desc_state.dirty_push_sets, 0);
+      else
+         BITSET_CLEAR(cmdbuf->state.compute.desc_state.dirty_push_sets, 0);
    }
 
    cmdbuf->state.push_constants = save_ctx->push_constants;
@@ -112,6 +120,8 @@ meta_gfx_start(struct panvk_cmd_buffer *cmdbuf,
    if (push_set0 && push_set0 == set0) {
       save_ctx->push_set0.desc_count = push_set0->desc_count;
       save_ctx->push_set0.descs_dev_addr = push_set0->descs.dev;
+      save_ctx->push_set0.dirty =
+         BITSET_TEST(cmdbuf->state.gfx.desc_state.dirty_push_sets, 0);
       memcpy(save_ctx->push_set0.desc_storage, push_set0->descs.host,
              push_set0->desc_count * PANVK_DESCRIPTOR_SIZE);
    }
@@ -172,6 +182,11 @@ meta_gfx_end(struct panvk_cmd_buffer *cmdbuf,
              save_ctx->push_set0.desc_count * PANVK_DESCRIPTOR_SIZE);
       push_set0->descs.dev = save_ctx->push_set0.descs_dev_addr;
       push_set0->desc_count = save_ctx->push_set0.desc_count;
+
+      if (save_ctx->push_set0.dirty)
+         BITSET_SET(cmdbuf->state.gfx.desc_state.dirty_push_sets, 0);
+      else
+         BITSET_CLEAR(cmdbuf->state.gfx.desc_state.dirty_push_sets, 0);
    }
 
    cmdbuf->state.push_constants = save_ctx->push_constants;
@@ -316,9 +331,15 @@ panvk_per_arch(CmdClearColorImage)(VkCommandBuffer commandBuffer, VkImage image,
    struct panvk_device *dev = to_panvk_device(cmdbuf->vk.base.device);
    struct panvk_cmd_meta_graphics_save_ctx save = {0};
 
+   /* Mali cannot render to R64; alias as RG32UI for vk_meta. */
+   VkFormat view_format = img->vk.format;
+   if (img->vk.format == VK_FORMAT_R64_UINT ||
+       img->vk.format == VK_FORMAT_R64_SINT)
+      view_format = VK_FORMAT_R32G32_UINT;
+
    meta_gfx_start(cmdbuf, &save);
    vk_meta_clear_color_image(&cmdbuf->vk, &dev->meta, &img->vk, imageLayout,
-                             img->vk.format, pColor, rangeCount, pRanges);
+                             view_format, pColor, rangeCount, pRanges);
    meta_gfx_end(cmdbuf, &save);
 }
 
@@ -469,13 +490,49 @@ panvk_per_arch(CmdFillBuffer)(VkCommandBuffer commandBuffer, VkBuffer dstBuffer,
                               uint32_t data)
 {
    VK_FROM_HANDLE(panvk_cmd_buffer, cmdbuf, commandBuffer);
-   struct panvk_device *dev = to_panvk_device(cmdbuf->vk.base.device);
-   struct panvk_cmd_meta_compute_save_ctx save = {0};
+   VK_FROM_HANDLE(panvk_buffer, buffer, dstBuffer);
+   struct panvk_physical_device *phys_dev =
+      to_panvk_physical_device(cmdbuf->vk.base.device->physical);
 
-   meta_compute_start(cmdbuf, &save);
-   vk_meta_fill_buffer(&cmdbuf->vk, &dev->meta, dstBuffer, dstOffset, fillSize,
-                       data);
-   meta_compute_end(cmdbuf, &save);
+   uint64_t addr = panvk_buffer_gpu_ptr(buffer, dstOffset);
+   uint64_t range = panvk_buffer_range(buffer, dstOffset, fillSize) & ~3ULL;
+   if (!range)
+      return;
+
+   const uint32_t max_wg = phys_dev->vk.properties.maxComputeWorkGroupCount[0];
+   struct panvk_precomp_ctx ctx = panvk_per_arch(precomp_cs)(cmdbuf);
+
+   const bool uint4_path =
+      util_is_aligned(addr, 16) && util_is_aligned(range, 16);
+   const uint32_t elem_size = uint4_path ? 16 : 4;
+   const uint32_t wg_bytes = 32 * elem_size;
+
+   while (range >= wg_bytes) {
+      const uint32_t wgs = MIN2(range / wg_bytes, max_wg);
+      const uint64_t bulk = (uint64_t)wgs * wg_bytes;
+
+      if (uint4_path) {
+         panlib_fill_uint4(&ctx, panlib_1d(wgs), PANLIB_BARRIER_NONE, addr,
+                           data, data, data, data);
+      } else {
+         panlib_fill(&ctx, panlib_1d(wgs), PANLIB_BARRIER_NONE, addr, data);
+      }
+
+      addr += bulk;
+      range -= bulk;
+   }
+
+   if (range) {
+      const uint32_t tail = range / elem_size;
+
+      if (uint4_path) {
+         panlib_fill_uint4_scalar(&ctx, panlib_1d(tail), PANLIB_BARRIER_NONE,
+                                  addr, data, data, data, data);
+      } else {
+         panlib_fill_scalar(&ctx, panlib_1d(tail), PANLIB_BARRIER_NONE, addr,
+                            data);
+      }
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -602,77 +659,6 @@ panvk_per_arch(CmdCopyImage2)(VkCommandBuffer commandBuffer,
                          VK_PIPELINE_BIND_POINT_COMPUTE);
       meta_compute_end(cmdbuf, &save);
    }
-}
-
-static bool
-panvk_image_has_afbc(struct panvk_image *img, VkImageSubresourceRange range)
-{
-   VkImageAspectFlags aspect_mask =
-      vk_image_expand_aspect_mask(&img->vk, range.aspectMask);
-   u_foreach_bit(aspect, aspect_mask) {
-      unsigned plane_index = panvk_plane_index(img, 1u << aspect);
-      struct panvk_image_plane *plane = &img->planes[plane_index];
-
-      if (drm_is_afbc(plane->image.props.modifier))
-         return true;
-   }
-
-   return false;
-}
-
-static bool
-panvk_acquire_unmodified(const VkImageMemoryBarrier2 *barrier)
-{
-   if (barrier->srcQueueFamilyIndex != VK_QUEUE_FAMILY_EXTERNAL &&
-       barrier->srcQueueFamilyIndex != VK_QUEUE_FAMILY_FOREIGN_EXT)
-      return false;
-
-   const VkExternalMemoryAcquireUnmodifiedEXT *acquire_unmodified =
-      vk_find_struct_const(barrier->pNext,
-                           EXTERNAL_MEMORY_ACQUIRE_UNMODIFIED_EXT);
-   return acquire_unmodified &&
-          acquire_unmodified->acquireUnmodifiedMemory == VK_TRUE;
-}
-
-/* TODO: pass less data than what's in a VkImageMemoryBarrier2 */
-
-struct panvk_image_layout_transition_handler {
-   void (*cmd)(VkCommandBuffer cmdbuf, const VkImageMemoryBarrier2 *barrier);
-   VkPipelineStageFlags2 stages;
-   VkAccessFlags2 access;
-};
-
-static struct panvk_image_layout_transition_handler
-panvk_get_image_layout_transition_handler(const VkImageMemoryBarrier2 *barrier)
-{
-   if (barrier->oldLayout == barrier->newLayout ||
-       panvk_acquire_unmodified(barrier))
-      return (struct panvk_image_layout_transition_handler){0};
-
-   return (struct panvk_image_layout_transition_handler){0};
-}
-
-void
-panvk_per_arch(transition_image_layout_sync_scope)(
-   const VkImageMemoryBarrier2 *barrier,
-   VkPipelineStageFlags2 *out_stages, VkAccessFlags2 *out_access)
-{
-   struct panvk_image_layout_transition_handler handler =
-      panvk_get_image_layout_transition_handler(barrier);
-
-   *out_stages = handler.stages;
-   *out_access = handler.access;
-}
-
-void
-panvk_per_arch(cmd_transition_image_layout)(
-   VkCommandBuffer cmdbuf, const VkImageMemoryBarrier2 *barrier)
-{
-   struct panvk_image_layout_transition_handler handler =
-      panvk_get_image_layout_transition_handler(barrier);
-
-   if (handler.cmd)
-      handler.cmd(cmdbuf, barrier);
 }
 
 void

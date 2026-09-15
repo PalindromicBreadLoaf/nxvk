@@ -15,9 +15,6 @@
 #include "util/macros.h"
 #include "util/u_debug.h"
 
-bool drm_shim_driver_prefers_first_render_node = true;
-
-
 #define DEFAULT_DEVICE_BVNC PVR_BVNC_PACK(36, 53, 104, 796)
 static struct pvr_device_info device_info;
 
@@ -432,6 +429,8 @@ pvr_ioctl_get_bo_mmap_offset(int fd, UNUSED unsigned long request, void *arg)
 
    args->offset = drm_shim_bo_get_mmap_offset(shim_fd, bo);
 
+   drm_shim_bo_put(bo);
+
    return 0;
 }
 
@@ -546,8 +545,6 @@ void drm_shim_driver_init(void)
 {
    init_overrides();
 
-   shim_device.bus_type = DRM_BUS_PLATFORM;
-   shim_device.driver_name = "powervr";
    shim_device.driver_ioctls = driver_ioctls;
    shim_device.driver_ioctl_count = ARRAY_SIZE(driver_ioctls);
 
@@ -555,13 +552,7 @@ void drm_shim_driver_init(void)
    shim_device.version_minor = 0;
    shim_device.version_patchlevel = 0;
 
-   drm_shim_override_file("DRIVER=powervr\n"
-                          "OF_FULLNAME=/soc/pvr\n"
-                          "OF_COMPATIBLE_0=img,img-rogue\n"
-                          "OF_COMPATIBLE_N=1\n",
-                          "/sys/dev/char/%d:%d/device/uevent",
-                          DRM_MAJOR,
-                          render_node_minor);
+   drm_shim_platform_device_setup("powervr", "/soc/pvr", "img,img-rogue");
 
    atexit(drm_shim_driver_fini);
 }

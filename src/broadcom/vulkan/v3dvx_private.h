@@ -293,10 +293,6 @@ struct v3dv_bo *
 v3dX(create_default_attribute_values)(struct v3dv_device *device,
                                       struct v3dv_pipeline *pipeline);
 
-/* Used at v3dv_queue */
-void
-v3dX(job_emit_noop)(struct v3dv_job *job);
-
 /* Used at v3dv_descriptor_set, and other descriptor set utils */
 uint32_t v3dX(descriptor_bo_size)(VkDescriptorType type);
 
@@ -305,6 +301,8 @@ uint32_t v3dX(max_descriptor_bo_size)(void);
 uint32_t v3dX(combined_image_sampler_texture_state_offset)(uint8_t plane);
 
 uint32_t v3dX(combined_image_sampler_sampler_state_offset)(uint8_t plane);
+
+void v3dX(pack_null_texture_state)(struct v3dv_device *device, void *map);
 
 /* General utils */
 

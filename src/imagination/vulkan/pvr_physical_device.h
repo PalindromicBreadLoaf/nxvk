@@ -27,10 +27,19 @@
 #include "pvr_device_info.h"
 #include "pvr_formats.h"
 
-#if defined(VK_USE_PLATFORM_DISPLAY_KHR) || defined(VK_USE_PLATFORM_WAYLAND_KHR)
+#if defined(VK_USE_PLATFORM_DISPLAY_KHR) || \
+    defined(VK_USE_PLATFORM_WAYLAND_KHR) || \
+    defined(VK_USE_PLATFORM_XCB_KHR) || \
+    defined(VK_USE_PLATFORM_XLIB_KHR)
 #   define PVR_USE_WSI_PLATFORM true
 #else
 #   define PVR_USE_WSI_PLATFORM false
+#endif
+
+#if defined(VK_USE_PLATFORM_DISPLAY_KHR)
+#   define PVR_USE_WSI_PLATFORM_DISPLAY true
+#else
+#   define PVR_USE_WSI_PLATFORM_DISPLAY false
 #endif
 
 struct pvr_instance;
@@ -73,6 +82,22 @@ VK_DEFINE_HANDLE_CASTS(pvr_physical_device,
                        vk.base,
                        VkPhysicalDevice,
                        VK_OBJECT_TYPE_PHYSICAL_DEVICE)
+
+static void
+pvr_get_render_area_granularity(struct pvr_physical_device *pdevice,
+                                VkExtent2D *granularity)
+{
+   const struct pvr_device_info *dev_info = &pdevice->dev_info;
+
+   /* Granularity does not depend on any settings in the render pass, so return
+    * the tile granularity.
+    *
+    * The default value is based on the minimum value found in all existing
+    * cores.
+    */
+   granularity->width = PVR_GET_FEATURE_VALUE(dev_info, tile_size_x, 16);
+   granularity->height = PVR_GET_FEATURE_VALUE(dev_info, tile_size_y, 16);
+}
 
 VkResult pvr_physical_device_init(struct pvr_physical_device *pdevice,
                                   struct pvr_instance *instance,

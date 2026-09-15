@@ -429,7 +429,7 @@ valid_header(uint32_t pkt)
  * looks for "IB" type packets and logs the target cmdstream buffers.
  */
 static void
-parse_ibs(uint32_t *dwords, uint32_t sizedwords)
+parse_ibs(const uint32_t *dwords, uint32_t sizedwords)
 {
    int dwords_left = sizedwords;
    uint32_t count = 0; /* dword count including packet header */
@@ -1123,12 +1123,17 @@ decode(void)
          parseline(line, "time: %d", &time);
          snapshot_linux.seconds = (uint32_t)time;
       } else if (startswith(line, "revision:")) {
-         unsigned core, major, minor, patchid;
+         if (strstr(line, ".")) {
+            unsigned core, major, minor, patchid;
 
-         parseline(line, "revision: %u (%u.%u.%u.%u)", &options.dev_id.gpu_id,
-                   &core, &major, &minor, &patchid);
+            parseline(line, "revision: %u (%u.%u.%u.%u)", &options.dev_id.gpu_id,
+                      &core, &major, &minor, &patchid);
 
-         options.dev_id.chip_id = (core << 24) | (major << 16) | (minor << 8) | patchid;
+            options.dev_id.chip_id = (core << 24) | (major << 16) | (minor << 8) | patchid;
+         } else {
+            parseline(line, "revision: %u (%x)", &options.dev_id.gpu_id,
+                      &options.dev_id.chip_id);
+         }
          options.info = fd_dev_info_raw(&options.dev_id);
          if (!options.info) {
             printf("Unsupported device\n");
