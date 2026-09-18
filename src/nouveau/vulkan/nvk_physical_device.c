@@ -62,6 +62,12 @@
 #include "clcdc0.h"
 #include "clce97.h"
 
+static bool
+nvk_supports_host_image_copy(const struct nv_device_info *info)
+{
+   return info->cls_eng3d >= TURING_A || info->type == NV_DEVICE_TYPE_SOC;
+}
+
 static uint32_t
 nvk_get_vk_version(const struct nv_device_info *info)
 {
@@ -78,10 +84,8 @@ nvk_get_vk_version(const struct nv_device_info *info)
    if (info->cls_eng3d < MAXWELL_A)
       return VK_MAKE_VERSION(1, 2, VK_HEADER_VERSION);
 
-   /* Vulkan 1.4 requires hostImageCopy which is currently only supported on
-    * Turing+.
-    */
-   if (info->cls_eng3d < TURING_A)
+   /* Vulkan 1.4 requires hostImageCopy */
+   if (!nvk_supports_host_image_copy(info))
       return VK_MAKE_VERSION(1, 3, VK_HEADER_VERSION);
 
    return VK_MAKE_VERSION(1, 4, VK_HEADER_VERSION);
@@ -252,7 +256,7 @@ nvk_get_device_extensions(const struct nvk_instance *instance,
       .EXT_graphics_pipeline_library = true,
       .EXT_hdr_metadata = true,
       .EXT_host_query_reset = true,
-      .EXT_host_image_copy = info->cls_eng3d >= TURING_A,
+      .EXT_host_image_copy = nvk_supports_host_image_copy(info),
       .EXT_image_2d_view_of_3d = true,
       .EXT_image_robustness = true,
       .EXT_image_sliced_view_of_3d = true,
@@ -495,7 +499,7 @@ nvk_get_device_features(const struct nv_device_info *info,
       .maintenance5 = true,
       .maintenance6 = true,
       .pipelineRobustness = true,
-      .hostImageCopy = info->cls_eng3d >= TURING_A,
+      .hostImageCopy = nvk_supports_host_image_copy(info),
       .pushDescriptor = true,
 
       /* VK_KHR_copy_memory_indirect */
