@@ -127,6 +127,8 @@ static uint32_t nvk_pick_mem_type(const VkPhysicalDeviceMemoryProperties *mp,
    return UINT32_MAX;
 }
 
+static const void *g_nvk_dev_pnext;
+
 /* Bring the driver up to a usable instance. */
 static VkResult nvk_bringup_ex(struct nvk_ctx *c,
                                const char *const *inst_exts, uint32_t n_inst_exts,
@@ -220,6 +222,7 @@ static VkResult nvk_bringup_ex(struct nvk_ctx *c,
    };
    VkDeviceCreateInfo dci = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+      .pNext = g_nvk_dev_pnext,
       .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci,
       .enabledExtensionCount = n_dev_exts, .ppEnabledExtensionNames = dev_exts,
    };

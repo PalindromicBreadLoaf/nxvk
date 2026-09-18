@@ -24,7 +24,7 @@ static const char *const apps[] = {
    "nvk_textures", "nvk_cubemap", "nvk_vi_swapchain", "nvk_present",
    "nvk_compress", "nvk_sector", "nvk_zcull", "nvk_push_desc",
    "nvk_desc_flush", "nvk_cmd_flush", "nvk_ce_copy", "nvk_engine_wait",
-   "nvk_b2_flush", "nvk_mem_churn", "nvk_subtile",
+   "nvk_b2_flush", "nvk_mem_churn", "nvk_subtile", "nvk_host_copy",
    "gl_linktest", "gl_gallium", "gl_caps", "gl_smoke", "gl_tri", "gl_tex",
    "gl_fbo", "gl_ubo_vbo", "gl_egl_tri", "gl_multi", "gles3", "gl_feat",
    "gl_diag",

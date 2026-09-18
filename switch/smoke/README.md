@@ -54,6 +54,7 @@ runner walks them.
 | `nvk_b2_flush`    | fence signalling verification                                                              |
 | `nvk_mem_churn`   | 48 rounds of alloc/free recycle backing stores                                             |
 | `nvk_subtile`     | fragment/compute rates per knob, readbacks must match                                      |
+| `nvk_host_copy`   | host image copy verification                                                               |
 
 ## OpenGL (via Zink)
 
