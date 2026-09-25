@@ -214,7 +214,8 @@ disk_cache_type_create(const char *gpu_name,
 
 #if DETECT_OS_HORIZON
    if (enabled)
-      disk_cache_horizon_init(cache, max_size);
+      disk_cache_horizon_init(cache, max_size, cache->driver_keys_blob,
+                              cache->driver_keys_blob_size);
 #endif
 
    return cache;
