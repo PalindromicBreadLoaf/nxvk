@@ -308,6 +308,8 @@ nvk_cmd_buffer_push(struct nvk_cmd_buffer *cmd, uint32_t dw_count)
    return &cmd->push;
 }
 
+void nvk_cmd_buffer_push_indirect_continued(struct nvk_cmd_buffer *cmd,
+                                            uint64_t addr, uint32_t range);
 void
 nvk_cmd_buffer_push_indirect(struct nvk_cmd_buffer *cmd,
                              uint64_t addr, uint32_t dw_count);

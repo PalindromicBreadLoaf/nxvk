@@ -5329,12 +5329,114 @@ nvk_CmdDrawIndexedIndirect2KHR(VkCommandBuffer commandBuffer,
       }
    }
 }
+/* vkCmdDraw*IndirectCount on pre-Turing. The Turing macro reads the count
+ * with read_fifoed, which the Fermi-class MME lacks, so here the GPU-written
+ * count reaches the macro as pushed data (an indirect push of one dword from
+ * the count buffer) and the commands past it are only consumed, never drawn.
+ *
+ * Parameters: chunk_count, pad_dw (inline), the count (one dword, indirect
+ * push from the count buffer), then chunk_count commands (indirect push).
+ * Draws min(count, chunk_count). The Fermi MME only compares for equality,
+ * so the clamp goes through the sign bit.
+ */
+static void
+nvk_mme_draw_indirect_count_fermi(struct mme_builder *b, bool indexed)
+{
+   /* Keep this under MME_FERMI_BUILDER_MAX_INSTS (128): a per-chunk base
+    * (count - base clamp) does not fit, so there is a single chunk and the
+    * CPU side caps maxDrawCount at what one push can carry.
+    */
+   struct mme_value cnt = mme_load(b);
+   nvk_mme_load_to_scratch(b, DRAW_PAD_DW);
+   struct mme_value draw_count = mme_load(b);
+
+   struct mme_value skip = mme_sub(b, cnt, draw_count);
+   struct mme_value neg2 = mme_srl(b, skip, mme_imm(31));
+   mme_if(b, ine, neg2, mme_zero()) {
+      mme_mov_to(b, draw_count, cnt);
+      mme_mov_to(b, skip, mme_zero());
+   }
+   mme_free_reg(b, neg2);
+   mme_free_reg(b, cnt);
+
+   /* Fermi MUL is a software loop that needs more of the seven registers than
+    * are free here, so keep the command count and drop each command dword by
+    * dword below instead of computing a dword count.
+    */
+   nvk_mme_store_scratch(b, DRAW_SKIP_DW, skip);
+   mme_free_reg(b, skip);
+
+   struct mme_value draw = mme_mov(b, mme_zero());
+   mme_while(b, ine, draw, draw_count) {
+      nvk_mme_spill(b, DRAW_COUNT, draw_count);
+
+      if (indexed)
+         nvk_mme_build_draw_indexed(b, draw);
+      else
+         nvk_mme_build_draw(b, draw);
+      mme_add_to(b, draw, draw, mme_imm(1));
+
+      struct mme_value pad_dw = nvk_mme_load_scratch(b, DRAW_PAD_DW);
+      mme_loop(b, pad_dw) {
+         mme_free_reg(b, mme_load(b));
+      }
+      mme_free_reg(b, pad_dw);
+
+      nvk_mme_unspill(b, DRAW_COUNT, draw_count);
+   }
+   mme_free_reg(b, draw);
+   mme_free_reg(b, draw_count);
+
+   struct mme_value drop = nvk_mme_load_scratch(b, DRAW_SKIP_DW);
+   mme_while(b, ine, drop, mme_zero()) {
+      for (unsigned i = 0; i < (indexed ? 5u : 4u); i++)
+         mme_free_reg(b, mme_load(b));
+      struct mme_value pad_dw = nvk_mme_load_scratch(b, DRAW_PAD_DW);
+      mme_loop(b, pad_dw) {
+         mme_free_reg(b, mme_load(b));
+      }
+      mme_free_reg(b, pad_dw);
+      mme_sub_to(b, drop, drop, mme_imm(1));
+   }
+   mme_free_reg(b, drop);
+}
+
+/* CPU side of the above. Limitation: one chunk, so at most one push's worth
+ * of commands per call (about 1600 VkDrawIndexedIndirectCommand at the
+ * minimum stride); draws past that bound are dropped. This is why the
+ * drawIndirectCount feature is still only advertised on Turing+.
+ */
+static void
+nvk_cmd_draw_indirect_count_fermi(struct nvk_cmd_buffer *cmd, bool indexed,
+                                  uint64_t draw_addr, uint64_t count_addr,
+                                  uint32_t max_draw, uint64_t stride)
+{
+   const uint32_t cmd_size = indexed ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawIndirectCommand);
+   if (max_draw <= 1)
+      stride = cmd_size;
+   if (max_draw == 0)
+      return;
+   const uint32_t max_draws_per_push = MAX2(((NV_PUSH_MAX_COUNT - 4) * 4) / stride, 1);
+   const uint32_t ignored = (uint32_t)((stride - cmd_size) / 4);
+   const uint32_t count = MIN2(max_draw, max_draws_per_push);
+   const uint64_t range = (uint64_t)count * stride;
+   struct nv_push *p = nvk_cmd_buffer_push(cmd, 3);
+   P_1INC(p, NV9097, CALL_MME_MACRO(indexed ? NVK_MME_DRAW_INDEXED_INDIRECT_COUNT : NVK_MME_DRAW_INDIRECT_COUNT));
+   P_INLINE_DATA(p, count);
+   P_INLINE_DATA(p, ignored);
+   nv_push_update_count(p, 1 + range / 4);
+   /* The method continues in the next segment. */
+   nvk_cmd_buffer_push_indirect_continued(cmd, count_addr, 4);
+   nvk_cmd_buffer_push_indirect(cmd, draw_addr, range);
+}
 
 void
 nvk_mme_draw_indirect_count(struct mme_builder *b)
 {
-   if (b->devinfo->cls_eng3d < TURING_A)
+   if (b->devinfo->cls_eng3d < TURING_A) {
+      nvk_mme_draw_indirect_count_fermi(b, false);
       return;
+   }
 
    struct mme_value64 draw_addr = mme_load_addr64(b);
    struct mme_value64 draw_count_addr = mme_load_addr64(b);
@@ -5367,10 +5469,13 @@ nvk_CmdDrawIndirectCount2KHR(VkCommandBuffer commandBuffer,
 {
    VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
 
-   /* TODO: Indirect count draw pre-Turing */
-   assert(nvk_cmd_buffer_3d_cls(cmd) >= TURING_A);
-
    nvk_cmd_flush_gfx_state(cmd);
+
+   if (nvk_cmd_buffer_3d_cls(cmd) < TURING_A) {
+      nvk_cmd_draw_indirect_count_fermi(cmd, false, pInfo->addressRange.address, pInfo->countAddressRange.address,
+                                        pInfo->maxDrawCount, pInfo->addressRange.stride);
+      return;
+   }
 
    struct nv_push *p = nvk_cmd_buffer_push(cmd, 8);
    P_1INC(p, NV9097, CALL_MME_MACRO(NVK_MME_DRAW_INDIRECT_COUNT));
@@ -5388,8 +5493,10 @@ nvk_CmdDrawIndirectCount2KHR(VkCommandBuffer commandBuffer,
 void
 nvk_mme_draw_indexed_indirect_count(struct mme_builder *b)
 {
-   if (b->devinfo->cls_eng3d < TURING_A)
+   if (b->devinfo->cls_eng3d < TURING_A) {
+      nvk_mme_draw_indirect_count_fermi(b, true);
       return;
+   }
 
    struct mme_value64 draw_addr = mme_load_addr64(b);
    struct mme_value64 draw_count_addr = mme_load_addr64(b);
@@ -5422,10 +5529,13 @@ nvk_CmdDrawIndexedIndirectCount2KHR(VkCommandBuffer commandBuffer,
 {
    VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
 
-   /* TODO: Indexed indirect count draw pre-Turing */
-   assert(nvk_cmd_buffer_3d_cls(cmd) >= TURING_A);
-
    nvk_cmd_flush_gfx_state(cmd);
+
+   if (nvk_cmd_buffer_3d_cls(cmd) < TURING_A) {
+      nvk_cmd_draw_indirect_count_fermi(cmd, true, pInfo->addressRange.address, pInfo->countAddressRange.address,
+                                        pInfo->maxDrawCount, pInfo->addressRange.stride);
+      return;
+   }
 
    struct nv_push *p = nvk_cmd_buffer_push(cmd, 8);
    P_1INC(p, NV9097, CALL_MME_MACRO(NVK_MME_DRAW_INDEXED_INDIRECT_COUNT));
