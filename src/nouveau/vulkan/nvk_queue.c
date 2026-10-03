@@ -61,8 +61,22 @@ nvk_queue_state_update(struct nvk_queue *queue,
    mem = nvk_slm_area_get_mem_ref(&dev->slm, &bytes_per_warp, &bytes_per_tpc);
    if (qs->slm.mem != mem || qs->slm.bytes_per_warp != bytes_per_warp ||
        qs->slm.bytes_per_tpc != bytes_per_tpc) {
-      if (qs->slm.mem)
+      if (qs->slm.mem) {
+#ifdef __SWITCH__
+         /* The SLM area grows lazily, the first time a shader needing more
+          * local memory is bound, so the old area may still be in use by
+          * submissions in flight.  On Linux the kernel keeps a BO alive until
+          * the jobs referencing it complete; on Horizon, releasing the last
+          * reference unmaps the GPU VA at once, and the in-flight work faults
+          * (MMU fault, device lost).  Drain the queue first.  The area only
+          * ever grows, so this is a rare one-off stall.
+          */
+         const VkResult drain_result =
+            nvkmd_ctx_sync(queue->exec_ctx, &queue->vk.base);
+         (void)drain_result; /* a lost device fails the submit anyway */
+#endif
          nvkmd_mem_unref(qs->slm.mem);
+      }
       qs->slm.mem = mem;
       qs->slm.bytes_per_warp = bytes_per_warp;
       qs->slm.bytes_per_tpc = bytes_per_tpc;
