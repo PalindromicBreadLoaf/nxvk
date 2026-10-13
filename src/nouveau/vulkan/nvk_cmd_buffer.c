@@ -247,6 +247,28 @@ nvk_cmd_buffer_push_indirect(struct nvk_cmd_buffer *cmd,
    util_dynarray_append(&cmd->pushes, push);
 }
 
+/* An indirect segment whose method continues in the next segment (the
+ * pre-Turing *IndirectCount count dword, followed by the command data).
+ * Plain push_indirect leaves .incomplete = false, so submission batching was
+ * free to split between the count and the commands; the next submission then
+ * started with bare method data and the PBDMA faulted.
+ */
+void
+nvk_cmd_buffer_push_indirect_continued(struct nvk_cmd_buffer *cmd,
+                                       uint64_t addr, uint32_t range)
+{
+   nvk_cmd_buffer_flush_push(cmd, true);
+
+   struct nvk_cmd_push push = {
+      .addr = addr,
+      .range = range,
+      .incomplete = true,
+      .no_prefetch = true,
+   };
+
+   util_dynarray_append(&cmd->pushes, push);
+}
+
 VkResult
 nvk_cmd_buffer_upload_alloc(struct nvk_cmd_buffer *cmd,
                             uint32_t size, uint32_t alignment,
