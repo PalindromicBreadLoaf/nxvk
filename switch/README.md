@@ -103,7 +103,11 @@ change, and records the two evidence gaps it exposed: the embedded provenance
 covered only the driver archive (a support-only change was invisible) and the
 ladder captured no driver log at all. Both are fixed here — every linked archive
 is now recorded and checked in CI, and the ladder's `.mesa.log` is Mesa's own
-log file.
+log file. The [build #9 review](docs/build-9-validation.md) confirms both fixes
+on hardware (18 recorded archives, 22 non-empty Mesa logs) and reports the one
+failure it found: the diagnostic phase that forces internal command memory
+CPU-cacheable — not a configuration the port ships — failed its readback while
+the code it exercises was unchanged from build #8.
 
 ### GitHub Actions Vulkan-only build
 

@@ -21,4 +21,23 @@ done
   -fsanitize=address,undefined -fno-omit-frame-pointer -DNVK_TEST_LEGACY_ATOMICS \
   -I"$SRC/src" -I"$TMP" "$SRC/switch/tests/arena_dirty_test.c" -o "$TMP/arena_fallback"
 "$TMP/arena_fallback"
+# The ladder apps that the stub headers cover, checked for host-side syntax.
+# The list is explicit: apps that include generated shader headers or gallium
+# headers are only built by the cross build, and extend the stubs when needed.
+# -Wno-vla-parameter and -Wno-deprecated-declarations are host libc artifacts
+# (glibc declares regmatch_t[] as a VLA and deprecates mallinfo); the Switch
+# toolchain has neither warning.
+checked=0
+for app in nvk_b2_flush nvk_ce_copy nvk_chain nvk_cmd_flush nvk_compat \
+           nvk_desc_flush nvk_engine_wait nvk_host_copy nvk_mem_churn \
+           nvk_runner nvk_smoke gl_linktest; do
+  "${CC:-cc}" -std=gnu11 -fsyntax-only -Wall -Wextra -Werror \
+    -Wno-unused-parameter -Wno-vla-parameter -Wno-deprecated-declarations \
+    -I"$SRC/switch/tests/syntax-stubs" -I"$SRC/switch/tests/stubs" \
+    -I"$SRC/include" -I"$SRC/src" -I"$SRC/src/util" \
+    "$SRC/switch/smoke/$app.c"
+  checked=$((checked + 1))
+done
+echo "PASS: host syntax check of $checked smoke apps"
+
 python3 -m unittest discover -s "$SRC/switch/tests" -p 'test_*.py' -v

@@ -41,6 +41,10 @@ building the toolchain/driver.
   (including one that is missing), checks both runner memberships and parses
   the actual diagnostic/legacy probes against real Vulkan headers with SDK
   stand-ins. Dummy SPIR-V words in that syntax test are never linked or run.
+- The script also host-syntax-checks the twelve `switch/smoke` apps whose
+  includes the stub headers cover. That list is explicit: apps that include
+  generated shader headers or gallium headers are only built by the cross build,
+  and a new stub is added when a check needs one.
 - `test_build_dependencies.py` exercises a copy of the actual Makefile with
   fixture timestamps and `make -n`, including Rust sysroot invalidation.
 

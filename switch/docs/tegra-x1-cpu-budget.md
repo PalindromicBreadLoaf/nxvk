@@ -135,9 +135,14 @@ change.
 
 ## Order of work
 
-1. Read the new `cpu:` lines and the driver's core line from a hardware run of
-   the existing 22-app ladder. That answers "is this port CPU-bound, and on
-   which apps?" with data instead of hypotheses.
+1. ~~Read the new `cpu:` lines and the driver's core line from a hardware run of
+   the existing 22-app ladder.~~ **Done** (build #9): the process is given
+   `0x7`, and no ladder app was CPU-bound — the main thread was busy for 4-9 %
+   of wall time on the rendering tests, 21-53 % on the probes that measure
+   driver bookkeeping directly, and under 1 % on the two presenting apps that
+   wait on vsync. See
+   [build-9-validation.md](build-9-validation.md). Anything above that has to
+   come from a real title, not from this ladder.
 2. If a per-frame CPU cost shows up (item 1 above), that is the one worth GPU
    offloading — it is the only per-frame entry in the list.
 3. Revisit items 2-3 (load-time and per-submit costs) with the operation counters

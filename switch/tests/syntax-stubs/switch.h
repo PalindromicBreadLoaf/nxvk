@@ -44,6 +44,7 @@ Result clkrstOpenSession(ClkrstSession *, PcvModuleId, u32);
 void clkrstCloseSession(ClkrstSession *);
 Result clkrstGetClockRate(ClkrstSession *, u32 *);
 Result pcvInitialize(void);
+void randomGet(void *, size_t);
 void pcvExit(void);
 Result pcvGetClockRate(PcvModule, u32 *);
 #endif
