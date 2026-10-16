@@ -1,0 +1,15 @@
+=== nvk_present ===
+params: frames=240 warmup=60 inflight=3
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+surface 1280x720, image count 3..3
+fifo: 3 images
+held slot: acquire(timeout=0) -> 1, acquire(timeout=1ms) -> 2
+HELD SLOT OK
+fifo: 180 frames in 3000001 us -> 59.9 fps
+immediate: 3 images
+immediate: 180 frames in 1499999 us -> 120.0 fps
+IMMEDIATE OK: 120.0 fps against 59.9 fps on fifo
+=== nvk_present PASSED ===
+teardown: instance/device destroyed

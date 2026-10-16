@@ -1,0 +1,17 @@
+=== nvk_host_copy ===
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+apiVersion 1.4 -- Vulkan 1.4
+host image copy: 20 src layouts, 20 dst layouts, identicalMemoryTypeRequirements=0
+  ok   rgba8_256x256   256x256 1 level(s) 1 layer(s), 1 subresources
+  ok   r8_129x67       129x67 1 level(s) 1 layer(s), 1 subresources
+  ok   rg16_64x64      64x64 1 level(s) 1 layer(s), 1 subresources
+  ok   rgba16f_mips    128x128 4 level(s) 1 layer(s), 4 subresources
+  ok   rgba8_3layers   64x64 1 level(s) 3 layer(s), 3 subresources
+  ok   rgba8_8x512     8x512 1 level(s) 1 layer(s), 1 subresources
+  ok   rgba8_linear64  64x64 1 level(s) 1 layer(s), 1 subresources
+7 passed, 0 failed, 0 skipped of 7 cases
+VERIFY OK
+=== nvk_host_copy PASSED ===
+teardown: instance/device destroyed

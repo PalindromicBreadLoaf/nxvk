@@ -1,0 +1,18 @@
+=== nvk_ce_copy ===
+params: src=8 MiB dst=24 MiB line=128 KiB cases=7
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+dst high-water: 5245745 of 25165824 bytes
+vkQueueSubmit -> 0
+vkWaitForFences -> 0
+  ok   [0] 4 MiB, 32 whole lines      off=256 size=4194304
+  ok   [1] exactly one line           off=4194816 size=131072
+  ok   [2] one line plus one byte     off=4326144 size=131073
+  ok   [3] one byte short of a line   off=4457473 size=131071
+  ok   [4] 3 lines plus remainder     off=4588800 size=393993
+  ok   [5] unaligned src and size     off=4983049 size=262177
+  ok   [6] sub-line                   off=5245482 size=7
+VERIFY OK: all 7 copies byte-exact with no guard clobber
+=== nvk_ce_copy PASSED ===
+teardown: instance/device destroyed

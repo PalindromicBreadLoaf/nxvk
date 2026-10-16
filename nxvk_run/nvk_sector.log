@@ -1,0 +1,64 @@
+=== nvk_sector ===
+params: RGBA8 point-sampled 1:1
+--- phase off (NVK_DEBUG=no_sector_promotion) ---
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+off: square_256 256x256 levels=1 size=0x40000 align=0x2000
+  square_256 level 0 (256x256): 65536 texels ok
+off: npot_17x13 17x13 levels=1 size=0x1000 align=0x1000
+  npot_17x13 level 0 (17x13): 221 texels ok
+off: strip_4x256 4x256 levels=1 size=0x4000 align=0x2000
+  strip_4x256 level 0 (4x256): 1024 texels ok
+off: strip_256x4 256x4 levels=1 size=0x2000 align=0x1000
+  strip_256x4 level 0 (256x4): 1024 texels ok
+off: tiny_3x3 3x3 levels=1 size=0x1000 align=0x1000
+  tiny_3x3 level 0 (3x3): 9 texels ok
+off: mips_128 128x128 levels=8 size=0x16000 align=0x2000
+  mips_128 level 0 (128x128): 16384 texels ok
+  mips_128 level 1 (64x64): 4096 texels ok
+  mips_128 level 2 (32x32): 1024 texels ok
+  mips_128 level 3 (16x16): 256 texels ok
+  mips_128 level 4 (8x8): 64 texels ok
+  mips_128 level 5 (4x4): 16 texels ok
+  mips_128 level 6 (2x2): 4 texels ok
+  mips_128 level 7 (1x1): 1 texels ok
+off: churn_64 x8, freed 4 neighbours
+  churn_64 level 0 (64x64): 4096 texels ok
+  churn_64 level 0 (64x64): 4096 texels ok
+  churn_64 level 0 (64x64): 4096 texels ok
+  churn_64 level 0 (64x64): 4096 texels ok
+teardown: instance/device destroyed
+--- phase on ---
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+on: square_256 256x256 levels=1 size=0x40000 align=0x2000
+  square_256 level 0 (256x256): 65536 texels ok
+on: npot_17x13 17x13 levels=1 size=0x1000 align=0x1000
+  npot_17x13 level 0 (17x13): 221 texels ok
+on: strip_4x256 4x256 levels=1 size=0x4000 align=0x2000
+  strip_4x256 level 0 (4x256): 1024 texels ok
+on: strip_256x4 256x4 levels=1 size=0x2000 align=0x1000
+  strip_256x4 level 0 (256x4): 1024 texels ok
+on: tiny_3x3 3x3 levels=1 size=0x1000 align=0x1000
+  tiny_3x3 level 0 (3x3): 9 texels ok
+on: mips_128 128x128 levels=8 size=0x16000 align=0x2000
+  mips_128 level 0 (128x128): 16384 texels ok
+  mips_128 level 1 (64x64): 4096 texels ok
+  mips_128 level 2 (32x32): 1024 texels ok
+  mips_128 level 3 (16x16): 256 texels ok
+  mips_128 level 4 (8x8): 64 texels ok
+  mips_128 level 5 (4x4): 16 texels ok
+  mips_128 level 6 (2x2): 4 texels ok
+  mips_128 level 7 (1x1): 1 texels ok
+on: churn_64 x8, freed 4 neighbours
+  churn_64 level 0 (64x64): 4096 texels ok
+  churn_64 level 0 (64x64): 4096 texels ok
+  churn_64 level 0 (64x64): 4096 texels ok
+  churn_64 level 0 (64x64): 4096 texels ok
+teardown: instance/device destroyed
+off: 17 levels read, 0 bad, 0 bad texels
+on : 17 levels read, 0 bad, 0 bad texels
+SECTOR OK: 17 levels sample identically with and without promotion
+=== nvk_sector PASSED ===

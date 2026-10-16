@@ -1,0 +1,13 @@
+=== nvk_engine_wait ===
+params: buf=32 MiB copies=16 chk=4096 B
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+submit A: 100 us
+submit B: 31 us  <- the dependency
+fence   : 126846 us
+total   : 126977 us
+ORDER OK: all 1024 tail words == 0x5a5ac3c3
+LATENCY OK: submit B is 0% of the run
+=== nvk_engine_wait PASSED ===
+teardown: instance/device destroyed
