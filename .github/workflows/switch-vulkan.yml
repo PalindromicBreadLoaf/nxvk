@@ -33,7 +33,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5 (Node 24)
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
 
@@ -140,7 +140,7 @@ jobs:
           sha256sum nxvk-vulkan-tests.tar.gz > nxvk-vulkan-tests.tar.gz.sha256
 
       - name: Upload Vulkan-only package and package-linked smoke test
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5 (Node 24)
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: nxvk-vulkan-tegra-x1-${{ github.run_number }}
           if-no-files-found: error
@@ -151,7 +151,7 @@ jobs:
             switch/build/package-check/nvk_smoke.nro
 
       - name: Upload Vulkan-only hardware test bundle
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5 (Node 24)
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: nxvk-vulkan-tests-${{ github.run_number }}
           if-no-files-found: error
@@ -178,7 +178,7 @@ jobs:
 
       - name: Upload build logs and configuration
         if: always()
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5 (Node 24)
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: nxvk-vulkan-logs-${{ github.run_number }}
           retention-days: 14
