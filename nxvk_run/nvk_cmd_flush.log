@@ -1,0 +1,35 @@
+=== nvk_cmd_flush ===
+params: records/phase=4096 fills=6000
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+full [NVK_DEBUG=full_cmd_flush]: empty record 1766 ns, 6000-fill record 67697865 ns, readback OK
+teardown: instance/device destroyed
+cpu: main thread busy 47.6 ms of 166.2 ms wall (29%), allowed cores 0x7
+bringup: WARN could not create Mesa diagnostic log
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+ranged [NVK_DEBUG=]: empty record 1701 ns, 6000-fill record 67471719 ns, readback OK
+teardown: instance/device destroyed
+cpu: main thread busy 40.7 ms of 134.7 ms wall (30%), allowed cores 0x7
+bringup: WARN could not create Mesa diagnostic log
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+full_cached [NVK_DEBUG=full_cmd_flush,no_cpu_uncached]: empty record 2225 ns, 6000-fill record 26265208 ns, readback OK
+teardown: instance/device destroyed
+cpu: main thread busy 23.1 ms of 84.1 ms wall (28%), allowed cores 0x7
+bringup: WARN could not create Mesa diagnostic log
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+ranged_cached [NVK_DEBUG=no_cpu_uncached]: empty record 735 ns, 6000-fill record 26591771 ns, readback OK
+teardown: instance/device destroyed
+cpu: main thread busy 16.8 ms of 81.0 ms wall (21%), allowed cores 0x7
+empty record, cmd mem as shipped: 1766 -> 1701 ns (103% of ranged)
+empty record, cmd mem CPU-cached: 2225 -> 735 ns (302% of ranged)
+as shipped the two are level, so no flush is reaching the memory at
+  all
+CMD FLUSH OK
+=== nvk_cmd_flush PASSED ===
