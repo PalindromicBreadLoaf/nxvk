@@ -22,9 +22,22 @@ test ! -e "$PREFIX/lib/libnvk_gl.a"
 export PKG_CONFIG_PATH= PKG_CONFIG_SYSROOT_DIR=
 export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
 pc_prefix="$(pkg-config --variable=prefix nxvk)"
-[[ "$(realpath "$pc_prefix")" == "$PREFIX" ]] || {
-  echo 'ERROR: nxvk.pc is not relocatable without a prefix override' >&2; exit 1;
-}
+python3 - "$PREFIX" "$pc_prefix" <<'PYPC'
+from pathlib import Path
+import shlex, sys
+expected = Path(sys.argv[1]).resolve()
+raw = sys.argv[2]
+candidates = [raw]
+# pkgconf may shell-escape whitespace even in --variable output. Never eval it.
+try:
+    words = shlex.split(raw)
+    if len(words) == 1:
+        candidates.append(words[0])
+except ValueError:
+    pass
+assert any(Path(p).resolve() == expected for p in candidates), (raw, expected)
+print('PASS: nxvk.pc relocates without a prefix override')
+PYPC
 DEVKITPRO="$DKP" bash "$PREFIX/examples/switch-minimal/build.sh" "$PREFIX" "$BUILD"
 ELF="$BUILD/nxvk_app_example.elf"
 "$TOOLS-readelf" -h "$ELF" > "$OUT/elf-header.txt"

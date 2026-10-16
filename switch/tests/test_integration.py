@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 import re
 import shutil
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -59,7 +60,11 @@ class IntegrationTests(unittest.TestCase):
                    PKG_CONFIG_LIBDIR=str(self.pkg/'lib/pkgconfig'))
         prefix = subprocess.check_output(['pkg-config', '--variable=prefix', 'nxvk'],
                                          env=env, text=True).strip()
-        self.assertEqual(Path(prefix).resolve(), self.pkg)
+        candidates = [prefix]
+        words = shlex.split(prefix)
+        if len(words) == 1:
+            candidates.extend(words)
+        self.assertIn(self.pkg, [Path(p).resolve() for p in candidates])
         libs = subprocess.check_output(['pkg-config', '--libs', 'nxvk'], env=env, text=True)
         self.assertIn('-lnvk_support', libs)
         self.assertIn('-Wl,--whole-archive', libs)
