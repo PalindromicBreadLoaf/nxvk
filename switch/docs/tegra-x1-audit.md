@@ -74,5 +74,10 @@ For A/B measurements, retain the previous build (`0c389c6`, successful CI run #3
 and each candidate's `BUILDINFO.txt`. Use the same game/scene, firmware, memory
 mode and CPU/GPU/memory clocks. Warm each build's shader cache separately, measure
 both cold and warm runs, and compare frame-time percentiles as well as FPS,
-cache backlog and shutdown time. No console measurements have been performed
-in this workspace.
+cache backlog and shutdown time.
+
+A subsequent [review of user-supplied Switch logs](hardware-results-2026-10-16.md)
+records 22 passing Vulkan apps and several microbenchmark results. The upload
+predates CI run #4 and lacks binary build metadata, so it does **not** establish
+hardware validation or a performance gain for the changes above. The sandbox
+itself has not executed NROs on a console.

@@ -112,6 +112,10 @@ Build logs and the resolved Meson configuration are uploaded separately,
 including on failure. A green run means compilation and linking succeeded,
 not that the driver has passed GPU tests or performance benchmarks.
 
+A [review of uploaded hardware logs from 2026-10-16](docs/hardware-results-2026-10-16.md)
+records 22 passing Vulkan apps. Those logs lack build metadata and predate CI
+run #4; they must not be treated as hardware validation of every published build.
+
 ### The hard way
 
 The Makefile really just chains the scripts in `switch/build/`. To do it yourself:
