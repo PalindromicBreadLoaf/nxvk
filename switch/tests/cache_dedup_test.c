@@ -185,9 +185,17 @@ int main(void)
    blob_put(key, CACHE_KEY_SIZE, data, 64);
    used = store.used; counters();
    blob_put(key, CACHE_KEY_SIZE, data, 64);
-   assert(store.used == used && write_calls == 0 && !store.full);
+   assert(store.used == used && write_calls == 0 && store.full);
+   assert(read_calls == 0 && crc_calls == 0 && full_messages == 1);
    blob_put(other, CACHE_KEY_SIZE, data, 64);
    assert(store.used == used && write_calls == 0 && store.full && full_messages == 1);
+
+   /* Capacity arithmetic must not wrap on a corrupt/impossible used count. */
+   store.used = UINT64_MAX - 1;
+   store.max_size = UINT64_MAX;
+   counters();
+   blob_put(key, CACHE_KEY_SIZE, data, 64);
+   assert(write_calls == 0 && read_calls == 0 && crc_calls == 0);
 
    reset(4 * DISK_CACHE_HORIZON_MAX_BLOB);
    blob_put(key, CACHE_KEY_SIZE, data, DISK_CACHE_HORIZON_MAX_BLOB);

@@ -84,8 +84,9 @@ the lookup, comparison and append, so the FILE position and index stay serialize
 - Different payloads (including a CRC collision), changed sizes, corrupted
   content/CRC, invalid offsets or comparison I/O failures take the normal
   replacement/append path.
-- New keys do not read existing payloads. Capacity rejection stays cheap for
-  new keys, and the CRC is not calculated twice for a replacement candidate.
+- New keys do not read existing payloads. A full cache rejects all puts before
+  hashing or reading payloads, just as before; capacity arithmetic cannot wrap.
+  The CRC is not calculated twice for a replacement candidate.
 - The format, normal record/header publication sequence, finalization and
   existing failure handling are unchanged. This is not a new durability claim.
 

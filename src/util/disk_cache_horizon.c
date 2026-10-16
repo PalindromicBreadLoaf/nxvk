@@ -574,6 +574,19 @@ blob_put(const void *key, signed long key_size,
    if (store.file == NULL)
       goto unlock;
 
+   /* When there is no room for any append, retain the old cheap rejection:
+    * a duplicate check cannot change the outcome, so do not read the SD card. */
+   const uint64_t need = sizeof(struct store_record) + (uint64_t)value_size;
+   if (store.used > store.max_size || need > store.max_size - store.used) {
+      if (!store.full) {
+         store.full = true;
+         mesa_logi("shader cache: full at %" PRIu64 " KiB, no longer growing",
+                   store.used / 1024);
+      }
+      goto unlock;
+   }
+
+
    /* Concurrent compilations can enqueue the same blob more than once.
     * Do not append it again (and rewrite/flush the header) if it is already
     * stored intact. New keys still take the original write-only path.
@@ -592,15 +605,6 @@ blob_put(const void *key, signed long key_size,
       }
    }
 
-   const uint64_t need = sizeof(struct store_record) + (uint64_t)value_size;
-   if (store.used + need > store.max_size) {
-      if (!store.full) {
-         store.full = true;
-         mesa_logi("shader cache: full at %" PRIu64 " KiB, no longer growing",
-                   store.used / 1024);
-      }
-      goto unlock;
-   }
 
    struct store_record rec;
    memcpy(rec.key, key, CACHE_KEY_SIZE);
