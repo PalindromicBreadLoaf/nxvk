@@ -1,9 +1,11 @@
 name: macOS-CI
 on:
   push:
-    # This branch builds only the Switch Vulkan driver, not macOS GL/MoltenVK.
+    # Development branches build only the Switch Vulkan driver, not macOS
+    # GL/MoltenVK. Excluding one branch at a time means a push elsewhere runs
+    # this job for changes it cannot cover, so ignore the whole family.
     branches-ignore:
-      - arena/068e6f2f-nxvk
+      - 'arena/*'
 
 permissions:
   contents: read
