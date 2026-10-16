@@ -24,6 +24,7 @@
 #define ALU_LOOP        64      /* iterations in both shaders */
 #define REPS            7       /* timed submits per row */
 
+#ifndef NVK_SUBTILE_DIAGNOSTIC
 #define N_PHASES (sizeof(phases) / sizeof(phases[0]))
 
 struct phase_spec {
@@ -50,6 +51,10 @@ struct result {
    double   frag_wall_ms, comp_wall_ms;
    uint64_t frag_sum, comp_sum;    /* readback checksums */
 };
+
+#endif /* !NVK_SUBTILE_DIAGNOSTIC */
+
+#include "nvk_timestamp.h"
 
 /* timing */
 
@@ -112,6 +117,7 @@ static VkResult timer_init(struct nvk_ctx *c, struct timer *t)
    uint32_t bits = c->qfi < nqf ? qf[c->qfi].timestampValidBits : 0;
    if (bits == 0) {
       LOG("timer: queue family %u has no timestamp bits, using wall clock", c->qfi);
+      t->gave_up = g_wall_fallback = true;
       return VK_SUCCESS;
    }
    t->mask = bits >= 64 ? ~0ull : ((1ull << bits) - 1);
@@ -174,7 +180,7 @@ static double timer_submit(struct nvk_ctx *c, struct timer *t, VkCommandBuffer c
       return t->wall_ms;
    }
 
-   uint64_t d = (ts[1] & t->mask) - (ts[0] & t->mask);
+   uint64_t d = nvk_timestamp_delta(ts[0], ts[1], t->mask);
    if (d == 0) {
       LOG("timer: timestamp delta is zero, falling back to wall clock");
       t->gave_up = g_wall_fallback = true;
@@ -241,7 +247,8 @@ static double frag_run(struct nvk_ctx *c, struct frag_rig *f, VkCommandPool pool
    LOAD_DEV(c, CmdDraw);
 
    LOAD_DEV(c, ResetCommandPool);
-   ResetCommandPool(c->dev, pool, 0);
+   if (ResetCommandPool(c->dev, pool, 0) != VK_SUCCESS)
+      return -1.0;
 
    VkCommandBuffer cb = nvk_begin_cb(c, pool);
    if (!cb) return -1.0;
@@ -268,7 +275,14 @@ static double frag_run(struct nvk_ctx *c, struct frag_rig *f, VkCommandPool pool
    if (readback)
       nvk_target_copy_to_host(c, cb, &f->t);
 
-   return timer_submit(c, tm, cb);
+   double elapsed = timer_submit(c, tm, cb);
+   if (elapsed >= 0.0) {
+      /* Submit waited for the queue. Bound command-buffer count even during
+       * multi-second diagnostic warmups; resetting a pool does not free CBs. */
+      LOAD_DEV(c, FreeCommandBuffers);
+      FreeCommandBuffers(c->dev, pool, 1, &cb);
+   }
+   return elapsed;
 }
 
 /* the compute control */
@@ -389,7 +403,8 @@ static double comp_run(struct nvk_ctx *c, struct comp_rig *k, VkCommandPool pool
    LOAD_DEV(c, CmdCopyBuffer);
 
    LOAD_DEV(c, ResetCommandPool);
-   ResetCommandPool(c->dev, pool, 0);
+   if (ResetCommandPool(c->dev, pool, 0) != VK_SUCCESS)
+      return -1.0;
 
    VkCommandBuffer cb = nvk_begin_cb(c, pool);
    if (!cb) return -1.0;
@@ -418,9 +433,18 @@ static double comp_run(struct nvk_ctx *c, struct comp_rig *k, VkCommandPool pool
       CmdCopyBuffer(cb, k->ssbo.buf, k->rb.buf, 1, &region);
    }
 
-   return timer_submit(c, tm, cb);
+   double elapsed = timer_submit(c, tm, cb);
+   if (elapsed >= 0.0) {
+      /* Submit waited for the queue. Bound command-buffer count even during
+       * multi-second diagnostic warmups; resetting a pool does not free CBs. */
+      LOAD_DEV(c, FreeCommandBuffers);
+      FreeCommandBuffers(c->dev, pool, 1, &cb);
+   }
+   return elapsed;
 }
 
+/* The diagnostic app reuses these exact workloads, not the legacy schedule. */
+#ifndef NVK_SUBTILE_DIAGNOSTIC
 /* one phase */
 
 static bool run_phase(const struct phase_spec *ps, struct result *out)
@@ -585,3 +609,5 @@ int main(void)
    if (g_nvk_log) fclose(g_nvk_log);
    return 0;
 }
+
+#endif /* !NVK_SUBTILE_DIAGNOSTIC */

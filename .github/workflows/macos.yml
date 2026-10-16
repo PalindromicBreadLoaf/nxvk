@@ -1,5 +1,9 @@
 name: macOS-CI
-on: push
+on:
+  push:
+    # This branch builds only the Switch Vulkan driver, not macOS GL/MoltenVK.
+    branches-ignore:
+      - arena/068e6f2f-nxvk
 
 permissions:
   contents: read

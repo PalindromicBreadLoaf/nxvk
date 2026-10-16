@@ -48,6 +48,14 @@ SECTIONS="-ffunction-sections -fdata-sections"
 INC="-I$SRC/include -I$DKP/libnx/include"
 DEFS="-D__SWITCH__ -D_GNU_SOURCE -D_DEFAULT_SOURCE -DVK_USE_PLATFORM_VI_NN"
 EXTRA_DEFS="${EXTRA_DEFS:-}"
+# Force-include immutable provenance into the runner/diagnostic application.
+BUILD_ID_HEADER="${BUILD_ID_HEADER:-$OBJ/nvk_build_id.h}"
+if [[ ! -f "$BUILD_ID_HEADER" || -z "${NVK_BUILD_ID_PREGENERATED:-}" ]]; then
+  python3 "$SRC/switch/diagnostics/make-build-info.py" --source "$SRC" \
+    --info "${BUILDINFO_FILE:-$SRC/switch/build/logs/BUILDINFO.txt}" \
+    --archive "$BUILD/src/nouveau/vulkan/libnvk.a" --header "$BUILD_ID_HEADER"
+fi
+BUILD_ID_HEADER="$(realpath "$BUILD_ID_HEADER")"
 
 # Gallium/Zink client headers for gl_* apps.
 GL_INC=""
@@ -71,17 +79,20 @@ gl_*|gles*)
 esac
 
 echo "=== compiling $APP.c ==="
-$GCC -c "$APP_SOURCE"       -o "$OBJ/$APP.o"        $ARCH $SECTIONS $DEFS $GL_DEFS $EXTRA_DEFS $INC $GL_INC -O2 -Wall -Wno-unused-function
+$GCC -c "$APP_SOURCE"       -o "$OBJ/$APP.o"        $ARCH $SECTIONS $DEFS $GL_DEFS $EXTRA_DEFS -include "$BUILD_ID_HEADER" $INC $GL_INC -O2 -Wall -Wno-unused-function
 
 APP_OBJS="$OBJ/$APP.o"
 if [ "$NO_DRIVER" = 0 ]; then
   $GCC -c "$SMOKE/nvk_compat.c" -o "$OBJ/nvk_compat.o" $ARCH $SECTIONS $DEFS $INC -O2 -Wall
-  $GCC -c "$SMOKE/nvk_chain.c"  -o "$OBJ/nvk_chain.o"  $ARCH $SECTIONS $DEFS $INC -O2 -Wall
+  $GCC -c "$SMOKE/nvk_chain.c"  -o "$OBJ/nvk_chain.o"  $ARCH $SECTIONS $DEFS $EXTRA_DEFS $INC -O2 -Wall
   APP_OBJS="$APP_OBJS $OBJ/nvk_compat.o $OBJ/nvk_chain.o"
 fi
 
 # Support archives libnvk.a pulls in, in dependency order.
-cd "$BUILD"
+# The standalone runner links only libnx and needs no Mesa build directory.
+if [ "$NO_DRIVER" = 0 ]; then
+  cd "$BUILD"
+fi
 ARCHIVES="
   src/util/libmesa_util.a src/util/libmesa_util_simd.a src/util/blake3/libblake3.a
   src/c11/impl/libmesa_util_c11.a

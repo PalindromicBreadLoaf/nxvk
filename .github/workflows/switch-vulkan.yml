@@ -1,0 +1,238 @@
+name: Switch Vulkan-only
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - arena/068e6f2f-nxvk
+    paths:
+      - .github/workflows/switch-vulkan.yml
+      - Makefile
+      - VERSION
+      - meson.build
+      - meson.options
+      - bin/**
+      - include/**
+      - src/**
+      - subprojects/**
+      - switch/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: switch-vulkan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vulkan:
+    name: Vulkan / Tegra X1 (Cortex-A57 + GM20B)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Run native regression tests (no GPU execution)
+        run: |
+          mkdir -p switch/build/logs
+          bash switch/tests/run-host-tests.sh 2>&1 | tee switch/build/logs/host-tests.log
+
+      # The base image already contains devkitA64, libnx and Switch portlibs.
+      # Do not reinstall them through pacman; use the project's toolchain image.
+      - name: Build devkitPro toolchain image
+        run: |
+          mkdir -p switch/build/logs
+          docker build --progress=plain -t nxvk switch/docker 2>&1 | tee switch/build/logs/toolchain.log
+
+      - name: Record toolchain and source versions
+        run: |
+          {
+            printf 'NXVK Vulkan-only / Nintendo Switch Tegra X1\n'
+            printf 'Source: %s\nCommit: %s\nRef: %s\n' "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_REF"
+            printf 'Build run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            printf 'Mesa version: '; cat VERSION
+            docker image inspect nxvk --format 'Toolchain image: {{.Id}}'
+            docker run --rm nxvk bash -euc '
+              /opt/devkitpro/devkitA64/bin/aarch64-none-elf-gcc --version
+              rustc --version
+              cargo --version
+              meson --version
+              ninja --version
+              dkp-pacman -Q
+              test -s /opt/devkitpro/portlibs/switch/lib/libz.a
+              test -s /opt/devkitpro/portlibs/switch/lib/libexpat.a
+            '
+          } | tee switch/build/logs/BUILDINFO.txt
+
+      - name: Build Vulkan-only release archives
+        run: make CONTAINER=docker all 2>&1 | tee switch/build/logs/vulkan.log
+
+      - name: Verify Vulkan-only configuration and package
+        run: |
+          python3 - <<'PY'
+          import json
+          import shlex
+          from pathlib import Path
+
+          build = Path('switch/build/cross')
+          options = {x['name']: x['value'] for x in json.loads((build / 'meson-info/intro-buildoptions.json').read_text())}
+          expected = {
+              'vulkan-drivers': ['nouveau'], 'gallium-drivers': [],
+              'platforms': [], 'opengl': False,
+              'glx': 'disabled', 'egl': 'disabled', 'gbm': 'disabled',
+              'gles1': 'disabled', 'gles2': 'disabled',
+              'buildtype': 'release', 'optimization': '3', 'b_ndebug': 'true',
+          }
+          for name, value in expected.items():
+              assert options[name] == value, (name, options[name], value)
+          assert '-Ctarget-cpu=cortex-a57' in options['rust_args']
+          commands = json.loads((build / 'compile_commands.json').read_text())
+          command = next(x for x in commands if x['file'].endswith('/nvk_device.c'))
+          args = command.get('arguments') or shlex.split(command['command'])
+          opt_flags = [x for x in args if x.startswith('-O')]
+          assert opt_flags and opt_flags[-1] == '-O3', opt_flags
+          for flag in ('-DNDEBUG', '-mtune=cortex-a57', '-march=armv8-a+crc+crypto'):
+              assert flag in args, flag
+          assert '-DUSE_GCC_ATOMIC_BUILTINS' in args
+          assert '-ffast-math' not in args
+          assert not any(x.startswith('-flto') for x in args)
+          pkg = Path('switch/build/pkg/lib')
+          for name in ('libnvk.a', 'libnvk_support.a', 'pkgconfig/nxvk.pc'):
+              assert (pkg / name).stat().st_size > 0, name
+          assert not (pkg / 'libnvk_gl.a').exists()
+          assert not Path('switch/build/cross-zink').exists()
+          print('PASS: Vulkan-only, release O3, Cortex-A57; no OpenGL/EGL/Zink package')
+          PY
+
+      - name: Package libraries, headers and license
+        run: |
+          pkg=switch/build/pkg
+          mkdir -p "$pkg/include" "$pkg/licenses/nxvk"
+          cp -r include/vulkan include/vk_video "$pkg/include/"
+          cp licenses/GPL-2.0-or-later "$pkg/licenses/nxvk/"
+          cp switch/build/logs/BUILDINFO.txt "$pkg/"
+          cp switch/docs/tegra-x1-audit.md "$pkg/TEGRA-X1-AUDIT.md"
+          cp switch/docs/tegra-x1-optimization.md "$pkg/TEGRA-X1-OPTIMIZATION.md"
+          bash switch/integration/stage.sh "$pkg"
+          tar -czf switch/build/nxvk-vulkan-tegra-x1.tar.gz -C "$pkg" .
+          cd switch/build
+          sha256sum nxvk-vulkan-tegra-x1.tar.gz > nxvk-vulkan-tegra-x1.tar.gz.sha256
+
+      - name: Verify extracted package with an isolated Vulkan client
+        run: |
+          docker run --rm -v "$PWD:/work:z" -w /work nxvk \
+            bash switch/build/verify-package.sh 2>&1 | tee switch/build/logs/package-check.log
+
+      - name: Build standalone app from the relocated integration package
+        run: |
+          docker run --rm -v "$PWD:/work:z" -w /work nxvk \
+            bash switch/integration/verify.sh 2>&1 | tee switch/build/logs/integration-check.log
+
+      - name: Link Vulkan validation suite (hardware execution is separate)
+        run: make CONTAINER=docker vulkan-tests 2>&1 | tee switch/build/logs/vulkan-tests.log
+
+      - name: Build and package Vulkan diagnostic benchmarks (not executed)
+        run: make CONTAINER=docker vulkan-diagnostics 2>&1 | tee switch/build/logs/diagnostics.log
+
+      - name: Package Vulkan-only tests for the SD card
+        run: |
+          tests=switch/build/vulkan-tests/switch/nxvk-tests
+          mkdir -p "$tests"
+          apps="$(bash switch/build/build-vulkan-tests.sh --list)"
+          for app in $apps; do
+            cp "switch/smoke/out/vulkan/$app.nro" "$tests/"
+          done
+          # Use the bundled-library consumer as the ladder's first test.
+          cp switch/build/package-check/nvk_smoke.nro "$tests/"
+          cp switch/build/logs/BUILDINFO.txt "$tests/"
+          cp switch/smoke/VULKAN-TESTING.md "$tests/README.md"
+          cp switch/docs/tegra-x1-audit.md "$tests/TEGRA-X1-AUDIT.md"
+          cp switch/docs/tegra-x1-optimization.md "$tests/TEGRA-X1-OPTIMIZATION.md"
+          (cd "$tests" && sha256sum *.nro > SHA256SUMS && sha256sum -c SHA256SUMS)
+          tar -czf switch/build/nxvk-vulkan-tests.tar.gz -C switch/build/vulkan-tests switch
+          cd switch/build
+          sha256sum nxvk-vulkan-tests.tar.gz > nxvk-vulkan-tests.tar.gz.sha256
+
+      - name: Upload Vulkan-only package and package-linked smoke test
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: nxvk-vulkan-tegra-x1-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            switch/build/nxvk-vulkan-tegra-x1.tar.gz
+            switch/build/nxvk-vulkan-tegra-x1.tar.gz.sha256
+            switch/build/package-check/nvk_smoke.nro
+
+      - name: Upload application integration kit
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: nxvk-app-integration-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            switch/build/nxvk-vulkan-tegra-x1.tar.gz
+            switch/build/nxvk-vulkan-tegra-x1.tar.gz.sha256
+            switch/build/integration-check/nxvk_app_example.nro
+            switch/build/integration-check/nxvk_app_example.nro.sha256
+            switch/build/integration-check/NXVK-BUILDINFO.txt
+
+      - name: Upload Vulkan-only hardware test bundle
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: nxvk-vulkan-tests-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            switch/build/nxvk-vulkan-tests.tar.gz
+            switch/build/nxvk-vulkan-tests.tar.gz.sha256
+
+      - name: Upload focused diagnostic benchmark bundle
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: nxvk-vulkan-diagnostics-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            switch/build/nxvk-vulkan-diagnostics.tar.gz
+            switch/build/nxvk-vulkan-diagnostics.tar.gz.sha256
+
+      # Also expose failure tails as check annotations: useful when an API client
+      # cannot reach the separate Actions log-download host.
+      - name: Annotate build failures
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          for log in Path('switch/build/logs').glob('*.log'):
+              text = '\n'.join(log.read_text(errors='replace').splitlines()[-100:])
+              # The runner truncates each annotation to 4096 bytes. Keep the
+              # end of the log (the actual failure), not a truncated prefix.
+              text = text.encode('utf-8')[-3500:].decode('utf-8', errors='replace')
+              text = text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print(f'::error title={log.name}::{text}')
+          PY
+
+      - name: Upload build logs and configuration
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: nxvk-vulkan-logs-${{ github.run_number }}
+          retention-days: 14
+          path: |
+            switch/build/logs/
+            switch/build/native/meson-logs/
+            switch/build/cross/meson-logs/
+            switch/build/cross/meson-info/intro-buildoptions.json
+            switch/build/cross/compile_commands.json
+            switch/build/package-check/elf-header.txt
+            switch/build/package-check/symbols.txt
+            switch/build/package-check/nvk_smoke.map
+            switch/build/integration-check/elf-header.txt
+            switch/build/integration-check/symbols.txt
+            switch/build/integration-check/nxvk_app_example.map

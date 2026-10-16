@@ -69,7 +69,7 @@ NINJA_ENV := cp -r switch/docker/cross-include/. /opt/switch-cross-include/ 2>/d
              export PATH="$$(pwd)/switch/build/native-tools/bin:$$PATH";
 
 .PHONY: all gl image ensure-image driver zink package package-gl \
-        install install-gl uninstall nro clean distclean help
+        install install-gl uninstall nro vulkan-tests vulkan-diagnostics clean distclean help
 
 all: package
 
@@ -92,12 +92,12 @@ $(NATIVE_STAMP): | ensure-image
 	@echo ">> building native tools"
 	$(DRUN) bash switch/build/build-native-tools.sh
 
-$(SYSROOT_STAMP): | ensure-image
+$(SYSROOT_STAMP): switch/rust/build-std-sysroot.sh switch/rust/aarch64-switch-horizon.json | ensure-image
 	@echo ">> building Rust std sysroot for aarch64-switch-horizon"
 	$(DRUN) bash switch/rust/build-std-sysroot.sh
-	@touch $(SYSROOT_STAMP)
+	@$(DRUN) touch $(SYSROOT_STAMP)
 
-$(CROSS_STAMP): | $(NATIVE_STAMP) $(SYSROOT_STAMP)
+$(CROSS_STAMP): switch/build/configure-mesa.sh switch/crossfiles/switch.cross switch/crossfiles/rust.cross switch/crossfiles/native.txt switch/rust/rustc-switch.sh $(SYSROOT_STAMP) | $(NATIVE_STAMP)
 	@echo ">> configuring Vulkan build"
 	$(DRUN) bash switch/build/configure-mesa.sh
 
@@ -122,7 +122,7 @@ define bundle
 	printf 'create %s\n' "$(2)" > $(2).mri
 	for a in $(3); do printf 'addlib %s\n' "$(1)/$$a" >> $(2).mri; done
 	printf 'save\nend\n' >> $(2).mri
-	$(AR) -M < $(2).mri
+	$(DRUN) bash -c '$(AR) -M < $(2).mri'
 	rm -f $(2).mri
 endef
 
@@ -132,7 +132,7 @@ package: driver
 	$(call bundle,$(CROSS),$(PKGDIR)/lib/libnvk.a,src/nouveau/vulkan/libnvk.a)
 	$(call bundle,$(CROSS),$(PKGDIR)/lib/libnvk_support.a,$(SUPPORT_LIBS))
 	printf '%s\n' \
-	  'prefix=$(PORTLIB)' \
+	  'prefix=$${pcfiledir}/../..' \
 	  'exec_prefix=$${prefix}' \
 	  'libdir=$${prefix}/lib' \
 	  'includedir=$${prefix}/include' \
@@ -171,6 +171,9 @@ install:
 	install -m644 $(PKGDIR)/lib/libnvk.a         $(PORTLIB)/lib/
 	install -m644 $(PKGDIR)/lib/libnvk_support.a $(PORTLIB)/lib/
 	install -m644 $(PKGDIR)/lib/pkgconfig/nxvk.pc $(PORTLIB)/lib/pkgconfig/
+	install -d $(PORTLIB)/include/nxvk $(PORTLIB)/lib/cmake/NXVK
+	install -m644 switch/integration/include/nxvk/nxvk_static.h $(PORTLIB)/include/nxvk/
+	install -m644 switch/integration/cmake/NXVKConfig.cmake $(PORTLIB)/lib/cmake/NXVK/
 	cp -r include/vulkan include/vk_video $(PORTLIB)/include/
 	install -m644 licenses/GPL-2.0-or-later $(PORTLIB)/licenses/nxvk/
 	@echo ">> installed nxvk $(PKG_VERSION); use 'pkg-config --libs nxvk' to link"
@@ -185,6 +188,7 @@ uninstall:
 	@echo ">> removing nxvk from $(PORTLIB)"
 	rm -f $(PORTLIB)/lib/libnvk.a $(PORTLIB)/lib/libnvk_support.a $(PORTLIB)/lib/libnvk_gl.a
 	rm -f $(PORTLIB)/lib/pkgconfig/nxvk.pc $(PORTLIB)/lib/pkgconfig/nxvk-gl.pc
+	rm -f $(PORTLIB)/include/nxvk/nxvk_static.h $(PORTLIB)/lib/cmake/NXVK/NXVKConfig.cmake
 	rm -rf $(PORTLIB)/licenses/nxvk
 
 ## validation
@@ -192,6 +196,12 @@ uninstall:
 APP ?= nvk_smoke
 nro: driver
 	$(DRUN) bash switch/build/build-nro.sh $(APP)
+
+vulkan-tests: driver
+	$(DRUN) bash switch/build/build-vulkan-tests.sh
+
+vulkan-diagnostics: driver
+	$(DRUN) bash switch/diagnostics/build.sh
 
 clean:
 	rm -rf $(CROSS) $(ZINK) $(PKGDIR) switch/smoke/out
@@ -208,6 +218,8 @@ help:
 	@echo "  install-gl     install including the OpenGL archive + .pc (needs root)"
 	@echo "  uninstall      remove the installed nxvk files (needs root)"
 	@echo "  nro APP=<name> link a smoke app into switch/smoke/out/<name>.nro"
+	@echo "  vulkan-tests   link all Vulkan tests and a Vulkan-only runner"
+	@echo "  vulkan-diagnostics  package the focused diagnostic benchmark"
 	@echo "  clean          remove cross build dirs and the staged package"
 	@echo "  distclean      also remove native tools"
 	@echo ""

@@ -141,9 +141,14 @@ static VkResult nvk_bringup_ex(struct nvk_ctx *c,
    setenv("MESA_SHADER_CACHE_SHOW_STATS", "1", 1);
 
    if (!g_nvk_mesa_log) {
+#ifdef NVK_DIAG_MESA_LOG
+      /* Preserve diagnostics across all device/instance phases in this app. */
+      g_nvk_mesa_log = fopen(NVK_DIAG_MESA_LOG, "a");
+#else
       g_nvk_mesa_log = fopen("sdmc:/nvk_mesa.log", "w");
+#endif
       if (!g_nvk_mesa_log)
-         LOG("bringup: WARN could not open sdmc:/nvk_mesa.log ");
+         LOG("bringup: WARN could not open Mesa diagnostic log");
    }
 
    LOAD_INST(c, CreateInstance);
