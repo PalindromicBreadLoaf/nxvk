@@ -116,6 +116,7 @@ nvk_init_debug_flags(struct nvk_instance *instance)
       { "cpu_uncached", NVK_DEBUG_CPU_UNCACHED },
       { "no_cpu_uncached", NVK_DEBUG_NO_CPU_UNCACHED },
       { "no_t210_subtiling", NVK_DEBUG_NO_T210_SUBTILING },
+      { "subtiling", NVK_DEBUG_SUBTILING },
       { NULL, 0 },
    };
 

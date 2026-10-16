@@ -128,6 +128,9 @@ jobs:
       - name: Link Vulkan validation suite (hardware execution is separate)
         run: make CONTAINER=docker vulkan-tests 2>&1 | tee switch/build/logs/vulkan-tests.log
 
+      - name: Build and package Vulkan diagnostic benchmarks (not executed)
+        run: make CONTAINER=docker vulkan-diagnostics 2>&1 | tee switch/build/logs/diagnostics.log
+
       - name: Package Vulkan-only tests for the SD card
         run: |
           tests=switch/build/vulkan-tests/switch/nxvk-tests
@@ -166,6 +169,16 @@ jobs:
           path: |
             switch/build/nxvk-vulkan-tests.tar.gz
             switch/build/nxvk-vulkan-tests.tar.gz.sha256
+
+      - name: Upload focused diagnostic benchmark bundle
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: nxvk-vulkan-diagnostics-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            switch/build/nxvk-vulkan-diagnostics.tar.gz
+            switch/build/nxvk-vulkan-diagnostics.tar.gz.sha256
 
       # Also expose failure tails as check annotations: useful when an API client
       # cannot reach the separate Actions log-download host.

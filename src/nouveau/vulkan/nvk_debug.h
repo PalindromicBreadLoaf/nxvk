@@ -102,6 +102,9 @@ enum nvk_debug {
 
    /* Partition the SPM for fragment shaders the way a discrete GPU does */
    NVK_DEBUG_NO_T210_SUBTILING = 1ull << 27,
+
+   /* Report the fragment subtiling word when building shader push state. */
+   NVK_DEBUG_SUBTILING = 1ull << 28,
 };
 
 enum nvk_experimental {

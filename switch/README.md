@@ -116,6 +116,16 @@ A [review of uploaded hardware logs from 2026-10-16](docs/hardware-results-2026-
 records 22 passing Vulkan apps. Those logs lack build metadata and predate CI
 run #4; they must not be treated as hardware validation of every published build.
 
+### Focused diagnostic benchmark
+
+The workflow also publishes `nxvk-vulkan-diagnostics-<run number>`: two subtile
+probes (isolated cache enabled/disabled) and a dedicated runner, without GL.
+They embed build provenance, rotate phase/workload order, warm the GPU, retain
+raw GPU/wall samples and observe clocks without changing them. Results live in
+`sdmc:/nxvk_diag/`, separate from the original suite. See the
+[diagnostic package guide](diagnostics/README.md) for installation and interpretation.
+Build with `make CONTAINER=docker vulkan-diagnostics` after `make all`.
+
 ### The hard way
 
 The Makefile really just chains the scripts in `switch/build/`. To do it yourself:

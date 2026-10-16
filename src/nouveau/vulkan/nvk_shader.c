@@ -943,6 +943,13 @@ nvk_shader_fill_push(struct nvk_device *dev,
       max_dw_count += 13;
 
       const uint32_t knob = nvk_fs_subtiling_perf_knob(pdev);
+      if (pdev->debug_flags & NVK_DEBUG_SUBTILING) {
+         const struct nvk_instance *instance = nvk_physical_device_instance(pdev);
+         vk_logi(VK_LOG_OBJS(dev),
+                 "NVK_SUBTILING sm=%u requested=0x%08x selected=0x%08x no_t210=%u",
+                 pdev->info.sm, instance->subtiling_knob, knob,
+                 !!(pdev->debug_flags & NVK_DEBUG_NO_T210_SUBTILING));
+      }
       P_MTHD(p, NVC397, SET_SUBTILING_PERF_KNOB_A);
       P_NV9097_SET_SUBTILING_PERF_KNOB_A(p, {
          .fraction_of_spm_register_file_per_subtile         = (knob >>  0) & 0xff,

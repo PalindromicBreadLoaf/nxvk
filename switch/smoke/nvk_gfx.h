@@ -53,6 +53,8 @@ static VkResult nvk_host_buffer(struct nvk_ctx *c, VkDeviceSize size,
    return BindBufferMemory(c->dev, out->buf, out->mem, 0);
 }
 
+static void nvk_free_buffer(struct nvk_ctx *c, struct nvk_buffer *b);
+
 /* command submission */
 
 static VkCommandBuffer nvk_begin_cb(struct nvk_ctx *c, VkCommandPool pool)
@@ -70,7 +72,11 @@ static VkCommandBuffer nvk_begin_cb(struct nvk_ctx *c, VkCommandPool pool)
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
       .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
    };
-   BeginCommandBuffer(cb, &bi);
+   if (BeginCommandBuffer(cb, &bi) != VK_SUCCESS) {
+      LOAD_DEV(c, FreeCommandBuffers);
+      FreeCommandBuffers(c->dev, pool, 1, &cb);
+      return VK_NULL_HANDLE;
+   }
    return cb;
 }
 
@@ -100,12 +106,13 @@ static VkResult nvk_device_buffer(struct nvk_ctx *c, VkCommandPool pool,
    LOAD_DEV(c, BindBufferMemory);
    LOAD_DEV(c, CmdCopyBuffer);
 
-   struct nvk_buffer stg;
+   struct nvk_buffer stg = {0};
+   VkCommandBuffer cb = VK_NULL_HANDLE;
+   memset(out, 0, sizeof(*out));
    VkResult r = nvk_host_buffer(c, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &stg);
-   if (r != VK_SUCCESS) return r;
+   if (r != VK_SUCCESS) goto done;
    memcpy(stg.cpu, data, size);
 
-   memset(out, 0, sizeof(*out));
    out->size = size;
    VkBufferCreateInfo bci = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -113,7 +120,7 @@ static VkResult nvk_device_buffer(struct nvk_ctx *c, VkCommandPool pool,
       .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
    };
    r = CreateBuffer(c->dev, &bci, NULL, &out->buf);
-   if (r != VK_SUCCESS) return r;
+   if (r != VK_SUCCESS) goto done;
    VkMemoryRequirements mr;
    GetBufferMemoryRequirements(c->dev, out->buf, &mr);
    uint32_t mt = nvk_pick_mem_type(&c->memp, mr.memoryTypeBits,
@@ -125,14 +132,26 @@ static VkResult nvk_device_buffer(struct nvk_ctx *c, VkCommandPool pool,
       .allocationSize = mr.size, .memoryTypeIndex = mt,
    };
    r = AllocateMemory(c->dev, &mai, NULL, &out->mem);
-   if (r != VK_SUCCESS) return r;
+   if (r != VK_SUCCESS) goto done;
    r = BindBufferMemory(c->dev, out->buf, out->mem, 0);
-   if (r != VK_SUCCESS) return r;
+   if (r != VK_SUCCESS) goto done;
 
-   VkCommandBuffer cb = nvk_begin_cb(c, pool);
+   cb = nvk_begin_cb(c, pool);
+   if (!cb) {
+      r = VK_ERROR_OUT_OF_HOST_MEMORY;
+      goto done;
+   }
    VkBufferCopy region = { .size = size };
    CmdCopyBuffer(cb, stg.buf, out->buf, 1, &region);
-   return nvk_end_submit_wait(c, cb);
+   r = nvk_end_submit_wait(c, cb);
+done:
+   if (r == VK_SUCCESS && cb) {
+      LOAD_DEV(c, FreeCommandBuffers);
+      FreeCommandBuffers(c->dev, pool, 1, &cb);
+   }
+   nvk_free_buffer(c, &stg);
+   if (r != VK_SUCCESS) nvk_free_buffer(c, out);
+   return r;
 }
 
 /* offscreen colour target */

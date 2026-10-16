@@ -69,7 +69,7 @@ NINJA_ENV := cp -r switch/docker/cross-include/. /opt/switch-cross-include/ 2>/d
              export PATH="$$(pwd)/switch/build/native-tools/bin:$$PATH";
 
 .PHONY: all gl image ensure-image driver zink package package-gl \
-        install install-gl uninstall nro vulkan-tests clean distclean help
+        install install-gl uninstall nro vulkan-tests vulkan-diagnostics clean distclean help
 
 all: package
 
@@ -196,6 +196,9 @@ nro: driver
 vulkan-tests: driver
 	$(DRUN) bash switch/build/build-vulkan-tests.sh
 
+vulkan-diagnostics: driver
+	$(DRUN) bash switch/diagnostics/build.sh
+
 clean:
 	rm -rf $(CROSS) $(ZINK) $(PKGDIR) switch/smoke/out
 
@@ -212,6 +215,7 @@ help:
 	@echo "  uninstall      remove the installed nxvk files (needs root)"
 	@echo "  nro APP=<name> link a smoke app into switch/smoke/out/<name>.nro"
 	@echo "  vulkan-tests   link all Vulkan tests and a Vulkan-only runner"
+	@echo "  vulkan-diagnostics  package the focused diagnostic benchmark"
 	@echo "  clean          remove cross build dirs and the staged package"
 	@echo "  distclean      also remove native tools"
 	@echo ""

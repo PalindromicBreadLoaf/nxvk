@@ -70,12 +70,21 @@ The primary result is `sdmc:/nxvk_run/summary.log`:
 For a complete clean run, expect **22 PASS, 0 FAIL, 0 GONE, 0 SKIP**. The first
 nine entries are the milestone ladder documented in `switch/smoke/README.md`.
 Preserve the per-app `*.log`, driver `*.mesa.log`, `chain.log` and `BUILDINFO.txt`
-with the summary. Logs live under `sdmc:/nxvk_run/`; standalone apps instead
+with the summary. Newly built runners also write their embedded `BUILDINFO.txt`
+and `BUILD-ID.txt` directly into the result directory, and copy `SHA256SUMS`
+when present beside the runner. Resuming a different/unknown build is refused;
+back up the earlier results and remove only its `state` file to start afresh.
+The copied checksum manifest is a reference, not on-console verification.
+Logs live under `sdmc:/nxvk_run/`; standalone apps instead
 write their app logs at the SD card root.
 
 To investigate performance, also record the console/firmware, docked or handheld
 mode, CPU/GPU/memory clocks, cache state and workload. Keep these identical when
 comparing builds. Correctness tests and `-O3` alone do not establish a speedup.
+
+For the focused timing investigation, use the separate
+[diagnostic package](../diagnostics/README.md). Its two probes do not change the
+membership of this 22-app suite and write to `sdmc:/nxvk_diag/` instead.
 
 ## Rebuild locally in the devkitPro container
 

@@ -19,11 +19,11 @@ end = code.index('\n}\n', start) + 3
 (out / 'wsi_switch_queue_present.inc').write_text(code[start:end])
 PY
 
-for test in thread_priority wsi_present; do
+for test in thread_priority wsi_present diagnostics; do
   "${CC:-cc}" -std=c11 -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter \
     -fsanitize=address,undefined -fno-omit-frame-pointer \
     -I"$SRC/switch/tests/stubs" -I"$SRC/src" -I"$SRC/include" -I"$TMP" \
     "$SRC/switch/tests/${test}_test.c" -o "$TMP/$test"
-  "$TMP/$test"
+  "$TMP/$test" "$TMP"
 done
-python3 "$SRC/switch/tests/test_build_dependencies.py" -v
+python3 -m unittest discover -s "$SRC/switch/tests" -p 'test_*.py' -v
