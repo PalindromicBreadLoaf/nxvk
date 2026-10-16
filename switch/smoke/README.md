@@ -50,10 +50,12 @@ runner walks them.
 | `nvk_desc_flush`  | submit cost stays flat                                                                     |
 | `nvk_cmd_flush`   | command buffer flush cost                                                                  |
 
-The flush probe writes three different values — the CPU prefill, every earlier
-fill, and the last fill — so a failed readback says where the GPU stopped
-seeing the recorded stream, not just that it did. See
-[build-9-validation.md](../docs/build-9-validation.md).
+The flush probe writes four different values — the CPU prefill, every earlier
+fill, the last fill, and a prime stream it submits first in the CPU-cached
+phases — so a failed readback says where the GPU stopped seeing the recorded
+stream, not just that it did, and a missed flush cannot pass by finding the
+right stale bytes. See [build-9-validation.md](../docs/build-9-validation.md)
+and [build-10-validation.md](../docs/build-10-validation.md).
 | `nvk_ce_copy`     | copy-engine multi-line copies                                                              |
 | `nvk_engine_wait` | a cross-submit semaphore wait is honoured by the engine                                    |
 | `nvk_b2_flush`    | fence signalling verification                                                              |

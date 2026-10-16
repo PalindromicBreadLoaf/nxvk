@@ -162,6 +162,12 @@ therefore say which of these happened:
 that the stub headers cover, so a typo in this instrumentation fails natively
 before a console run is spent on it.
 
+**Outcome:** the next run passed the phase
+([build #10](build-10-validation.md)) with the same driver code, making it a
+one-in-four flake rather than a broken path. That commit also primes the
+CPU-cached phases, so a missed flush can no longer pass by finding the right
+stale bytes.
+
 ## What this run does not prove
 
 - The NRO binaries were not uploaded, so the on-console bytes were not

@@ -107,7 +107,11 @@ log file. The [build #9 review](docs/build-9-validation.md) confirms both fixes
 on hardware (18 recorded archives, 22 non-empty Mesa logs) and reports the one
 failure it found: the diagnostic phase that forces internal command memory
 CPU-cacheable — not a configuration the port ships — failed its readback while
-the code it exercises was unchanged from build #8.
+the code it exercises was unchanged from build #8. The
+[build #10 review](docs/build-10-validation.md) records the full ladder passing
+again, which makes that phase a one-in-four flake rather than a broken path, and
+documents how the probe now primes the cached phases so a rare pass cannot hide
+a missed flush.
 
 ### GitHub Actions Vulkan-only build
 

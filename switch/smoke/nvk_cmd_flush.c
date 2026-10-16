@@ -13,12 +13,17 @@
 #define FILLS       6000u
 #define FILL_BYTES  4096u
 
-/* Three different values so a failed readback says *where* the GPU stopped
- * seeing the recorded stream: the last fill, any earlier fill, or the value
- * the CPU wrote through its own mapping before submitting. */
+/* Four different values so a failed readback says *where* the GPU stopped
+ * seeing the recorded stream: the last fill, any earlier fill, the value the
+ * CPU wrote through its own mapping before submitting, or the value a stream
+ * from an earlier submission writes.  The CPU-cached phases submit one such
+ * prime stream first, so a flush that misses part of the real stream cannot
+ * pass by luck: the stale bytes then hold the prime stream, not the right
+ * commands. */
 #define PATTERN     0x5CA1AB1Eu  /* the last of the FILLS fills */
 #define MIDFILL     0x0BADF00Du  /* every fill before it */
 #define PREFILL     0xDEADBEEFu  /* written by the CPU before the submit */
+#define PRIME       0x11111111u  /* every fill of the prime stream */
 
 #define MIN_SPEEDUP_PCT 125u
 
@@ -32,6 +37,7 @@ struct phase {
    uint32_t n_pattern;
    uint32_t n_midfill;
    uint32_t n_prefill;
+   uint32_t n_prime;
    uint32_t n_other;
 };
 
@@ -40,7 +46,8 @@ static uint64_t now_ns(void)
    return armTicksToNs(armGetSystemTick());
 }
 
-static bool run_phase(const char *name, const char *debug, struct phase *out)
+static bool run_phase(const char *name, const char *debug, bool prime,
+                      struct phase *out)
 {
    bool ok = false;
 
@@ -54,6 +61,7 @@ static bool run_phase(const char *name, const char *debug, struct phase *out)
    void *cpu = NULL;
    VkCommandPool pool = VK_NULL_HANDLE;
    VkFence fence = VK_NULL_HANDLE;
+   VkFence prime_fence = VK_NULL_HANDLE;
 
    struct nvk_ctx c;
    if (nvk_bringup(&c, NULL, 0) != VK_SUCCESS) { LOG("FAIL: bringup (%s)", name); return false; }
@@ -131,6 +139,30 @@ static bool run_phase(const char *name, const char *debug, struct phase *out)
    }
    if (BindBufferMemory(c.dev, buf, mem, 0) != VK_SUCCESS) { LOG("FAIL bind"); goto done; }
 
+   if (prime) {
+      /* Submit a same-shaped stream first, so the command memory holds a
+       * complete, wrong lifetime of this test when the real record reuses
+       * it.  Outside the timed regions; the phase's numbers are unaffected. */
+      VkFenceCreateInfo pfci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+      if (CreateFence(c.dev, &pfci, NULL, &prime_fence) != VK_SUCCESS) {
+         LOG("FAIL prime fence"); goto done;
+      }
+
+      BeginCommandBuffer(cb, &cbbi);
+      for (uint32_t i = 0; i < FILLS; i++)
+         CmdFillBuffer(cb, buf, 0, FILL_BYTES, PRIME);
+      if (EndCommandBuffer(cb) != VK_SUCCESS) { LOG("FAIL prime end"); goto done; }
+
+      VkSubmitInfo psi = {
+         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+         .commandBufferCount = 1, .pCommandBuffers = &cb,
+      };
+      VkResult pr = QueueSubmit(c.queue, 1, &psi, prime_fence);
+      if (pr != VK_SUCCESS) { LOG("FAIL prime submit -> %d", pr); goto done; }
+      pr = WaitForFences(c.dev, 1, &prime_fence, VK_TRUE, UINT64_MAX);
+      if (pr != VK_SUCCESS) { LOG("FAIL prime wait -> %d", pr); goto done; }
+   }
+
    for (uint32_t w = 0; w < FILL_BYTES / 4; w++)
       ((uint32_t *)cpu)[w] = PREFILL;
 
@@ -170,6 +202,8 @@ static bool run_phase(const char *name, const char *debug, struct phase *out)
          out->n_midfill++;
       else if (got == PREFILL)
          out->n_prefill++;
+      else if (got == PRIME)
+         out->n_prime++;
       else
          out->n_other++;
    }
@@ -184,10 +218,18 @@ static bool run_phase(const char *name, const char *debug, struct phase *out)
       LOG("  readback: first wrong word %u = 0x%08x, %u of %u words wrong",
           out->first_bad_word, out->first_bad_value, out->bad_words, words);
       LOG("  readback: %u words have the last fill (0x%08x), %u an earlier fill "
-          "(0x%08x), %u the CPU prefill (0x%08x), %u something else",
+          "(0x%08x), %u the CPU prefill (0x%08x), %u the prime stream (0x%08x), "
+          "%u something else",
           out->n_pattern, PATTERN, out->n_midfill, MIDFILL,
-          out->n_prefill, PREFILL, out->n_other);
-      if (out->n_prefill == words) {
+          out->n_prefill, PREFILL, out->n_prime, PRIME, out->n_other);
+      if (out->n_prime == words) {
+         LOG("  every word has the prime stream's value, so the GPU executed an");
+         LOG("  earlier submission's commands: the real stream, or its tail, did");
+         LOG("  not reach the GPU as a whole");
+      } else if (out->n_prime > 0) {
+         LOG("  the words mix the prime stream with the real fills, so part of the");
+         LOG("  real stream did not reach the GPU");
+      } else if (out->n_prefill == words) {
          LOG("  the buffer still holds the CPU prefill, so no fill reached it:");
          LOG("  the recorded stream (or its execution) was not visible to the GPU");
       } else if (out->n_pattern == 0 && out->n_midfill == words) {
@@ -198,7 +240,7 @@ static bool run_phase(const char *name, const char *debug, struct phase *out)
          LOG("  partial: %u of %u words hold the last fill's value",
              out->n_pattern, words);
       } else {
-         LOG("  the words match none of the three values this test writes:");
+         LOG("  the words match none of the four values this test writes:");
          LOG("  the GPU filled with something else, so a parameter it read was");
          LOG("  stale rather than the command stream itself");
       }
@@ -214,6 +256,7 @@ done:
       LOAD_DEV(&c, DestroyBuffer);
       LOAD_DEV(&c, FreeMemory);
       if (DeviceWaitIdle) DeviceWaitIdle(c.dev);
+      if (prime_fence) DestroyFence(c.dev, prime_fence, NULL);
       if (fence) DestroyFence(c.dev, fence, NULL);
       if (pool) DestroyCommandPool(c.dev, pool, NULL);
       if (buf) DestroyBuffer(c.dev, buf, NULL);
@@ -232,10 +275,12 @@ int main(void)
 
    struct phase full = {0}, ranged = {0}, full_c = {0}, ranged_c = {0};
 
-   if (!run_phase("full",          "full_cmd_flush",                 &full))     goto fail;
-   if (!run_phase("ranged",        NULL,                             &ranged))   goto fail;
-   if (!run_phase("full_cached",   "full_cmd_flush,no_cpu_uncached", &full_c))   goto fail;
-   if (!run_phase("ranged_cached", "no_cpu_uncached",                &ranged_c)) goto fail;
+   /* The two phases that force CPU-cached command memory prime it first; the
+    * two "as shipped" phases stay exactly as they were for comparison. */
+   if (!run_phase("full",          "full_cmd_flush",                 false, &full))     goto fail;
+   if (!run_phase("ranged",        NULL,                             false, &ranged))   goto fail;
+   if (!run_phase("full_cached",   "full_cmd_flush,no_cpu_uncached", true,  &full_c))   goto fail;
+   if (!run_phase("ranged_cached", "no_cpu_uncached",                true,  &ranged_c)) goto fail;
 
    if (!full.readback_ok || !ranged.readback_ok ||
        !full_c.readback_ok || !ranged_c.readback_ok) {
