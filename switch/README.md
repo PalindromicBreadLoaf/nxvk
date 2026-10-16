@@ -59,6 +59,9 @@ The Vulkan configuration explicitly selects optimization level 3 and disables
 assertions. C/C++ retain ARMv8-A + CRC/crypto and Cortex-A57 tuning; Rust driver
 code also targets Cortex-A57. The shared cross file no longer forces `-O2`
 over Meson's optimization setting (this also applies to future Zink builds).
+The custom Rust target also defaults to Cortex-A57, including the separately
+built `core`/`alloc`/`std` sysroot. Target/sysroot changes invalidate the Vulkan
+configuration instead of reusing stale libraries.
 GPU shader generation remains NVK/NAK's job, selected for the detected GPU;
 these CPU flags do not change the GPU architecture.
 
@@ -79,6 +82,10 @@ Fast-math and LTO are deliberately not enabled: floating-point correctness and
 compatibility of the mixed C/C++/Rust static archives take priority. Validate
 smoke tests and compare representative applications on a real Switch before
 claiming a performance improvement from `-O3` versus `-O2`.
+
+See [the Tegra X1 source audit](docs/tegra-x1-audit.md) for the Horizon background
+worker priority and present-error fixes, native regression tests, and A/B
+measurement caveats. These are not measured FPS claims.
 
 ### GitHub Actions Vulkan-only build
 

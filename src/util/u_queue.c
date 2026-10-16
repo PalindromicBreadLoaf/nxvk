@@ -39,6 +39,8 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
+#elif DETECT_OS_HORIZON
+#include "util/u_thread_horizon.h"
 #endif
 
 
@@ -257,6 +259,9 @@ util_queue_thread_func(void *input)
       /* The nice() function can only set a maximum of 19. */
       setpriority(PRIO_PROCESS, syscall(SYS_gettid), 19);
    }
+#elif DETECT_OS_HORIZON
+   if (queue->flags & UTIL_QUEUE_INIT_USE_MINIMUM_PRIORITY)
+      (void)util_horizon_set_current_thread_minimum_priority();
 #endif
 
    if (strlen(queue->name) > 0) {

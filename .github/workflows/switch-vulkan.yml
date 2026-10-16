@@ -37,6 +37,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Run native regression tests (no GPU execution)
+        run: |
+          mkdir -p switch/build/logs
+          bash switch/tests/run-host-tests.sh 2>&1 | tee switch/build/logs/host-tests.log
+
       # The base image already contains devkitA64, libnx and Switch portlibs.
       # Do not reinstall them through pacman; use the project's toolchain image.
       - name: Build devkitPro toolchain image
@@ -110,6 +115,7 @@ jobs:
           cp -r include/vulkan include/vk_video "$pkg/include/"
           cp licenses/GPL-2.0-or-later "$pkg/licenses/nxvk/"
           cp switch/build/logs/BUILDINFO.txt "$pkg/"
+          cp switch/docs/tegra-x1-audit.md "$pkg/TEGRA-X1-AUDIT.md"
           tar -czf switch/build/nxvk-vulkan-tegra-x1.tar.gz -C "$pkg" .
           cd switch/build
           sha256sum nxvk-vulkan-tegra-x1.tar.gz > nxvk-vulkan-tegra-x1.tar.gz.sha256
@@ -134,6 +140,7 @@ jobs:
           cp switch/build/package-check/nvk_smoke.nro "$tests/"
           cp switch/build/logs/BUILDINFO.txt "$tests/"
           cp switch/smoke/VULKAN-TESTING.md "$tests/README.md"
+          cp switch/docs/tegra-x1-audit.md "$tests/TEGRA-X1-AUDIT.md"
           (cd "$tests" && sha256sum *.nro > SHA256SUMS && sha256sum -c SHA256SUMS)
           tar -czf switch/build/nxvk-vulkan-tests.tar.gz -C switch/build/vulkan-tests switch
           cd switch/build

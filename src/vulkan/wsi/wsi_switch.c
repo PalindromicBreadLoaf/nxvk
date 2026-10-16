@@ -597,8 +597,11 @@ wsi_switch_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
 
    if (!handoff && fence != VK_NULL_HANDLE) {
       chain->stats.fence_blocks++;
-      chain->base.wsi->WaitForFences(chain->base.device, 1, &fence, true,
-                                     UINT64_MAX);
+      VkResult result =
+         chain->base.wsi->WaitForFences(chain->base.device, 1, &fence, true,
+                                        UINT64_MAX);
+      if (result != VK_SUCCESS)
+         return result;
    }
 
    if (!chain->zero_copy) {
