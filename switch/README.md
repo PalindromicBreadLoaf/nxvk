@@ -87,6 +87,11 @@ See [the Tegra X1 source audit](docs/tegra-x1-audit.md) for the Horizon backgrou
 worker priority and present-error fixes, native regression tests, and A/B
 measurement caveats. These are not measured FPS claims.
 
+The [documentation-backed Tegra X1 optimization pass](docs/tegra-x1-optimization.md)
+removes unnecessary dirty-range atomics for uncached/coherent internal maps and
+avoids rewriting identical shader-cache blobs. CPU publication and GPU cache/
+fence ordering are retained; operation-count tests are not FPS measurements.
+
 ### GitHub Actions Vulkan-only build
 
 The `Switch Vulkan-only` workflow builds the same devkitPro toolchain image

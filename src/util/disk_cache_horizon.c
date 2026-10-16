@@ -527,6 +527,40 @@ out:
    return ok;
 }
 
+/* A size/CRC match is only a filter: compare bytes as well, so a checksum
+ * collision or damaged payload never suppresses a replacement. The store lock
+ * protects the shared FILE position throughout this check and the append.
+ */
+static bool
+store_blob_equal(const struct store_entry *entry, const void *value,
+                 uint32_t size)
+{
+   if (entry->offset < sizeof(struct store_header) + sizeof(struct store_record) ||
+       entry->offset > store.used || size > store.used - entry->offset)
+      return false;
+
+   if (fseek(store.file, entry->offset, SEEK_SET) != 0) {
+      clearerr(store.file);
+      return false;
+   }
+
+   const uint8_t *src = value;
+   uint8_t chunk[4096];
+   while (size > 0) {
+      const size_t count = MIN2(size, sizeof(chunk));
+      if (fread(chunk, 1, count, store.file) != count) {
+         /* A failed duplicate check must not poison the append attempt. */
+         clearerr(store.file);
+         return false;
+      }
+      if (memcmp(chunk, src, count) != 0)
+         return false;
+      src += count;
+      size -= count;
+   }
+   return true;
+}
+
 static void
 blob_put(const void *key, signed long key_size,
          const void *value, signed long value_size)
@@ -539,6 +573,24 @@ blob_put(const void *key, signed long key_size,
 
    if (store.file == NULL)
       goto unlock;
+
+   /* Concurrent compilations can enqueue the same blob more than once.
+    * Do not append it again (and rewrite/flush the header) if it is already
+    * stored intact. New keys still take the original write-only path.
+    */
+   uint32_t crc = 0;
+   bool have_crc = false;
+   const struct hash_entry *he = _mesa_hash_table_search(store.index, key);
+   if (he != NULL) {
+      const struct store_entry *entry = he->data;
+      if (entry->size == (uint32_t)value_size) {
+         crc = util_hash_crc32(value, value_size);
+         have_crc = true;
+         if (entry->crc == crc &&
+             store_blob_equal(entry, value, (uint32_t)value_size))
+            goto unlock;
+      }
+   }
 
    const uint64_t need = sizeof(struct store_record) + (uint64_t)value_size;
    if (store.used + need > store.max_size) {
@@ -553,7 +605,7 @@ blob_put(const void *key, signed long key_size,
    struct store_record rec;
    memcpy(rec.key, key, CACHE_KEY_SIZE);
    rec.size = (uint32_t)value_size;
-   rec.crc = util_hash_crc32(value, value_size);
+   rec.crc = have_crc ? crc : util_hash_crc32(value, value_size);
 
    if (fseek(store.file, store.used, SEEK_SET) != 0 ||
        fwrite(&rec, sizeof(rec), 1, store.file) != 1 ||

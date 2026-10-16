@@ -15,6 +15,16 @@ building the toolchain/driver.
 - `wsi_present_test.c` compiles the **unchanged function body** extracted from
   `wsi_switch.c`, using minimal WSI/libnx types and callbacks to inject failures.
   It tests the function's control flow, not the layout/ABI of the mocked types.
+- `arena_dirty_test.c` exercises production arena functions with counted atomic
+  operations and mocked memory synchronization: uncached/coherent fast paths,
+  forced legacy/full flush, CPU-cached and GPU-uncached-only paths, alignment,
+  cross-backing copies and preserved publication.
+- `cache_dedup_test.c` runs the real Horizon put/get/commit/comparison bodies on a
+  temporary FILE with a fixture index. It forces CRC collisions and injects I/O
+  failures, verifies replacement/corruption handling and counts eliminated
+  duplicate writes. No SD timing or actual GPU execution is measured.
+- `extract-driver-tests.py` copies these production bodies verbatim into the
+  temporary test build, rather than maintaining a second implementation.
 - `diagnostics_test.c` checks phase/workload ordering, minimum warmup duration,
   timestamp wrap at 1–64 bits, embedded identity files and mocked read-only clock
   queries (including denied/partial service access).

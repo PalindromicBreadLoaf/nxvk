@@ -105,6 +105,9 @@ enum nvk_debug {
 
    /* Report the fragment subtiling word when building shader push state. */
    NVK_DEBUG_SUBTILING = 1ull << 28,
+
+   /* A/B control: retain dirty-range bookkeeping on uncached/coherent maps. */
+   NVK_DEBUG_TRACK_UNCACHED_DIRTY = 1ull << 29,
 };
 
 enum nvk_experimental {

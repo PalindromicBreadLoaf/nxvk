@@ -98,6 +98,7 @@ jobs:
           assert opt_flags and opt_flags[-1] == '-O3', opt_flags
           for flag in ('-DNDEBUG', '-mtune=cortex-a57', '-march=armv8-a+crc+crypto'):
               assert flag in args, flag
+          assert '-DUSE_GCC_ATOMIC_BUILTINS' in args
           assert '-ffast-math' not in args
           assert not any(x.startswith('-flto') for x in args)
           pkg = Path('switch/build/pkg/lib')
@@ -116,6 +117,7 @@ jobs:
           cp licenses/GPL-2.0-or-later "$pkg/licenses/nxvk/"
           cp switch/build/logs/BUILDINFO.txt "$pkg/"
           cp switch/docs/tegra-x1-audit.md "$pkg/TEGRA-X1-AUDIT.md"
+          cp switch/docs/tegra-x1-optimization.md "$pkg/TEGRA-X1-OPTIMIZATION.md"
           tar -czf switch/build/nxvk-vulkan-tegra-x1.tar.gz -C "$pkg" .
           cd switch/build
           sha256sum nxvk-vulkan-tegra-x1.tar.gz > nxvk-vulkan-tegra-x1.tar.gz.sha256
@@ -144,6 +146,7 @@ jobs:
           cp switch/build/logs/BUILDINFO.txt "$tests/"
           cp switch/smoke/VULKAN-TESTING.md "$tests/README.md"
           cp switch/docs/tegra-x1-audit.md "$tests/TEGRA-X1-AUDIT.md"
+          cp switch/docs/tegra-x1-optimization.md "$tests/TEGRA-X1-OPTIMIZATION.md"
           (cd "$tests" && sha256sum *.nro > SHA256SUMS && sha256sum -c SHA256SUMS)
           tar -czf switch/build/nxvk-vulkan-tests.tar.gz -C switch/build/vulkan-tests switch
           cd switch/build
