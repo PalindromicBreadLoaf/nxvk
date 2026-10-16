@@ -19,10 +19,16 @@ building the toolchain/driver.
   operations and mocked memory synchronization: uncached/coherent fast paths,
   forced legacy/full flush, CPU-cached and GPU-uncached-only paths, alignment,
   cross-backing copies and preserved publication.
-- `cache_dedup_test.c` runs the real Horizon put/get/commit/comparison bodies on a
-  temporary FILE with a fixture index. It forces CRC collisions and injects I/O
-  failures, verifies replacement/corruption handling and counts eliminated
-  duplicate writes. No SD timing or actual GPU execution is measured.
+- `cache_dedup_test.c` runs the real Horizon put/get/publish/comparison bodies on a
+  temporary FILE with a fixture index, under both header-publication policies. It
+  forces CRC collisions and injects I/O failures, verifies replacement/corruption
+  handling, counts eliminated duplicate writes and the writes and flushes a
+  batched publication removes. No SD timing or actual GPU execution is measured.
+- `cache_commit_test.c` runs the real open/append/scan/index bodies over a real
+  store and index file and simulates an abrupt exit between runs. It checks that
+  the batched policy loses only appends since the last publication, that the
+  per-blob policy loses none, and that an index claiming more than the published
+  header is rejected and rescanned.
 - `extract-driver-tests.py` copies these production bodies verbatim into the
   temporary test build, rather than maintaining a second implementation.
 - `diagnostics_test.c` checks phase/workload ordering, minimum warmup duration,

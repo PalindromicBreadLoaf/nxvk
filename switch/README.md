@@ -88,9 +88,11 @@ worker priority and present-error fixes, native regression tests, and A/B
 measurement caveats. These are not measured FPS claims.
 
 The [documentation-backed Tegra X1 optimization pass](docs/tegra-x1-optimization.md)
-removes unnecessary dirty-range atomics for uncached/coherent internal maps and
-avoids rewriting identical shader-cache blobs. CPU publication and GPU cache/
-fence ordering are retained; operation-count tests are not FPS measurements.
+removes unnecessary dirty-range atomics for uncached/coherent internal maps,
+avoids rewriting identical shader-cache blobs and publishes the shader-cache
+header per interval instead of per blob (`MESA_SHADER_CACHE_COMMIT=per-blob`
+restores the old policy for comparison). Record durability, CRC verification and
+the store format are retained; operation-count tests are not FPS measurements.
 The [build #7 hardware validation](docs/build-7-validation.md) records all 22
 Vulkan tests passing with matching embedded build metadata.
 
@@ -100,8 +102,8 @@ The `Switch Vulkan-only` workflow builds the same devkitPro toolchain image
 and runs `make CONTAINER=docker all`, validates a consumer of the extracted
 package through `nxvk.pc`, and links all 22 Vulkan tests plus a Vulkan-only
 chainloading runner. It never invokes `make gl` or `configure-zink.sh`. The workflow runs on
-pushes to `arena/068e6f2f-nxvk`, and supports manual dispatch once registered
-by GitHub. It does not run the smoke test on hardware.
+pushes to its `arena/*` development branches and on manual dispatch. It does not
+run the smoke test on hardware.
 
 Successful runs upload `nxvk-vulkan-tegra-x1-<run number>` with:
 

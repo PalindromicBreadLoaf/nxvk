@@ -10,7 +10,7 @@ trap 'rm -rf "$TMP"' EXIT
 # and links are checked by the separate cross-build, not these host mocks.
 python3 "$SRC/switch/tests/extract-driver-tests.py" "$SRC" "$TMP"
 
-for test in thread_priority wsi_present diagnostics arena_dirty cache_dedup; do
+for test in thread_priority wsi_present diagnostics arena_dirty cache_dedup cache_commit; do
   "${CC:-cc}" -std=c11 -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter \
     -fsanitize=address,undefined -fno-omit-frame-pointer \
     -I"$SRC/switch/tests/stubs" -I"$SRC/src" -I"$SRC/include" -I"$TMP" \

@@ -101,6 +101,52 @@ or that finalization never writes; it describes the duplicate put itself.
 The benefit depends on duplicate traffic and SD behavior. Unique puts add an
 index lookup; no claim of a general FPS or shader-compilation speedup is made.
 
+## 3. Publish the store header per interval instead of per blob
+
+`blob_put()` wrote the record and payload, flushed them, and then wrote the
+24-byte store header at offset 0 and flushed again. That is **two SD write
+cycles per appended blob**, and the second one lands at the start of the file
+rather than at the append point. The header only exists to carry the log end so
+the *next* process can find the records: readers in the writing process use the
+in-RAM index, each record is self-describing (key/size/CRC), and a torn or
+unpublished record is already detected.
+
+The header is now published when the appended-but-unpublished data reaches
+`STORE_COMMIT_INTERVAL_B` (256 KiB, the maximum blob size), and on open and
+close. Records are still written and flushed one by one, so an appended blob is
+usable immediately in the process that wrote it, and a clean exit publishes
+everything. What changes is only what a process that dies **without** closing
+the store leaves behind: appends since the last publication are not
+discoverable by the next run, and their space is reused by later appends. The
+previous behaviour published every blob immediately.
+
+Safeguards retained:
+
+- Format, record layout, index format, load path (`index_load()`/`store_scan()`)
+  and the `used` recovery are unchanged; no new durability claim is made.
+- The index is still only trusted when it covers no more than the published
+  header, and a mismatch falls back to a rescan.
+- `blob_get()` still verifies the payload CRC, and the deduplication pass from
+  section 2 is untouched.
+- A failed record write still leaves the log end and the index unchanged. A
+  failed *publication* keeps the record usable in this process, warns once and
+  retries on the next append; with the per-blob policy it still rolls the
+  append back as before.
+- `MESA_SHADER_CACHE_COMMIT=per-blob` restores publication per append, so both
+  policies can be compared within one binary. It is read once per store open.
+- The store still logs its open summary, and now logs one close summary
+  (`blob_get`/`blob_put` counters and publications) at info level, so a run can
+  be checked for whether the interval was reached at all.
+
+The native fixtures count **3 fwrite plus 2 fflush calls per appended blob
+before, 2 fwrite plus 1 fflush with the interval not reached**, and assert that
+a maximum-size blob reaches the interval by itself and that closing publishes
+the remainder. A second fixture drives the real open/scan/index bodies over a
+real store and index file and simulates an abrupt exit: with the batched policy
+only the unpublished tail is lost and the space is reused; with the per-blob
+policy nothing is lost. These are operation counts and format assertions, not
+SD latency, throughput or FPS measurements.
+
 ## Deliberately unchanged
 
 The [identified hardware diagnostic](https://github.com/berlint-hub/nxvk/blob/9565f625c80426ed10c231598b8c552e35383ed2/switch/docs/diagnostic-results-2026-10-16.md) already
@@ -123,7 +169,8 @@ throughput improvement and does not replace controlled A/B performance testing.
 
 `bash switch/tests/run-host-tests.sh` includes the new production-body fixtures
 under ASan/UBSan. Restoring either original hot-path body makes its new regression
-assertion fail. This verifies the intended work reduction and control flow, not
+assertion fail; forcing per-append publication in section 3 makes the batched
+fixture fail. This verifies the intended work reduction and control flow, not
 Horizon cache coherency, SD throughput, scheduling or GPU execution.
 
 The Vulkan-only CI compiled/linked the real SDK build, validated the extracted
@@ -131,5 +178,14 @@ library package, and rebuilt all 22 test apps and the focused probes for build #
 For further candidates, rerun the **full 22-app suite** on the console and keep
 its embedded `BUILDINFO.txt` with the results. Build #5 is the prior baseline.
 Compare resource-creation/upload costs and real workload frame times under the
-same settled conditions; use `track_uncached_dirty` for an in-build arena control.
+same settled conditions; use `track_uncached_dirty` for an in-build arena control
+and `MESA_SHADER_CACHE_COMMIT` for an in-build shader-cache control.
 Do not infer a measured end-to-end improvement from the host operation counts.
+
+For the shader-cache change specifically, the relevant observation is an
+application that creates many pipelines: run it twice on each policy (cold and
+warm `sdmc:/switch/.mesa_shader_cache`) and compare the log's close summary
+(appended blobs versus header publications) together with level-load or
+startup wall time. A workload with a few large blobs will show little
+difference; one with hundreds of small blobs is where the write cycles are
+removed.

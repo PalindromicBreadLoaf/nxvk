@@ -4,7 +4,9 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - arena/068e6f2f-nxvk
+      # Development branches. Listing one branch at a time means a push
+      # elsewhere silently produces no artifacts, so match the family.
+      - 'arena/*'
     paths:
       - .github/workflows/switch-vulkan.yml
       - Makefile
