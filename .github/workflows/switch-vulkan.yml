@@ -118,6 +118,7 @@ jobs:
           cp switch/build/logs/BUILDINFO.txt "$pkg/"
           cp switch/docs/tegra-x1-audit.md "$pkg/TEGRA-X1-AUDIT.md"
           cp switch/docs/tegra-x1-optimization.md "$pkg/TEGRA-X1-OPTIMIZATION.md"
+          bash switch/integration/stage.sh "$pkg"
           tar -czf switch/build/nxvk-vulkan-tegra-x1.tar.gz -C "$pkg" .
           cd switch/build
           sha256sum nxvk-vulkan-tegra-x1.tar.gz > nxvk-vulkan-tegra-x1.tar.gz.sha256
@@ -126,6 +127,11 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/work:z" -w /work nxvk \
             bash switch/build/verify-package.sh 2>&1 | tee switch/build/logs/package-check.log
+
+      - name: Build standalone app from the relocated integration package
+        run: |
+          docker run --rm -v "$PWD:/work:z" -w /work nxvk \
+            bash switch/integration/verify.sh 2>&1 | tee switch/build/logs/integration-check.log
 
       - name: Link Vulkan validation suite (hardware execution is separate)
         run: make CONTAINER=docker vulkan-tests 2>&1 | tee switch/build/logs/vulkan-tests.log
@@ -162,6 +168,19 @@ jobs:
             switch/build/nxvk-vulkan-tegra-x1.tar.gz
             switch/build/nxvk-vulkan-tegra-x1.tar.gz.sha256
             switch/build/package-check/nvk_smoke.nro
+
+      - name: Upload application integration kit
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: nxvk-app-integration-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            switch/build/nxvk-vulkan-tegra-x1.tar.gz
+            switch/build/nxvk-vulkan-tegra-x1.tar.gz.sha256
+            switch/build/integration-check/nxvk_app_example.nro
+            switch/build/integration-check/nxvk_app_example.nro.sha256
+            switch/build/integration-check/NXVK-BUILDINFO.txt
 
       - name: Upload Vulkan-only hardware test bundle
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
@@ -214,3 +233,6 @@ jobs:
             switch/build/package-check/elf-header.txt
             switch/build/package-check/symbols.txt
             switch/build/package-check/nvk_smoke.map
+            switch/build/integration-check/elf-header.txt
+            switch/build/integration-check/symbols.txt
+            switch/build/integration-check/nxvk_app_example.map

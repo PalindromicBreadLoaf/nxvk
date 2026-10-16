@@ -4,7 +4,7 @@
 bash switch/tests/run-host-tests.sh
 ```
 
-Requires a native C compiler with ASan/UBSan support, Python 3 and GNU Make;
+Requires native C and C++ compilers with ASan/UBSan support, Python 3 and GNU Make;
 no Switch SDK or GPU is needed. The script builds in a temporary directory and
 removes it when finished. GitHub's Vulkan-only workflow runs these tests before
 building the toolchain/driver.
@@ -32,6 +32,11 @@ building the toolchain/driver.
   rejects mismatched build metadata, checks both runner memberships and parses
   the actual diagnostic/legacy probes against real Vulkan headers with SDK
   stand-ins. Dummy SPIR-V words in that syntax test are never linked or run.
+- `test_integration.py` stages the actual distribution extras and Makefile .pc
+  recipe, checks relocation (including spaces), rejects incomplete packages,
+  checks the standalone source/public header syntax and ensures no runner glue
+  is packaged. Host CMake/pkg-config checks skip if those tools are absent;
+  actual SDK CMake linking/relocation is always a separate mandatory CI step.
 - `test_build_dependencies.py` exercises a copy of the actual Makefile with
   fixture timestamps and `make -n`, including Rust sysroot invalidation.
 

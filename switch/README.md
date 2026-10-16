@@ -123,6 +123,16 @@ A [review of uploaded hardware logs from 2026-10-16](docs/hardware-results-2026-
 records 22 passing Vulkan apps. Those logs lack build metadata and predate CI
 run #4; they must not be treated as hardware validation of every published build.
 
+### Application integration package
+
+The library tarball now also contains a relocatable `NXVK::Driver` CMake target,
+`nxvk/nxvk_static.h`, and a standalone headless application under
+`examples/switch-minimal/`. CI builds it using only the relocated distribution
+and devkitPro, not checkout headers or smoke-runner glue. The separate
+`nxvk-app-integration-<run number>` artifact includes the SDK tarball and that NRO.
+See [the integration guide](integration/README.md) or the Czech [build.md](../build.md).
+Example-only compatibility stubs are explicit opt-in, not part of the driver target.
+
 ### Focused diagnostic benchmark
 
 The workflow also publishes `nxvk-vulkan-diagnostics-<run number>`: two subtile

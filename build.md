@@ -30,6 +30,23 @@ regresní sadou, nikoli Vulkan CTS, záruku funkčnosti každé aplikace nebo d�
 vyšších herních FPS. Artifacts mají omezenou dobu uchování; archiv a jeho checksum
 si ulož. Pokud odkaz později expiruje, použij sestavení níže.
 
+### Nový integrační balík s hotovým příkladem
+
+Nové běhy workflow přidávají artifact **`nxvk-app-integration-<číslo běhu>`**.
+Obsahuje stejný Vulkan tarball, jeho checksum a samostatné
+`nxvk_app_example.nro` s checksumem a údaji o driveru. V tarballu navíc najdeš:
+
+- `include/nxvk/nxvk_static.h` — deklaraci statického resolveru pro C/C++;
+- `lib/cmake/NXVK/NXVKConfig.cmake` — hotový target `NXVK::Driver`;
+- `examples/switch-minimal/` — zdroje samostatné aplikace a build skript;
+- `INTEGRATION.md` — návod a hranice dodané kompatibility.
+
+Aktuální běhy a artifacts najdeš v [Actions](https://github.com/berlint-hub/nxvk/actions).
+Příklad jde sestavit pouze z rozbaleného balíku a devkitPro SDK; nepotřebuje zdroje
+Mesa, Rust ani nástroje pro generování shaderů. Starší ověřený build č. 7 tyto
+nové integrační soubory ještě nemá. Kód optimalizovaného driveru se při této
+úpravě balení nemění, ale nově sestavené NRO není automaticky hardware-testované.
+
 ## 2. Co potřebuješ pro vlastní sestavení
 
 Ověřená cesta je Linux x86-64 (CI používá Ubuntu 24.04) s:
@@ -152,6 +169,7 @@ docker run --rm -v "$PWD:/work:z" -w /work \
   cp switch/build/logs/BUILDINFO.txt "$pkg/BUILDINFO.txt"
   cp switch/docs/tegra-x1-audit.md "$pkg/TEGRA-X1-AUDIT.md"
   cp switch/docs/tegra-x1-optimization.md "$pkg/TEGRA-X1-OPTIMIZATION.md"
+  bash switch/integration/stage.sh "$pkg"
   tar -czf switch/build/nxvk-vulkan-tegra-x1.tar.gz -C "$pkg" .
   cd switch/build
   sha256sum nxvk-vulkan-tegra-x1.tar.gz > nxvk-vulkan-tegra-x1.tar.gz.sha256
@@ -194,6 +212,19 @@ kompatibilitu bere z tohoto repozitáře. Výstup je
 `switch/build/package-check/nvk_smoke.nro`. **Je to kontrola kompilace/linkování,
 ne spuštění GPU testu.**
 
+### Samostatná aplikace sestavená pouze z distribuce
+
+```bash
+docker run --rm -v "$PWD:/work:z" -w /work nxvk \
+  bash switch/integration/verify.sh switch/build/nxvk-vulkan-tegra-x1.tar.gz
+```
+
+Ověřovač přesune rozbalený balík do jiné cesty (záměrně i s mezerou), sestaví
+přiložený CMake projekt, zkontroluje AArch64 ELF a oba archivy v link mapě.
+Ověřuje také nepřítomnost cest test runneru. Výstup:
+`switch/build/integration-check/nxvk_app_example.nro`.
+Jde o nové sestavení/linkování, ne o spuštění na konzoli.
+
 ### Celá Vulkan testovací sada
 
 ```bash
@@ -205,7 +236,7 @@ Tento příkaz je sestaví, ale sám nevytvoří celý SD tarball s metadaty; ho
 SD balík publikuje CI. Postup instalace a sběru logů je v
 [VULKAN-TESTING.md](switch/smoke/VULKAN-TESTING.md).
 
-Nativní regresní testy lze spustit i bez SDK; potřebují C kompilátor, ASan/UBSan,
+Nativní regresní testy lze spustit i bez SDK; potřebují C a C++ kompilátor, ASan/UBSan,
 Python 3, Git a GNU Make:
 
 ```bash
@@ -229,6 +260,24 @@ Výsledná aplikace musí být sestavována pomocí devkitA64/libnx pro Horizon,
 ne hostitelským x86 kompilátorem. Pro pouhé linkování hotových knihoven nepotřebuješ
 znovu sestavovat Rust ani Mesa; potřebuješ kompatibilní devkitPro prostředí.
 
+### 6.0 Zkus hotový samostatný projekt
+
+Z kořene **rozbaleného nového balíku**, v devkitPro prostředí s CMake 3.16+:
+
+```bash
+bash examples/switch-minimal/build.sh
+```
+
+Vznikne `examples/switch-minimal/out/nxvk_app_example.nro`. Aplikace vytvoří
+Vulkan instanci/zařízení, provede GPU fill a ověří 1 024 slov. Loguje do
+`sdmc:/nxvk_app_example.log` a čeká na `+`. Není to renderer s oknem ani benchmark.
+Spouštěj ji v plné paměti přes title override. Zdroj obsahuje vlastní startup
+globály, takže ho nekopíruj celý do projektu, který už má svůj `main` a init.
+
+Build wrapper explicitně povoluje omezený `example_compat.c` dodaný v příkladu.
+Pro skutečnou aplikaci platí upozornění v části 6.3; CMake target driveru sám
+žádné takové globální náhrady nepřidává.
+
 ### 6.1 Soukromý prefix v aplikaci — doporučeno
 
 Následující příkazy jsou již z kořene **tvé aplikace**, kam jsi přinesl tarball
@@ -249,9 +298,10 @@ Jiné závislosti celé aplikace/launcheru nejsou tímto návodem rušeny.
 
 ### 6.2 `pkg-config` a ověřené pořadí linkeru
 
-`nxvk.pc` má prefix pro instalaci do devkitPro portlibs. Při rozbalení do vlastní
-složky ho **přepiš argumentem `--define-variable=prefix=...`**. Pouhé přidání
-`PKG_CONFIG_PATH` by nestačilo opravit cesty uvnitř tohoto `.pc` souboru.
+Starší `nxvk.pc` z buildu č. 7 má prefix pro instalaci do devkitPro portlibs.
+Při rozbalení do vlastní složky ho **přepiš argumentem `--define-variable=prefix=...`**.
+Nové integrační balíky už používají přemístitelný prefix podle `pcfiledir`.
+Následující explicitní přepsání funguje s oběma variantami.
 
 ```bash
 set -euo pipefail
@@ -317,7 +367,25 @@ a `getpwuid_r`.
 Balík č. 7 neobsahuje samostatný `libnxvk_compat.a` ani hotovou úpravu NetherSX2.
 Kompatibilitu runtime a loader rendereru je potřeba zapojit v cílové aplikaci.
 
-### 6.4 Alternativa pro existující CMake projekt
+### 6.4 Hotový target pro existující CMake projekt
+
+V novém integračním balíku nastav `NXVK_DIR` na absolutní cestu
+`third_party/nxvk/lib/cmake/NXVK`, ponech vlastní Horizon toolchain/startup specs
+a po vytvoření targetu aplikace použij:
+
+```cmake
+find_package(NXVK CONFIG REQUIRED)
+target_include_directories(my_app BEFORE PRIVATE "${NXVK_INCLUDE_DIR}")
+target_link_libraries(my_app PRIVATE NXVK::Driver)
+```
+
+Target dodává linkerové skupiny, knihovny, SDK search paths a zachování ICD
+symbolu, ale nenastavuje tvůj `main`, applet mode, linker script ani runtime
+kompatibilitu. Použij C++ linker. Přiložený standalone projekt má vlastní malý
+toolchain; nepřidávej ho navrch už funkčního toolchainu emulátoru.
+
+Následující ruční varianta zůstává pro starší balík č. 7. **Nekombinuj ji s
+`NXVK::Driver` ve stejném targetu.**
 
 Pokud už máš funkční devkitPro CMake projekt, můžeš místo `pkg-config` explicitně
 připojit stejné knihovny. **Toto není kompletní CMakeLists ani toolchain:** nahraď
@@ -346,8 +414,9 @@ target_link_libraries(my_app PRIVATE
     z expat nx c m stdc++ "-pthread" "-Wl,--end-group")
 ```
 
-Přesné zapojení do CMake cílové aplikace zde nebylo sestaveno/ověřeno; ověřen je
-výše uvedený izolovaný klient a jeho linkerové závislosti. Kompatibilní funkce
+Přesné zapojení do CMake cílového emulátoru zde nebylo sestaveno/ověřeno.
+CI zvlášť staví dodaný standalone CMake projekt z rozbaleného balíku; to není
+záruka kompatibility se všemi build pravidly jiné aplikace. Kompatibilní funkce
 z části 6.3 musí zajistit aplikace i při použití CMake.
 
 ## 7. Inicializace Vulkanu v aplikaci

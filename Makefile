@@ -132,7 +132,7 @@ package: driver
 	$(call bundle,$(CROSS),$(PKGDIR)/lib/libnvk.a,src/nouveau/vulkan/libnvk.a)
 	$(call bundle,$(CROSS),$(PKGDIR)/lib/libnvk_support.a,$(SUPPORT_LIBS))
 	printf '%s\n' \
-	  'prefix=$(PORTLIB)' \
+	  'prefix=$${pcfiledir}/../..' \
 	  'exec_prefix=$${prefix}' \
 	  'libdir=$${prefix}/lib' \
 	  'includedir=$${prefix}/include' \
@@ -171,6 +171,9 @@ install:
 	install -m644 $(PKGDIR)/lib/libnvk.a         $(PORTLIB)/lib/
 	install -m644 $(PKGDIR)/lib/libnvk_support.a $(PORTLIB)/lib/
 	install -m644 $(PKGDIR)/lib/pkgconfig/nxvk.pc $(PORTLIB)/lib/pkgconfig/
+	install -d $(PORTLIB)/include/nxvk $(PORTLIB)/lib/cmake/NXVK
+	install -m644 switch/integration/include/nxvk/nxvk_static.h $(PORTLIB)/include/nxvk/
+	install -m644 switch/integration/cmake/NXVKConfig.cmake $(PORTLIB)/lib/cmake/NXVK/
 	cp -r include/vulkan include/vk_video $(PORTLIB)/include/
 	install -m644 licenses/GPL-2.0-or-later $(PORTLIB)/licenses/nxvk/
 	@echo ">> installed nxvk $(PKG_VERSION); use 'pkg-config --libs nxvk' to link"
@@ -185,6 +188,7 @@ uninstall:
 	@echo ">> removing nxvk from $(PORTLIB)"
 	rm -f $(PORTLIB)/lib/libnvk.a $(PORTLIB)/lib/libnvk_support.a $(PORTLIB)/lib/libnvk_gl.a
 	rm -f $(PORTLIB)/lib/pkgconfig/nxvk.pc $(PORTLIB)/lib/pkgconfig/nxvk-gl.pc
+	rm -f $(PORTLIB)/include/nxvk/nxvk_static.h $(PORTLIB)/lib/cmake/NXVK/NXVKConfig.cmake
 	rm -rf $(PORTLIB)/licenses/nxvk
 
 ## validation

@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Minimal toolchain for this standalone example. Existing applications should
+# keep their own devkitPro toolchain rather than include two toolchain files.
+set(CMAKE_SYSTEM_NAME Generic)
+set(CMAKE_SYSTEM_PROCESSOR aarch64)
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+if(NOT DEFINED DEVKITPRO OR DEVKITPRO STREQUAL "")
+    if(DEFINED ENV{DEVKITPRO})
+        set(DEVKITPRO "$ENV{DEVKITPRO}" CACHE PATH "devkitPro root")
+    else()
+        set(DEVKITPRO "/opt/devkitpro" CACHE PATH "devkitPro root")
+    endif()
+endif()
+set(CMAKE_C_COMPILER "${DEVKITPRO}/devkitA64/bin/aarch64-none-elf-gcc")
+set(CMAKE_CXX_COMPILER "${DEVKITPRO}/devkitA64/bin/aarch64-none-elf-g++")
+set(_NXVK_ARCH "-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE")
+set(CMAKE_C_FLAGS_INIT "${_NXVK_ARCH} -D_GNU_SOURCE -D_DEFAULT_SOURCE")
+set(CMAKE_CXX_FLAGS_INIT "${_NXVK_ARCH} -D_GNU_SOURCE -D_DEFAULT_SOURCE")
+set(CMAKE_EXE_LINKER_FLAGS_INIT "${_NXVK_ARCH} -specs=${DEVKITPRO}/libnx/switch.specs")
+set(CMAKE_FIND_ROOT_PATH "${DEVKITPRO}/portlibs/switch" "${DEVKITPRO}/libnx")
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+# NXVK_DIR is an explicitly selected, relocatable package outside the SDK root.
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE BOTH)
+unset(_NXVK_ARCH)
