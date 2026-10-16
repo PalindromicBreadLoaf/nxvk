@@ -97,7 +97,7 @@ $(SYSROOT_STAMP): | ensure-image
 	$(DRUN) bash switch/rust/build-std-sysroot.sh
 	@touch $(SYSROOT_STAMP)
 
-$(CROSS_STAMP): | $(NATIVE_STAMP) $(SYSROOT_STAMP)
+$(CROSS_STAMP): switch/build/configure-mesa.sh switch/crossfiles/switch.cross switch/crossfiles/rust.cross switch/crossfiles/native.txt | $(NATIVE_STAMP) $(SYSROOT_STAMP)
 	@echo ">> configuring Vulkan build"
 	$(DRUN) bash switch/build/configure-mesa.sh
 
@@ -122,7 +122,7 @@ define bundle
 	printf 'create %s\n' "$(2)" > $(2).mri
 	for a in $(3); do printf 'addlib %s\n' "$(1)/$$a" >> $(2).mri; done
 	printf 'save\nend\n' >> $(2).mri
-	$(AR) -M < $(2).mri
+	$(DRUN) bash -c '$(AR) -M < $(2).mri'
 	rm -f $(2).mri
 endef
 

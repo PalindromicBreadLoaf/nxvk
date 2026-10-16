@@ -51,6 +51,53 @@ Targets:
 | `make uninstall` | remove the installed nxvk files |
 | `make clean` / `make distclean` | drop the cross builds / native tools |
 
+### Vulkan-only Tegra X1 release
+
+`make` builds only NVK and its support libraries, without Zink, OpenGL or EGL.
+The Vulkan configuration explicitly selects optimization level 3 and disables
+assertions. C/C++ retain ARMv8-A + CRC/crypto and Cortex-A57 tuning; Rust driver
+code also targets Cortex-A57. The shared cross file no longer forces `-O2`
+over Meson's optimization setting (this also applies to future Zink builds).
+GPU shader generation remains NVK/NAK's job, selected for the detected GPU;
+these CPU flags do not change the GPU architecture.
+
+```sh
+make image
+make                       # or: make CONTAINER=docker image && make CONTAINER=docker
+make nro APP=nvk_smoke
+```
+
+Archives are staged in `switch/build/pkg/lib/`. Packaging runs the archiver
+inside the toolchain container, so a host devkitPro installation is not needed
+for this step. Installation into host portlibs still requires a host devkitPro
+installation. Changes to the Vulkan configure script or cross files trigger
+reconfiguration on the next `make`.
+
+This is an optimization baseline, not a measured fastest configuration.
+Fast-math and LTO are deliberately not enabled: floating-point correctness and
+compatibility of the mixed C/C++/Rust static archives take priority. Validate
+smoke tests and compare representative applications on a real Switch before
+claiming a performance improvement from `-O3` versus `-O2`.
+
+### GitHub Actions Vulkan-only build
+
+The `Switch Vulkan-only` workflow builds the same devkitPro toolchain image
+and runs `make CONTAINER=docker all`, followed by the Vulkan `nvk_smoke` link
+test. It never invokes `make gl` or `configure-zink.sh`. The workflow runs on
+pushes to `arena/068e6f2f-nxvk`, and supports manual dispatch once registered
+by GitHub. It does not run the smoke test on hardware.
+
+Successful runs upload `nxvk-vulkan-tegra-x1-<run number>` with:
+
+- `nxvk-vulkan-tegra-x1.tar.gz`: `libnvk.a`, `libnvk_support.a`, `nxvk.pc`,
+  Vulkan headers, the port license, and source/toolchain build information;
+- the tarball's SHA-256 checksum;
+- `nvk_smoke.nro`, for validation on a real Switch.
+
+Build logs and the resolved Meson configuration are uploaded separately,
+including on failure. A green run means compilation and linking succeeded,
+not that the driver has passed GPU tests or performance benchmarks.
+
 ### The hard way
 
 The Makefile really just chains the scripts in `switch/build/`. To do it yourself:

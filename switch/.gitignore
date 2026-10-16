@@ -3,4 +3,7 @@ build/native/
 build/native-tools/
 build/cross/
 build/cross-zink/
-build/pkg/lib
+build/pkg/
+build/logs/
+build/nxvk-vulkan-*.tar.gz
+build/nxvk-vulkan-*.tar.gz.sha256

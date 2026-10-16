@@ -1,0 +1,145 @@
+name: Switch Vulkan-only
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - arena/068e6f2f-nxvk
+    paths:
+      - .github/workflows/switch-vulkan.yml
+      - Makefile
+      - VERSION
+      - meson.build
+      - meson.options
+      - bin/**
+      - include/**
+      - src/**
+      - subprojects/**
+      - switch/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: switch-vulkan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vulkan:
+    name: Vulkan / Tegra X1 (Cortex-A57 + GM20B)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The base image already contains devkitA64, libnx and Switch portlibs.
+      # Do not reinstall them through pacman; use the project's toolchain image.
+      - name: Build devkitPro toolchain image
+        run: |
+          mkdir -p switch/build/logs
+          docker build --progress=plain -t nxvk switch/docker 2>&1 | tee switch/build/logs/toolchain.log
+
+      - name: Record toolchain and source versions
+        run: |
+          {
+            printf 'NXVK Vulkan-only / Nintendo Switch Tegra X1\n'
+            printf 'Source: %s\nCommit: %s\nRef: %s\n' "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_REF"
+            printf 'Build run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            printf 'Mesa version: '; cat VERSION
+            docker image inspect nxvk --format 'Toolchain image: {{.Id}}'
+            docker run --rm nxvk bash -euc '
+              /opt/devkitpro/devkitA64/bin/aarch64-none-elf-gcc --version
+              rustc --version
+              cargo --version
+              meson --version
+              ninja --version
+              dkp-pacman -Q
+              test -s /opt/devkitpro/portlibs/switch/lib/libz.a
+              test -s /opt/devkitpro/portlibs/switch/lib/libexpat.a
+            '
+          } | tee switch/build/logs/BUILDINFO.txt
+
+      - name: Build Vulkan-only release archives
+        run: make CONTAINER=docker all 2>&1 | tee switch/build/logs/vulkan.log
+
+      - name: Verify Vulkan-only configuration and package
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          build = Path('switch/build/cross')
+          options = {x['name']: x['value'] for x in json.loads((build / 'meson-info/intro-buildoptions.json').read_text())}
+          expected = {
+              'vulkan-drivers': ['nouveau'], 'gallium-drivers': [],
+              'platforms': [], 'opengl': False,
+              'glx': 'disabled', 'egl': 'disabled', 'gbm': 'disabled',
+              'gles1': 'disabled', 'gles2': 'disabled',
+              'buildtype': 'release', 'optimization': '3', 'b_ndebug': 'true',
+          }
+          for name, value in expected.items():
+              assert options[name] == value, (name, options[name], value)
+          assert '-Ctarget-cpu=cortex-a57' in options['rust_args']
+          pkg = Path('switch/build/pkg/lib')
+          for name in ('libnvk.a', 'libnvk_support.a', 'pkgconfig/nxvk.pc'):
+              assert (pkg / name).stat().st_size > 0, name
+          assert not (pkg / 'libnvk_gl.a').exists()
+          assert not Path('switch/build/cross-zink').exists()
+          print('PASS: Vulkan-only, release O3, Cortex-A57; no OpenGL/EGL/Zink package')
+          PY
+
+      - name: Link Vulkan smoke test (hardware execution is separate)
+        run: make CONTAINER=docker nro APP=nvk_smoke 2>&1 | tee switch/build/logs/smoke.log
+
+      - name: Package libraries, headers and license
+        run: |
+          pkg=switch/build/pkg
+          mkdir -p "$pkg/include" "$pkg/licenses/nxvk"
+          cp -r include/vulkan include/vk_video "$pkg/include/"
+          cp licenses/GPL-2.0-or-later "$pkg/licenses/nxvk/"
+          cp switch/build/logs/BUILDINFO.txt "$pkg/"
+          tar -czf switch/build/nxvk-vulkan-tegra-x1.tar.gz -C "$pkg" .
+          cd switch/build
+          sha256sum nxvk-vulkan-tegra-x1.tar.gz > nxvk-vulkan-tegra-x1.tar.gz.sha256
+
+      - name: Upload Vulkan-only package and smoke test
+        uses: actions/upload-artifact@v4
+        with:
+          name: nxvk-vulkan-tegra-x1-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            switch/build/nxvk-vulkan-tegra-x1.tar.gz
+            switch/build/nxvk-vulkan-tegra-x1.tar.gz.sha256
+            switch/smoke/out/nvk_smoke.nro
+
+      # Also expose failure tails as check annotations: useful when an API client
+      # cannot reach the separate Actions log-download host.
+      - name: Annotate build failures
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          for log in Path('switch/build/logs').glob('*.log'):
+              text = '\n'.join(log.read_text(errors='replace').splitlines()[-100:])[-45000:]
+              text = text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print(f'::error title={log.name}::{text}')
+          PY
+
+      - name: Upload build logs and configuration
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nxvk-vulkan-logs-${{ github.run_number }}
+          retention-days: 14
+          path: |
+            switch/build/logs/
+            switch/build/native/meson-logs/
+            switch/build/cross/meson-logs/
+            switch/build/cross/meson-info/intro-buildoptions.json
+            switch/build/cross/compile_commands.json
