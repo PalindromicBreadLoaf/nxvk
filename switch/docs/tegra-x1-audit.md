@@ -59,6 +59,18 @@ value rather than assuming four. No scheduling policy, priority, affinity or
 worker count is changed by this; see
 [the CPU budget note](tegra-x1-cpu-budget.md).
 
+### Flush the indirect execution set's written range, not past its end
+
+`nvk_UpdateIndirectExecutionSet{Pipeline,Shader}EXT()` passed
+`(max_idx + 1) * stride` as the *length* argument of
+`nvkmd_mem_sync_map_to_gpu()`, whose length is measured from `min_idx * stride`.
+Whenever `min_idx != 0` that cleaned up to `(min_idx + max_idx + 1)` strides,
+i.e. past the end of the set's allocation, and it could walk cache maintenance
+over an address the set does not own. This is a divergence from upstream NVK;
+it is recorded here so a future rebase keeps the fix. The shipped Horizon
+configuration does not exercise it (that allocation is CPU-uncached, so the
+sync is a no-op), but CPU-cached descriptor paths and the desktop backend do.
+
 ## Deliberately unchanged
 
 - C/C++ remain ARMv8-A + CRC/crypto, tuned for Cortex-A57 at `-O3`; no fast-math
