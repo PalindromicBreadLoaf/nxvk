@@ -1,0 +1,8 @@
+=== nvk_multi ===
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+submit+wait -> 0
+center=0x7f80007f border=0xffff0000
+=== nvk_multi PASSED ===
+teardown: instance/device destroyed
