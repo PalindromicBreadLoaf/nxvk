@@ -1,0 +1,88 @@
+=== nvk_subtile ===
+params: 1280x720 x 1 draws, 23 dispatches of 256x256, 64-iteration loop, 7 reps
+--- phase default (driver default) ---
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+teardown: instance/device destroyed
+cpu: main thread busy 71.2 ms of 467.9 ms wall (15%), allowed cores 0x7
+--- phase generic (0x20164010) ---
+bringup: WARN could not create Mesa diagnostic log
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+teardown: instance/device destroyed
+cpu: main thread busy 46.2 ms of 222.9 ms wall (21%), allowed cores 0x7
+--- phase t210 (0x087f6080) ---
+bringup: WARN could not create Mesa diagnostic log
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+teardown: instance/device destroyed
+cpu: main thread busy 46.1 ms of 211.2 ms wall (22%), allowed cores 0x7
+--- phase t210_mrt (0x20806080) ---
+bringup: WARN could not create Mesa diagnostic log
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+teardown: instance/device destroyed
+cpu: main thread busy 46.1 ms of 214.3 ms wall (22%), allowed cores 0x7
+--- phase quads_06 (0x06164010) ---
+bringup: WARN could not create Mesa diagnostic log
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+teardown: instance/device destroyed
+cpu: main thread busy 46.1 ms of 212.6 ms wall (22%), allowed cores 0x7
+--- phase regfile_80 (0x20164080) ---
+bringup: WARN could not create Mesa diagnostic log
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+teardown: instance/device destroyed
+cpu: main thread busy 46.1 ms of 211.6 ms wall (22%), allowed cores 0x7
+--- phase pxout_60 (0x20166010) ---
+bringup: WARN could not create Mesa diagnostic log
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+teardown: instance/device destroyed
+cpu: main thread busy 46.0 ms of 224.2 ms wall (21%), allowed cores 0x7
+--- phase triram_7f (0x207f4010) ---
+bringup: WARN could not create Mesa diagnostic log
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+teardown: instance/device destroyed
+cpu: main thread busy 46.2 ms of 224.9 ms wall (21%), allowed cores 0x7
+--- phase quads_08 (0x08164010) ---
+bringup: WARN could not create Mesa diagnostic log
+bringup: vkCreateInstance -> 0
+bringup: device 'NVIDIA Tegra X1 (NVK gm20b)' api=1.4.354 vendor=0x10de dev=0x0
+bringup: vkCreateDevice -> 0
+teardown: instance/device destroyed
+cpu: main thread busy 46.1 ms of 210.9 ms wall (22%), allowed cores 0x7
+
+timing: GPU timestamps
+knob        frag Miter/s   comp Miter/s   frag/comp   frag ms   comp ms
+default           3179.8        15384.7     0.20669    18.549     6.270
+generic          12351.7        15379.3     0.80314     4.775     6.273
+t210             15400.2        15380.7     1.00127     3.830     6.272
+t210_mrt         15406.3        15380.8     1.00166     3.828     6.272
+quads_06         15396.2        15386.2     1.00065     3.831     6.270
+regfile_80       15406.1        15385.4     1.00135     3.829     6.270
+pxout_60         12353.8        15384.9     0.80298     4.774     6.270
+triram_7f        12353.1        15384.4     0.80296     4.775     6.271
+quads_08         15397.0        15381.5     1.00100     3.831     6.272
+
+  default    the driver's own choice
+  generic    every discrete part, and nouveau's nvc0
+  t210       deko3d fragment default
+  t210_mrt   deko3d, three or more colour outputs
+  quads_06   generic, max quads 0x20 -> 0x06
+  regfile_80 generic, register file 0x10 -> 0x80
+  pxout_60   generic, pixel output buffer 0x40 -> 0x60
+  triram_7f  generic, triangle RAM 0x16 -> 0x7f
+  quads_08   generic, max quads 0x20 -> 0x08
+SUBTILE OK: 9 phases, every readback identical (colour 0xb1884637f4710a21, compute 0xb81d92b31a9f5e31)
+=== nvk_subtile PASSED ===
