@@ -114,6 +114,8 @@ nvk_mem_arena_grow_locked(struct nvk_device *dev, struct nvk_mem_arena *arena,
       .addr = addr,
       .dirty_start_B = NVK_ARENA_MEM_CLEAN,
       .dirty_end_B = 0,
+      .track_dirty_range = nvk_arena_mem_should_track_dirty(
+         mem, nvk_device_physical(dev)->debug_flags),
    };
    if (p_atomic_xchg(&arena->mem_count, mem_count + 1) != mem_count) {
       return vk_errorf(dev, VK_ERROR_UNKNOWN,
@@ -186,6 +188,10 @@ nvk_mem_arena_flush_map_locked(struct nvk_device *dev,
 
    for (uint32_t mem_idx = 0; mem_idx < mem_count; mem_idx++) {
       struct nvk_arena_mem *mem = &arena->mem[mem_idx];
+      /* Keep the arena's release/acquire publication above, and keep all
+       * GPU-side cache invalidation in the submission path unchanged. */
+      if (!mem->track_dirty_range && !flush_all)
+         continue;
       const uint64_t mem_size_B = nvk_mem_arena_mem_size_B(mem_idx);
       const uint32_t end_B = p_atomic_xchg(&mem->dirty_end_B, 0);
       const uint32_t start_B =

@@ -28,6 +28,9 @@ meson setup $RECONF "$BUILD" "$SRC" \
   --cross-file "$SRC/switch/crossfiles/rust.cross" \
   --native-file "$SRC/switch/crossfiles/native.txt" \
   --buildtype release \
+  -Doptimization=3 \
+  -Db_ndebug=true \
+  -Drust_args=-Ctarget-cpu=cortex-a57 \
   -Dmesa-clc=system \
   -Dprecomp-compiler=system \
   -Dllvm=disabled \

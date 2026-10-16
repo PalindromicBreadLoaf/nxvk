@@ -20,11 +20,17 @@
 #include "nvkmd/nouveau/nvkmd_nouveau.h"
 #endif
 #include "git_sha1.h"
+#include <inttypes.h>
+
 #include "util/detect_os.h"
 #include "util/disk_cache.h"
 #include "util/hex.h"
 #include "util/mesa-blake3.h"
 #include "util/os_misc.h"
+#if DETECT_OS_HORIZON
+#include "util/u_cpu_detect.h"
+#include "util/u_thread_horizon.h"
+#endif
 
 #include "vk_android.h"
 #include "vk_device.h"
@@ -1409,6 +1415,30 @@ nvk_get_device_properties(const struct nvk_instance *instance,
 }
 
 static void
+nvk_physical_device_log_cpu_budget(struct nvk_physical_device *pdev)
+{
+#if DETECT_OS_HORIZON
+   /* One line per device, so an uploaded log states how many Cortex-A57 cores
+    * this process may actually use and how many CPUs Mesa sized itself for.
+    * Mesa does not decide the application's threading; this only reports what
+    * the driver and Zink are working with.
+    */
+   const u64 mask = util_horizon_get_core_mask();
+   if (mask == 0) {
+      mesa_logi("nvk: Horizon reported no core mask; Mesa sized for %u CPU(s)",
+                util_get_cpu_caps()->nr_cpus);
+   } else {
+      mesa_logi("nvk: Horizon allows cores 0x%" PRIx64 " (%u core(s)); Mesa "
+                "sized for %u CPU(s)",
+                mask, util_horizon_get_core_count(),
+                util_get_cpu_caps()->nr_cpus);
+   }
+#else
+   (void)pdev;
+#endif
+}
+
+static void
 nvk_physical_device_init_pipeline_cache(struct nvk_physical_device *pdev)
 {
    const struct nvk_instance *instance = nvk_physical_device_instance(pdev);
@@ -1552,6 +1582,7 @@ nvk_physical_device_create(struct nvk_instance *instance,
 
    struct vk_properties properties;
    nvk_get_device_properties(instance, &nvkmd->dev_info, &properties);
+   nvk_physical_device_log_cpu_budget(pdev);
 
 #ifndef __SWITCH__
    if (nvkmd->drm.render_dev) {

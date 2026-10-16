@@ -1,0 +1,26 @@
+nxvk milestone ladder, 22 apps, from sdmc:/switch/nxvk-tests/nxvk-tests
+
+build-id: 266d7c4e8ec3c65631765f3f01e0824812b36216b63f42c83f2b74bc26733de2
+
+PASS nvk_smoke          === nvk_smoke PASSED ===
+PASS nvk_tri            === nvk_tri PASSED ===
+PASS nvk_logo           === nvk_logo PASSED  ===
+PASS nvk_scene          === nvk_scene PASSED ===
+PASS nvk_indexed        === nvk_indexed PASSED ===
+PASS nvk_multi          === nvk_multi PASSED ===
+PASS nvk_textures       === nvk_textures PASSED
+PASS nvk_cubemap        === nvk_cubemap PASSED (cube drawn. centre 0xfffbfb04 near a face) ===
+PASS nvk_vi_swapchain   === nvk_vi_swapchain PASSED ===
+PASS nvk_present        === nvk_present PASSED ===
+PASS nvk_compress       === nvk_compress PASSED ===
+PASS nvk_sector         === nvk_sector PASSED ===
+PASS nvk_zcull          === nvk_zcull PASSED ===
+PASS nvk_push_desc      === nvk_push_desc PASSED ===
+PASS nvk_desc_flush     === nvk_desc_flush PASSED ===
+PASS nvk_cmd_flush      === nvk_cmd_flush PASSED ===
+PASS nvk_ce_copy        === nvk_ce_copy PASSED ===
+PASS nvk_engine_wait    === nvk_engine_wait PASSED ===
+PASS nvk_b2_flush       === nvk_b2_flush PASSED ===
+PASS nvk_mem_churn      === nvk_mem_churn PASSED ===
+PASS nvk_subtile        === nvk_subtile PASSED ===
+PASS nvk_host_copy      === nvk_host_copy PASSED ===

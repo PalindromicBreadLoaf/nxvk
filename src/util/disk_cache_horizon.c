@@ -44,6 +44,16 @@
 #define STORE_NAME_HEX 16
 #define SCAN_CHUNK     (256 * 1024)
 
+/* The header carries the log end, so publishing it is what makes appended
+ * records discoverable by the next process. A publication is a second write
+ * cycle on the card, at offset 0 rather than at the append point, so it is
+ * issued once per this much appended data instead of once per blob. Records
+ * are still written and flushed one by one, readers still verify every
+ * payload CRC, and the store still publishes on open and close. The only
+ * thing that changes is how much of a run's appends a process that dies
+ * without closing the store can leave behind unpublished. */
+#define STORE_COMMIT_INTERVAL_B ((uint64_t)DISK_CACHE_HORIZON_MAX_BLOB)
+
 struct store_header {
    uint32_t magic;
    uint32_t version;
@@ -73,6 +83,17 @@ struct index_header {
    uint32_t crc;
 };
 
+/* Counters for one store open. They describe the work this run handed to the
+ * card, not how fast it was. */
+struct store_stats {
+   uint64_t puts;
+   uint64_t appends;
+   uint64_t duplicates;
+   uint64_t appended_B;
+   uint64_t commits;
+   bool commit_failed;
+};
+
 static struct {
    simple_mtx_t mtx;
    FILE *file;
@@ -82,9 +103,16 @@ static struct {
    uint64_t used;
    uint64_t indexed;
    uint64_t max_size;
+   /* Appended bytes not covered by a published header yet. */
+   uint64_t commit_pending_B;
    unsigned refcount;
    bool full;
+   /* MESA_SHADER_CACHE_COMMIT=per-blob restores publication per append so the
+    * two policies can be compared in the same binary. */
+   bool commit_per_blob;
 } store = { .mtx = SIMPLE_MTX_INITIALIZER };
+
+static struct store_stats stats;
 
 static uint32_t
 key_hash(const void *key)
@@ -136,9 +164,27 @@ store_commit(void)
       .id = store.id,
    };
 
-   return fseek(store.file, 0, SEEK_SET) == 0 &&
-          fwrite(&hdr, sizeof(hdr), 1, store.file) == 1 &&
-          fflush(store.file) == 0;
+   if (fseek(store.file, 0, SEEK_SET) != 0 ||
+       fwrite(&hdr, sizeof(hdr), 1, store.file) != 1 ||
+       fflush(store.file) != 0)
+      return false;
+
+   store.commit_pending_B = 0;
+   stats.commits++;
+
+   return true;
+}
+
+/* Publish the header when it is due, or when the caller requires it (open and
+ * close). Returns false only if a header write was attempted and failed. */
+static bool
+store_publish(void)
+{
+   if (!store.commit_per_blob &&
+       store.commit_pending_B < STORE_COMMIT_INTERVAL_B)
+      return true;
+
+   return store_commit();
 }
 
 static void
@@ -496,11 +542,19 @@ store_open(const void *driver_keys, size_t driver_keys_size,
    if (store.index == NULL)
       goto out;
 
+   /* Per-blob publication costs a second write cycle per blob and never leaves
+    * an appended record behind an unpublished header. It exists so both
+    * policies can be compared within one binary; see store_publish(). */
+   const char *commit_opt = os_get_option("MESA_SHADER_CACHE_COMMIT");
+   store.commit_per_blob =
+      commit_opt != NULL && strcmp(commit_opt, "per-blob") == 0;
+
    if (!store_load()) {
       mesa_logw("shader cache: %s is unusable", path);
       goto out;
    }
 
+   stats = (struct store_stats) { 0 };
    store.max_size = max_size;
    ok = true;
 
@@ -527,6 +581,40 @@ out:
    return ok;
 }
 
+/* A size/CRC match is only a filter: compare bytes as well, so a checksum
+ * collision or damaged payload never suppresses a replacement. The store lock
+ * protects the shared FILE position throughout this check and the append.
+ */
+static bool
+store_blob_equal(const struct store_entry *entry, const void *value,
+                 uint32_t size)
+{
+   if (entry->offset < sizeof(struct store_header) + sizeof(struct store_record) ||
+       entry->offset > store.used || size > store.used - entry->offset)
+      return false;
+
+   if (fseek(store.file, entry->offset, SEEK_SET) != 0) {
+      clearerr(store.file);
+      return false;
+   }
+
+   const uint8_t *src = value;
+   uint8_t chunk[4096];
+   while (size > 0) {
+      const size_t count = MIN2(size, sizeof(chunk));
+      if (fread(chunk, 1, count, store.file) != count) {
+         /* A failed duplicate check must not poison the append attempt. */
+         clearerr(store.file);
+         return false;
+      }
+      if (memcmp(chunk, src, count) != 0)
+         return false;
+      src += count;
+      size -= count;
+   }
+   return true;
+}
+
 static void
 blob_put(const void *key, signed long key_size,
          const void *value, signed long value_size)
@@ -536,12 +624,15 @@ blob_put(const void *key, signed long key_size,
       return;
 
    simple_mtx_lock(&store.mtx);
+   stats.puts++;
 
    if (store.file == NULL)
       goto unlock;
 
+   /* When there is no room for any append, retain the old cheap rejection:
+    * a duplicate check cannot change the outcome, so do not read the SD card. */
    const uint64_t need = sizeof(struct store_record) + (uint64_t)value_size;
-   if (store.used + need > store.max_size) {
+   if (store.used > store.max_size || need > store.max_size - store.used) {
       if (!store.full) {
          store.full = true;
          mesa_logi("shader cache: full at %" PRIu64 " KiB, no longer growing",
@@ -550,10 +641,32 @@ blob_put(const void *key, signed long key_size,
       goto unlock;
    }
 
+
+   /* Concurrent compilations can enqueue the same blob more than once. Do not
+    * append it again if it is already stored intact. New keys still take the
+    * original write-only path.
+    */
+   uint32_t crc = 0;
+   bool have_crc = false;
+   const struct hash_entry *he = _mesa_hash_table_search(store.index, key);
+   if (he != NULL) {
+      const struct store_entry *entry = he->data;
+      if (entry->size == (uint32_t)value_size) {
+         crc = util_hash_crc32(value, value_size);
+         have_crc = true;
+         if (entry->crc == crc &&
+             store_blob_equal(entry, value, (uint32_t)value_size)) {
+            stats.duplicates++;
+            goto unlock;
+         }
+      }
+   }
+
+
    struct store_record rec;
    memcpy(rec.key, key, CACHE_KEY_SIZE);
    rec.size = (uint32_t)value_size;
-   rec.crc = util_hash_crc32(value, value_size);
+   rec.crc = have_crc ? crc : util_hash_crc32(value, value_size);
 
    if (fseek(store.file, store.used, SEEK_SET) != 0 ||
        fwrite(&rec, sizeof(rec), 1, store.file) != 1 ||
@@ -564,12 +677,27 @@ blob_put(const void *key, signed long key_size,
    const uint64_t payload = store.used + sizeof(rec);
    const uint64_t prev_used = store.used;
 
-   /* Committing the header is what publishes the record. */
+   /* The record is on the card; the header is what publishes it to the next
+    * process. */
    store.used += need;
-   if (!store_commit()) {
-      store.used = prev_used;
-      goto unlock;
+   store.commit_pending_B += need;
+   if (!store_publish()) {
+      if (store.commit_per_blob) {
+         /* Per-blob publication: an unpublished append is not a usable entry. */
+         store.used = prev_used;
+         goto unlock;
+      }
+      /* The record and its index entry stay usable in this process; a later
+       * publication covers them. */
+      if (!stats.commit_failed) {
+         stats.commit_failed = true;
+         mesa_logw("shader cache: header publication failed, entries appended "
+                   "after this point may not survive this run");
+      }
    }
+
+   stats.appends++;
+   stats.appended_B += (uint64_t)value_size;
 
    index_put(rec.key, payload, rec.size, rec.crc);
 
@@ -644,7 +772,18 @@ disk_cache_horizon_fini(void)
       if (store.used != store.indexed)
          index_write();
 
+      /* Close out the run: publish everything appended since the last header
+       * write, so a clean exit never leaves records behind the log end. */
       store_commit();
+
+      if (stats.puts > 0) {
+         mesa_logi("shader cache: %" PRIu64 " blobs offered, %" PRIu64
+                   " appended (%" PRIu64 " KiB), %" PRIu64 " duplicates, %"
+                   PRIu64 " header publications (%s)",
+                   stats.puts, stats.appends, stats.appended_B / 1024,
+                   stats.duplicates, stats.commits,
+                   store.commit_per_blob ? "per-blob" : "batched");
+      }
 
       _mesa_hash_table_destroy(store.index, entry_free);
       store.index = NULL;

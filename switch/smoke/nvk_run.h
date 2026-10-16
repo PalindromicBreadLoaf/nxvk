@@ -7,12 +7,20 @@
 #ifndef NVK_RUN_H
 #define NVK_RUN_H
 
+#ifdef NVK_DIAGNOSTIC
+#define NVK_RUN_DIR     "sdmc:/nxvk_diag"
+#else
 #define NVK_RUN_DIR     "sdmc:/nxvk_run"
+#endif
 #define NVK_RUN_STATE   NVK_RUN_DIR "/state"
 #define NVK_RUN_SUMMARY NVK_RUN_DIR "/summary.log"
 #define NVK_RUN_CHAIN   NVK_RUN_DIR "/chain.log"
 
 /* Only used when the loader gives no argv[0] to locate ourselves with. */
+#ifdef NVK_DIAGNOSTIC
+#define NVK_RUN_SELF_FALLBACK "sdmc:/switch/nxvk-diagnostics/nvk_diag_runner.nro"
+#else
 #define NVK_RUN_SELF_FALLBACK "sdmc:/switch/nvk_runner.nro"
+#endif
 
 #endif /* NVK_RUN_H */

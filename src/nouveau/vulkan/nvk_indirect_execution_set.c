@@ -386,8 +386,12 @@ nvk_UpdateIndirectExecutionSetPipelineEXT(
       nvk_ies_set_pipeline(dev, ies, pExecutionSetWrites[i].index, pipeline);
    }
 
+   /* The last argument is a length, not an end offset: from min_idx for
+    * (max_idx + 1 - min_idx) strides.  Passing (max_idx + 1) * stride asked
+    * for a clean/invalidate of up to (min_idx + max_idx + 1) strides, which
+    * reaches past the end of the set whenever min_idx != 0. */
    nvkmd_mem_sync_map_to_gpu(ies->mem, min_idx * (uint64_t)ies->stride_B,
-                             (max_idx + 1) * (uint64_t)ies->stride_B);
+                             (max_idx + 1 - min_idx) * (uint64_t)ies->stride_B);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -413,6 +417,10 @@ nvk_UpdateIndirectExecutionSetShaderEXT(
       nvk_ies_set_shader(dev, ies, pExecutionSetWrites[i].index, shader);
    }
 
+   /* The last argument is a length, not an end offset: from min_idx for
+    * (max_idx + 1 - min_idx) strides.  Passing (max_idx + 1) * stride asked
+    * for a clean/invalidate of up to (min_idx + max_idx + 1) strides, which
+    * reaches past the end of the set whenever min_idx != 0. */
    nvkmd_mem_sync_map_to_gpu(ies->mem, min_idx * (uint64_t)ies->stride_B,
-                             (max_idx + 1) * (uint64_t)ies->stride_B);
+                             (max_idx + 1 - min_idx) * (uint64_t)ies->stride_B);
 }

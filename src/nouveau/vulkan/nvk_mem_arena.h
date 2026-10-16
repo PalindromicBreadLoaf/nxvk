@@ -45,7 +45,24 @@ struct nvk_arena_mem {
    uint64_t addr;
    uint32_t dirty_start_B;
    uint32_t dirty_end_B;
+   /* Immutable after publication through mem_count. */
+   bool track_dirty_range;
 };
+
+static inline bool
+nvk_arena_mem_should_track_dirty(const struct nvkmd_mem *mem,
+                                 enum nvk_debug debug_flags)
+{
+#ifdef USE_GCC_ATOMIC_BUILTINS
+   return nvkmd_mem_is_cpu_cacheable(mem) ||
+          (debug_flags & NVK_DEBUG_TRACK_UNCACHED_DIRTY);
+#else
+   /* Do not rely on the plain-store atomic fallbacks for publication. */
+   (void)mem;
+   (void)debug_flags;
+   return true;
+#endif
+}
 
 /** Grow an nvk_arena_mem's dirty range to cover [offset_B, offset_B + range_B) */
 static inline void
@@ -53,6 +70,13 @@ nvk_arena_mem_add_dirty_range(struct nvk_arena_mem *mem,
                               uint64_t offset_B, uint64_t range_B)
 {
    assert(range_B > 0 && offset_B + range_B < NVK_ARENA_MEM_CLEAN);
+   /* Write-only Horizon maps are normally CPU-uncached. sync_to_gpu() is
+    * already a no-op for these maps, so tracking byte ranges only adds
+    * atomic loads/CAS to every descriptor write and shader upload.
+    * Callers still publish through arena->map_dirty after the data write.
+    */
+   if (!mem->track_dirty_range)
+      return;
    const uint32_t start_B = offset_B;
    const uint32_t end_B = offset_B + range_B;
 

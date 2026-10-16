@@ -153,6 +153,7 @@ files_mesa_util = files(
   'u_string.h',
   'u_thread.c',
   'u_thread.h',
+  'u_thread_horizon.h',
   'u_vector.c',
   'u_vector.h',
   'u_math.c',

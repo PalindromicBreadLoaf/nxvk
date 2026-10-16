@@ -49,39 +49,13 @@ INC="-I$SRC/include -I$DKP/libnx/include"
 DEFS="-D__SWITCH__ -D_GNU_SOURCE -D_DEFAULT_SOURCE -DVK_USE_PLATFORM_VI_NN"
 EXTRA_DEFS="${EXTRA_DEFS:-}"
 
-# Gallium/Zink client headers for gl_* apps.
-GL_INC=""
-GL_DEFS=""
+# The archives this .nro links, in link order. Defined before the provenance
+# below so the embedded record and the command line name the same files.
+IS_GL=0
 case "$APP" in
-gl_*|gles*)
-  GL_DEFS="-DHAVE_PTHREAD"
-  GL_INC="-I$SRC/src/gallium/include -I$SRC/src/gallium/auxiliary
-          -I$SRC/src/gallium/drivers/zink
-          -I$SRC/src -I$BUILD/src
-          -I$SRC/src/util -I$SRC/src/util/format
-          -I$BUILD/src/util -I$BUILD/src/util/format
-          -I$SRC/src/mesa -I$SRC/src/mesa/main
-          -I$BUILD/src/mesa -I$BUILD/src/mesa/libmesa.a.p
-          -I$BUILD/src/mesa/program -I$BUILD/src/mesa/glapi/glapi/gen
-          -I$SRC/src/compiler -I$BUILD/src/compiler
-          -I$SRC/src/compiler/nir -I$BUILD/src/compiler/nir
-          -I$BUILD/src/compiler/glsl -I$BUILD/src/compiler/spirv
-          -I$SRC/include -I$BUILD/include"
-  ;;
+gl_*|gles*) IS_GL=1 ;;
 esac
 
-echo "=== compiling $APP.c ==="
-$GCC -c "$APP_SOURCE"       -o "$OBJ/$APP.o"        $ARCH $SECTIONS $DEFS $GL_DEFS $EXTRA_DEFS $INC $GL_INC -O2 -Wall -Wno-unused-function
-
-APP_OBJS="$OBJ/$APP.o"
-if [ "$NO_DRIVER" = 0 ]; then
-  $GCC -c "$SMOKE/nvk_compat.c" -o "$OBJ/nvk_compat.o" $ARCH $SECTIONS $DEFS $INC -O2 -Wall
-  $GCC -c "$SMOKE/nvk_chain.c"  -o "$OBJ/nvk_chain.o"  $ARCH $SECTIONS $DEFS $INC -O2 -Wall
-  APP_OBJS="$APP_OBJS $OBJ/nvk_compat.o $OBJ/nvk_chain.o"
-fi
-
-# Support archives libnvk.a pulls in, in dependency order.
-cd "$BUILD"
 ARCHIVES="
   src/util/libmesa_util.a src/util/libmesa_util_simd.a src/util/blake3/libblake3.a
   src/c11/impl/libmesa_util_c11.a
@@ -104,6 +78,63 @@ GL_ARCHIVES="
   src/gallium/auxiliary/libgallium.a src/gallium/drivers/zink/libzink.a
   src/gallium/winsys/zink/drm/libzinkwinsys.a
   src/gallium/winsys/sw/null/libws_null.a src/gallium/winsys/sw/wrapper/libwsw.a"
+
+# Force-include immutable provenance into the runner/diagnostic application.
+# Every linked archive is hashed, not just the driver directory: a support-only
+# change (shader cache, NAK, NIR) must be visible in an uploaded log.
+BUILD_ID_HEADER="${BUILD_ID_HEADER:-$OBJ/nvk_build_id.h}"
+if [[ ! -f "$BUILD_ID_HEADER" || -z "${NVK_BUILD_ID_PREGENERATED:-}" ]]; then
+  PROVENANCE_ARGS=( )
+  ARCHIVE_LIST=( src/nouveau/vulkan/libnvk.a $ARCHIVES )
+  [[ "$IS_GL" = 0 ]] || ARCHIVE_LIST+=( $GL_ARCHIVES )
+  for a in "${ARCHIVE_LIST[@]}"; do
+    PROVENANCE_ARGS+=( --archive "$BUILD/$a" )
+  done
+  make_info=( python3 "$SRC/switch/diagnostics/make-build-info.py" --source "$SRC"
+    --info "${BUILDINFO_FILE:-$SRC/switch/build/logs/BUILDINFO.txt}"
+    "${PROVENANCE_ARGS[@]}" --header "$BUILD_ID_HEADER" )
+  [[ -z "${BUILDINFO_OUT:-}" ]] || make_info+=( --output-info "$BUILDINFO_OUT" )
+  "${make_info[@]}"
+fi
+BUILD_ID_HEADER="$(realpath "$BUILD_ID_HEADER")"
+
+# Gallium/Zink client headers for gl_* apps. IS_GL was set with the archive
+# lists above, so the headers and the linked archives cannot disagree.
+GL_INC=""
+GL_DEFS=""
+case "$APP" in
+gl_*|gles*)
+  GL_DEFS="-DHAVE_PTHREAD"
+  GL_INC="-I$SRC/src/gallium/include -I$SRC/src/gallium/auxiliary
+          -I$SRC/src/gallium/drivers/zink
+          -I$SRC/src -I$BUILD/src
+          -I$SRC/src/util -I$SRC/src/util/format
+          -I$BUILD/src/util -I$BUILD/src/util/format
+          -I$SRC/src/mesa -I$SRC/src/mesa/main
+          -I$BUILD/src/mesa -I$BUILD/src/mesa/libmesa.a.p
+          -I$BUILD/src/mesa/program -I$BUILD/src/mesa/glapi/glapi/gen
+          -I$SRC/src/compiler -I$BUILD/src/compiler
+          -I$SRC/src/compiler/nir -I$BUILD/src/compiler/nir
+          -I$BUILD/src/compiler/glsl -I$BUILD/src/compiler/spirv
+          -I$SRC/include -I$BUILD/include"
+  ;;
+esac
+
+echo "=== compiling $APP.c ==="
+$GCC -c "$APP_SOURCE"       -o "$OBJ/$APP.o"        $ARCH $SECTIONS $DEFS $GL_DEFS $EXTRA_DEFS -include "$BUILD_ID_HEADER" $INC $GL_INC -O2 -Wall -Wno-unused-function
+
+APP_OBJS="$OBJ/$APP.o"
+if [ "$NO_DRIVER" = 0 ]; then
+  $GCC -c "$SMOKE/nvk_compat.c" -o "$OBJ/nvk_compat.o" $ARCH $SECTIONS $DEFS $INC -O2 -Wall
+  $GCC -c "$SMOKE/nvk_chain.c"  -o "$OBJ/nvk_chain.o"  $ARCH $SECTIONS $DEFS $EXTRA_DEFS $INC -O2 -Wall
+  APP_OBJS="$APP_OBJS $OBJ/nvk_compat.o $OBJ/nvk_chain.o"
+fi
+
+# The support archives are named relative to the build directory.
+# The standalone runner links only libnx and needs no Mesa build directory.
+if [ "$NO_DRIVER" = 0 ]; then
+  cd "$BUILD"
+fi
 GL_WHOLE=""
 case "$APP" in
 gl_*|gles*)

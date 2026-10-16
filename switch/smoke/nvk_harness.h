@@ -12,9 +12,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <netinet/in.h> /* struct in_addr, for __nxlink_host */
 #include <switch.h>
+#include <switch/arm/counter.h>
 
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
@@ -45,6 +47,81 @@ static void nvk_logf(const char *fmt, ...)
 #define LOG(...) nvk_logf(__VA_ARGS__)
 
 static bool g_nvk_socket_up;
+
+/* CPU budget accounting.
+ *
+ * Every ladder app reports how much wall time it used and how much of that the
+ * calling thread was actually on a CPU, plus how many Cortex-A57 cores Horizon
+ * lets the process use. That is the difference between "this app is waiting for
+ * the GPU / the card" and "this app is CPU-bound", which no GPU timestamp can
+ * tell us. It measures the main thread only: the driver's shader-cache workers
+ * are separate threads and their CPU time is not visible here, so a CPU-bound
+ * shader-heavy app can report less than it consumes.
+ */
+static struct {
+   double wall0_ms;
+   u64 ticks0;
+   bool have_ticks;
+   bool started;
+} g_nvk_cpu;
+
+static double
+nvk_wall_ms(void)
+{
+   struct timespec ts;
+   clock_gettime(CLOCK_MONOTONIC, &ts);
+   return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+}
+
+/* Consumed CPU ticks of the calling thread, or 0 when this HOS does not report
+ * them (InfoType_ThreadTickCount is 13.0.0+). */
+static u64
+nvk_thread_ticks(void)
+{
+   u64 ticks = 0;
+   if (R_FAILED(svcGetInfo(&ticks, InfoType_ThreadTickCount,
+                           threadGetCurHandle(), TickCountInfo_Total)))
+      return 0;
+   return ticks;
+}
+
+static void
+nvk_cpu_account_start(void)
+{
+   g_nvk_cpu.wall0_ms = nvk_wall_ms();
+   g_nvk_cpu.ticks0 = nvk_thread_ticks();
+   g_nvk_cpu.have_ticks = g_nvk_cpu.ticks0 != 0;
+   g_nvk_cpu.started = true;
+}
+
+static void
+nvk_cpu_account_report(void)
+{
+   if (!g_nvk_cpu.started)
+      return;
+
+   const double wall_ms = nvk_wall_ms() - g_nvk_cpu.wall0_ms;
+   u64 core_mask = 0;
+   if (R_FAILED(svcGetInfo(&core_mask, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0)))
+      core_mask = 0; /* unknown; the driver logs the same query separately */
+
+   if (g_nvk_cpu.have_ticks) {
+      const u64 ticks = nvk_thread_ticks();
+      /* The tick counter is the ARM system counter, the same one the driver's
+       * timestamp period is derived from. */
+      const double freq = (double)armGetSystemTickFreq();
+      const double busy_ms = freq > 0.0
+                             ? (double)(ticks - g_nvk_cpu.ticks0) * 1000.0 / freq
+                             : 0.0;
+      LOG("cpu: main thread busy %.1f ms of %.1f ms wall (%.0f%%), allowed cores 0x%llx",
+          busy_ms, wall_ms,
+          wall_ms > 0.0 ? 100.0 * busy_ms / wall_ms : 0.0,
+          (unsigned long long)core_mask);
+   } else {
+      LOG("cpu: %.1f ms wall; per-thread CPU time unavailable on this HOS, allowed cores 0x%llx",
+          wall_ms, (unsigned long long)core_mask);
+   }
+}
 
 static void nvk_log_open(const char *path)
 {
@@ -136,14 +213,35 @@ static VkResult nvk_bringup_ex(struct nvk_ctx *c,
 {
    memset(c, 0, sizeof(*c));
 
+   nvk_cpu_account_start();
+
    /*NVK refuses device creation without this. */
    setenv("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER", "1", 1);
    setenv("MESA_SHADER_CACHE_SHOW_STATS", "1", 1);
 
    if (!g_nvk_mesa_log) {
-      g_nvk_mesa_log = fopen("sdmc:/nvk_mesa.log", "w");
+#ifdef NVK_DIAG_MESA_LOG
+      /* Preserve diagnostics across all device/instance phases in this app. */
+      g_nvk_mesa_log = fopen(NVK_DIAG_MESA_LOG, "a");
       if (!g_nvk_mesa_log)
-         LOG("bringup: WARN could not open sdmc:/nvk_mesa.log ");
+         LOG("bringup: WARN could not open Mesa diagnostic log");
+#else
+      /* The runner harvests sdmc:/nvk_mesa.log as this app's .mesa.log. Mesa
+       * writes its log to stderr by default, which the ladder does not capture,
+       * so hand the file to Mesa instead of opening a second writer for it.
+       * Shader-cache stats/summaries and driver warnings then land in the
+       * uploaded log; debug-utils messages stay in the per-app log. */
+      setenv("MESA_LOG_FILE", "sdmc:/nvk_mesa.log", 1);
+
+      /* Mesa creates the file on its first message and opens it with "w", so
+       * touch it here to keep the harvested file present even when the driver
+       * logs nothing. Do not keep a second writer open on the same path. */
+      FILE *touch = fopen("sdmc:/nvk_mesa.log", "w");
+      if (touch != NULL)
+         fclose(touch);
+      else
+         LOG("bringup: WARN could not create Mesa diagnostic log");
+#endif
    }
 
    LOAD_INST(c, CreateInstance);
@@ -262,6 +360,7 @@ static void nvk_teardown(struct nvk_ctx *c)
       if (DestroyInstance) DestroyInstance(c->instance, NULL);
    }
    LOG("teardown: instance/device destroyed");
+   nvk_cpu_account_report();
    if (g_nvk_mesa_log) { fclose(g_nvk_mesa_log); g_nvk_mesa_log = NULL; }
    if (g_nvk_socket_up) { socketExit(); g_nvk_socket_up = false; }
 }

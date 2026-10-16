@@ -7,13 +7,18 @@
 # Run inside the toolchain image with the repo bind-mounted at /work:
 #   podman run --rm -v "$PWD:/work:z" -w /work nxvk \
 #       bash switch/rust/build-std-sysroot.sh
-set -e
+set -euo pipefail
 
 export RUST_TARGET_PATH=/work/switch/rust RUSTC_BOOTSTRAP=1
 export RUSTFLAGS='-Zunstable-options -L /opt/devkitpro/devkitA64/aarch64-none-elf/lib -L /opt/devkitpro/libnx/lib'
 TGT=aarch64-switch-horizon
 SYSROOT=/work/switch/rust/sysroot
 RUSTC_SYSROOT="$(rustc --print sysroot)"
+
+# Check the compiler's resolved custom target, not just the Meson driver flags:
+# core/alloc/std must get Cortex-A57 code generation as well.
+rustc -Zunstable-options --target "$TGT" --print target-spec-json | \
+  python3 -c 'import json, sys; s = json.load(sys.stdin); assert s["cpu"] == "cortex-a57", s; print("Rust sysroot target CPU:", s["cpu"])'
 
 # build-std (release) on a throwaway lib crate
 rm -rf /tmp/stdsr && mkdir -p /tmp/stdsr/src && cd /tmp/stdsr

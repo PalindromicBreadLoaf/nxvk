@@ -69,7 +69,7 @@ NINJA_ENV := cp -r switch/docker/cross-include/. /opt/switch-cross-include/ 2>/d
              export PATH="$$(pwd)/switch/build/native-tools/bin:$$PATH";
 
 .PHONY: all gl image ensure-image driver zink package package-gl \
-        install install-gl uninstall nro clean distclean help
+        install install-gl uninstall nro vulkan-tests vulkan-diagnostics clean distclean help
 
 all: package
 
@@ -92,12 +92,12 @@ $(NATIVE_STAMP): | ensure-image
 	@echo ">> building native tools"
 	$(DRUN) bash switch/build/build-native-tools.sh
 
-$(SYSROOT_STAMP): | ensure-image
+$(SYSROOT_STAMP): switch/rust/build-std-sysroot.sh switch/rust/aarch64-switch-horizon.json | ensure-image
 	@echo ">> building Rust std sysroot for aarch64-switch-horizon"
 	$(DRUN) bash switch/rust/build-std-sysroot.sh
-	@touch $(SYSROOT_STAMP)
+	@$(DRUN) touch $(SYSROOT_STAMP)
 
-$(CROSS_STAMP): | $(NATIVE_STAMP) $(SYSROOT_STAMP)
+$(CROSS_STAMP): switch/build/configure-mesa.sh switch/crossfiles/switch.cross switch/crossfiles/rust.cross switch/crossfiles/native.txt switch/rust/rustc-switch.sh $(SYSROOT_STAMP) | $(NATIVE_STAMP)
 	@echo ">> configuring Vulkan build"
 	$(DRUN) bash switch/build/configure-mesa.sh
 
@@ -122,7 +122,7 @@ define bundle
 	printf 'create %s\n' "$(2)" > $(2).mri
 	for a in $(3); do printf 'addlib %s\n' "$(1)/$$a" >> $(2).mri; done
 	printf 'save\nend\n' >> $(2).mri
-	$(AR) -M < $(2).mri
+	$(DRUN) bash -c '$(AR) -M < $(2).mri'
 	rm -f $(2).mri
 endef
 
@@ -193,6 +193,12 @@ APP ?= nvk_smoke
 nro: driver
 	$(DRUN) bash switch/build/build-nro.sh $(APP)
 
+vulkan-tests: driver
+	$(DRUN) bash switch/build/build-vulkan-tests.sh
+
+vulkan-diagnostics: driver
+	$(DRUN) bash switch/diagnostics/build.sh
+
 clean:
 	rm -rf $(CROSS) $(ZINK) $(PKGDIR) switch/smoke/out
 
@@ -208,6 +214,8 @@ help:
 	@echo "  install-gl     install including the OpenGL archive + .pc (needs root)"
 	@echo "  uninstall      remove the installed nxvk files (needs root)"
 	@echo "  nro APP=<name> link a smoke app into switch/smoke/out/<name>.nro"
+	@echo "  vulkan-tests   link all Vulkan tests and a Vulkan-only runner"
+	@echo "  vulkan-diagnostics  package the focused diagnostic benchmark"
 	@echo "  clean          remove cross build dirs and the staged package"
 	@echo "  distclean      also remove native tools"
 	@echo ""

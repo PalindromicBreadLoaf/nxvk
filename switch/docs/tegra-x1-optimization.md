@@ -1,0 +1,191 @@
+# Tegra X1 optimization pass — 2026-10-16
+
+Scope: Vulkan/NVK on Horizon, CPU-side descriptor/upload bookkeeping and the
+SD-backed shader cache. No emulator integration, clock/governor changes, new
+CUDA dependency or changes to GPU scheduling/register defaults are involved.
+
+## Documentation reviewed
+
+- NVIDIA **CUDA for Tegra**, memory-management and I/O-coherency sections:
+  CPU and iGPU share SoC DRAM, but I/O coherency starts with Xavier. Sharing
+  physical memory on the older X1 is not permission to omit cache maintenance.
+  CUDA allocator-specific policies are not copied into Horizon's NvMap backend.
+  [5](https://docs.nvidia.com/cuda/pdf/CUDA-For-Tegra-AppNote.pdf)
+- NVIDIA **Maxwell Tuning Guide**, occupancy and memory-throughput sections:
+  reducing transfers/redundant memory work is important; register occupancy
+  must be balanced against spilling, not maximized blindly. Its GM204 shared
+  memory limits must not be assumed to describe every Maxwell part.
+  [1](https://docs.nvidia.com/cuda/pdf/Maxwell_Tuning_Guide.pdf)
+- NVIDIA's **Tegra X1** HPG 2015 presentation identifies the two-SMM GPU,
+  the A57 CPU cluster, memory-bandwidth constraints and compression facilities.
+  This is SoC architectural material, not a description of which CPU clusters
+  Horizon exposes to applications.
+  [2](https://www.highperformancegraphics.org/wp-content/uploads/2015/Hot3D2/NVIDIA_X1_hpg2015_hot3d.pdf)
+- The official **deko3d Primer** recommends CPU-uncached / GPU-cached command
+  storage, distinguishes CPU and GPU cacheability, and explicitly requires
+  maintenance for CPU-cached memory and appropriate GPU cache invalidation.
+  [2](https://github.com/devkitPro/deko3d/blob/master/Primer.md)
+  The Primer and `source/dk_memblock.cpp`, `dk_queue.cpp`, `dk_cmdbuf.cpp` were
+  also inspected at revision `350f2b00a3e76ecd4f00191f8c5d6544ffbcb9db`.
+
+The public NVIDIA HTML guides were read as well as the indexed PDF references.
+The architecture guidance informs the changes below; it does not establish a
+measured speedup in this port. No claim is made to have reviewed the entire
+Tegra X1 technical reference manual.
+
+## 1. Stop tracking cache-flush byte ranges for maps that do not need it
+
+NXVK already maps internal write-only allocations CPU-uncached on Horizon,
+while keeping their GPU cache policy separate. `nvkmd_mem_sync_to_gpu()` already
+returns without a CPU cache operation for CPU-uncached or coherent allocations.
+
+However, the arena still performed atomic min/max bookkeeping after every
+image/sampler descriptor write and mapped shader upload, only for the eventual
+flush to do nothing. Each backing allocation now records whether it requires
+this range tracking. Uncached/coherent maps skip the range updates and normal
+range-drain work. This is a **CPU bookkeeping optimization**, not removal of
+previously required physical cache flushes.
+
+Safeguards retained:
+
+- Data writes still precede the existing `arena->map_dirty` publication.
+- The fast path requires the GCC acquire/release atomic builtins (checked in
+  the target compile commands by CI); other atomic backends retain tracking.
+- The publication store and the flush-side atomic exchange remain; arena locks
+  and the `mem_count` publication protocol are unchanged.
+- CPU-cached, non-coherent memory retains range tracking, alignment and the
+  exact existing flush path. GPU-uncached **alone** does not bypass CPU work.
+- GPU cache invalidation, queue submission, fence/writeback ordering and WSI
+  behavior are unchanged.
+- `NVK_DEBUG=full_arena_flush` retains the full-arena diagnostic path.
+- `NVK_DEBUG=track_uncached_dirty` restores the old range bookkeeping for
+  same-binary A/B checks; set it before instance creation. It does not change
+  memory cacheability. `no_cpu_uncached` still exercises the cached path.
+
+The native fixture runs the actual production functions. For 1,024 ascending
+32-byte writes in one uncached backing it counts **1,025 -> 0 range CAS calls**,
+while retaining all **1,024 publication stores**. Cached, coherent, GPU-uncached,
+forced-legacy, full-flush and cross-backing cases are checked separately.
+These are operation counts, not an A57 timing or FPS result.
+
+## 2. Avoid appending an already stored identical shader blob
+
+The Horizon shader store previously appended every `blob_put`, even when the
+same key and exact payload already existed. That can happen, for example, when
+independent compilations enqueue equivalent results. It consumes SD writes and
+append-only cache capacity without adding useful data.
+
+The new path searches the index and uses size/CRC as a cheap filter. Before
+skipping the append it compares the complete stored payload in bounded 4 KiB
+chunks. A matching key or CRC alone is **not** enough. The existing mutex covers
+the lookup, comparison and append, so the FILE position and index stay serialized.
+
+- Identical, intact blobs reuse the old record without changing `store.used`.
+- Different payloads (including a CRC collision), changed sizes, corrupted
+  content/CRC, invalid offsets or comparison I/O failures take the normal
+  replacement/append path.
+- New keys do not read existing payloads. A full cache rejects all puts before
+  hashing or reading payloads, just as before; capacity arithmetic cannot wrap.
+  The CRC is not calculated twice for a replacement candidate.
+- The format, normal record/header publication sequence, finalization and
+  existing failure handling are unchanged. This is not a new durability claim.
+
+The native fixture uses real temporary-file I/O and production function bodies,
+with a deliberately constant CRC to force collision cases. An identical 8,193
+byte put changes from **three fwrite calls plus two fflush calls** to **zero
+fwrite/fflush calls**, with an 8,193-byte comparison read instead. It also tests
+the 256 KiB maximum blob, corruption, failed I/O/header publication, size changes
+and full-cache behavior. This does not mean that the OS performs no metadata I/O,
+or that finalization never writes; it describes the duplicate put itself.
+
+The benefit depends on duplicate traffic and SD behavior. Unique puts add an
+index lookup; no claim of a general FPS or shader-compilation speedup is made.
+
+## 3. Publish the store header per interval instead of per blob
+
+`blob_put()` wrote the record and payload, flushed them, and then wrote the
+24-byte store header at offset 0 and flushed again. That is **two SD write
+cycles per appended blob**, and the second one lands at the start of the file
+rather than at the append point. The header only exists to carry the log end so
+the *next* process can find the records: readers in the writing process use the
+in-RAM index, each record is self-describing (key/size/CRC), and a torn or
+unpublished record is already detected.
+
+The header is now published when the appended-but-unpublished data reaches
+`STORE_COMMIT_INTERVAL_B` (256 KiB, the maximum blob size), and on open and
+close. Records are still written and flushed one by one, so an appended blob is
+usable immediately in the process that wrote it, and a clean exit publishes
+everything. What changes is only what a process that dies **without** closing
+the store leaves behind: appends since the last publication are not
+discoverable by the next run, and their space is reused by later appends. The
+previous behaviour published every blob immediately.
+
+Safeguards retained:
+
+- Format, record layout, index format, load path (`index_load()`/`store_scan()`)
+  and the `used` recovery are unchanged; no new durability claim is made.
+- The index is still only trusted when it covers no more than the published
+  header, and a mismatch falls back to a rescan.
+- `blob_get()` still verifies the payload CRC, and the deduplication pass from
+  section 2 is untouched.
+- A failed record write still leaves the log end and the index unchanged. A
+  failed *publication* keeps the record usable in this process, warns once and
+  retries on the next append; with the per-blob policy it still rolls the
+  append back as before.
+- `MESA_SHADER_CACHE_COMMIT=per-blob` restores publication per append, so both
+  policies can be compared within one binary. It is read once per store open.
+- The store still logs its open summary, and now logs one close summary
+  (`blob_get`/`blob_put` counters and publications) at info level, so a run can
+  be checked for whether the interval was reached at all.
+
+The native fixtures count **3 fwrite plus 2 fflush calls per appended blob
+before, 2 fwrite plus 1 fflush with the interval not reached**, and assert that
+a maximum-size blob reaches the interval by itself and that closing publishes
+the remainder. A second fixture drives the real open/scan/index bodies over a
+real store and index file and simulates an abrupt exit: with the batched policy
+only the unpublished tail is lost and the space is reused; with the per-blob
+policy nothing is lost. These are operation counts and format assertions, not
+SD latency, throughput or FPS measurements.
+
+## Deliberately unchanged
+
+The [identified hardware diagnostic](https://github.com/berlint-hub/nxvk/blob/9565f625c80426ed10c231598b8c552e35383ed2/switch/docs/diagnostic-results-2026-10-16.md) already
+confirmed that default and explicit T210 select the same word and have the same
+warmed performance. There is no reason to replace that default. Existing NVMap
+recycling, zero-copy presentation, compression, ZCULL, sector promotion, NAK SM
+selection, Cortex-A57 targeting and NEON selection are retained, not presented
+as newly implemented optimizations. No fast-math, forced register cap, affinity
+change, extra worker threads, GPU clock setter or relaxed GPU barrier is added.
+
+## Recorded hardware validation
+
+The [identified build #7 result](https://github.com/berlint-hub/nxvk/blob/arena/068e6f2f-nxvk/switch/docs/build-7-validation.md)
+records **22 PASS, 0 FAIL, 0 GONE, 0 SKIP** for the full Vulkan suite on the
+user's Switch, with source `46972d4` in the embedded build metadata. No functional
+regression was reported in those scenarios. This is not a measured FPS or SD
+throughput improvement and does not replace controlled A/B performance testing.
+
+## Validation and adoption
+
+`bash switch/tests/run-host-tests.sh` includes the new production-body fixtures
+under ASan/UBSan. Restoring either original hot-path body makes its new regression
+assertion fail; forcing per-append publication in section 3 makes the batched
+fixture fail. This verifies the intended work reduction and control flow, not
+Horizon cache coherency, SD throughput, scheduling or GPU execution.
+
+The Vulkan-only CI compiled/linked the real SDK build, validated the extracted
+library package, and rebuilt all 22 test apps and the focused probes for build #7.
+For further candidates, rerun the **full 22-app suite** on the console and keep
+its embedded `BUILDINFO.txt` with the results. Build #5 is the prior baseline.
+Compare resource-creation/upload costs and real workload frame times under the
+same settled conditions; use `track_uncached_dirty` for an in-build arena control
+and `MESA_SHADER_CACHE_COMMIT` for an in-build shader-cache control.
+Do not infer a measured end-to-end improvement from the host operation counts.
+
+For the shader-cache change specifically, the relevant observation is an
+application that creates many pipelines: run it twice on each policy (cold and
+warm `sdmc:/switch/.mesa_shader_cache`) and compare the log's close summary
+(appended blobs versus header publications) together with level-load or
+startup wall time. A workload with a few large blobs will show little
+difference; one with hundreds of small blobs is where the write cycles are
+removed.
