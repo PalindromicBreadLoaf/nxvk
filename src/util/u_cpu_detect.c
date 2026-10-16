@@ -92,6 +92,10 @@
 #include <sched.h>
 #endif
 
+#if DETECT_OS_HORIZON
+#include "u_thread_horizon.h"
+#endif
+
 #if DETECT_OS_LINUX && DETECT_ARCH_RISCV && __has_include(<asm/hwprobe.h>)
 #include <asm/hwprobe.h>
 #include <sys/syscall.h>
@@ -848,6 +852,19 @@ _util_cpu_detect_once(void)
    }
 #  endif /* DETECT_OS_BSD */
 #endif /* DETECT_OS_POSIX */
+
+#if DETECT_OS_HORIZON
+   /* libnx has no sysconf()/_SC_NPROCESSORS_ONLN answer for this, and the POSIX
+    * paths above therefore describe whatever newlib returns rather than the
+    * hardware. Horizon does report the mask of cores the process may use, and
+    * that is the number every consumer of nr_cpus actually means: Zink's
+    * threaded context (zink_screen.c) and any pool sized by CPU count. Keep the
+    * detected value when the query fails.
+    */
+   const unsigned horizon_cpus = util_horizon_get_core_count();
+   if (horizon_cpus > 0)
+      available_cpus = (int)horizon_cpus;
+#endif
 
    util_cpu_caps.nr_cpus = MAX2(1, available_cpus);
    total_cpus = MAX2(total_cpus, util_cpu_caps.nr_cpus);

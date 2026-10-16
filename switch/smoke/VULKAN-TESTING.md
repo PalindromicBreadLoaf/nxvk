@@ -67,6 +67,13 @@ The primary result is `sdmc:/nxvk_run/summary.log`:
 - `GONE`: no verdict; inspect the app log for an early failure, hang or fault.
 - `SKIP`: missing NRO or a loader/chainloading problem; **not** a passing test.
 
+Each app log ends with a CPU line, for example
+`cpu: main thread busy 812.4 ms of 1834.2 ms wall (44%), allowed cores 0x7`.
+It counts the calling thread only (the driver's shader-cache workers are not
+included) and is the signal for whether an app was CPU-bound or waiting; see
+[the CPU budget note](../docs/tegra-x1-cpu-budget.md). The driver also logs the
+mask it was given and the CPU count Mesa sized itself for.
+
 For a complete clean run, expect **22 PASS, 0 FAIL, 0 GONE, 0 SKIP**. The first
 nine entries are the milestone ladder documented in `switch/smoke/README.md`.
 Preserve the per-app `*.log`, driver `*.mesa.log`, `chain.log` and `BUILDINFO.txt`

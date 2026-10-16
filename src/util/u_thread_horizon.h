@@ -33,4 +33,27 @@ util_horizon_set_current_thread_minimum_priority(void)
    return R_SUCCEEDED(svcSetThreadPriority(thread, lowest));
 }
 
+/* Horizon grants a process a *mask* of allowed cores, not a count: the system
+ * keeps a core for itself, an application in full-memory mode normally gets
+ * three of the four Cortex-A57 cores, and an applet gets fewer. Nothing in
+ * this port may assume four, so anything that sizes threads, pools or work
+ * splitting by CPU count has to ask. Returns 0 if the query fails, which means
+ * "unknown"; callers keep their existing default in that case.
+ */
+static inline u64
+util_horizon_get_core_mask(void)
+{
+   u64 mask = 0;
+   if (R_FAILED(svcGetInfo(&mask, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0)))
+      return 0;
+
+   return mask;
+}
+
+static inline unsigned
+util_horizon_get_core_count(void)
+{
+   return (unsigned)__builtin_popcountll(util_horizon_get_core_mask());
+}
+
 #endif /* U_THREAD_HORIZON_H */

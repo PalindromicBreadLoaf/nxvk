@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <netinet/in.h>
 #include <switch/kernel/svc.h>
+#include <switch/kernel/thread.h>
 #include <switch/result.h>
 #define FS_MAX_PATH 769
 #define InfoType_TotalMemorySize 6

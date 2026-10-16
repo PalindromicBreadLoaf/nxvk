@@ -43,6 +43,22 @@ copy a framebuffer, queue it to the window and report success.
 A failed wait now returns its Vulkan result before copying or queueing. Successful
 zero-copy syncpoint handoff stays asynchronous; no extra CPU wait was added.
 
+### Use the process's core mask instead of a guess
+
+Horizon grants a process a mask of allowed cores (`InfoType_CoreMask`), not a
+count: the system keeps cores for itself, an application normally gets three of
+the four Cortex-A57 cores and an applet fewer. Mesa's POSIX CPU detection has no
+libnx equivalent, so `util_cpu_caps.nr_cpus` did not describe the hardware, and
+everything sized by it did not either — most visibly Zink's threaded context,
+which is only enabled when Mesa believes there is more than one CPU.
+
+`util_horizon_get_core_mask()`/`_count()` are now the source for `nr_cpus` on
+Horizon, and the physical device logs one line per device with the allowed mask,
+the count and what Mesa sized for. A failed query keeps the previously detected
+value rather than assuming four. No scheduling policy, priority, affinity or
+worker count is changed by this; see
+[the CPU budget note](tegra-x1-cpu-budget.md).
+
 ## Deliberately unchanged
 
 - C/C++ remain ARMv8-A + CRC/crypto, tuned for Cortex-A57 at `-O3`; no fast-math
@@ -59,7 +75,9 @@ zero-copy syncpoint handoff stays asynchronous; no extra CPU wait was added.
 Run `bash switch/tests/run-host-tests.sh` for native tests:
 
 - priority masks (all 64 single-bit masks, restricted/non-contiguous masks),
-  permission/query errors and no priority promotion;
+  permission/query errors and no priority promotion, plus core-mask counting
+  (non-contiguous masks, unknown mask reported as zero, no cross-talk between
+  the two service queries);
 - the actual presentation function against mocked WSI/libnx callbacks, covering
   failed waits, CPU-copy suppression, successful fallback and asynchronous
   syncpoint handoff;

@@ -9,9 +9,11 @@ no Switch SDK or GPU is needed. The script builds in a temporary directory and
 removes it when finished. GitHub's Vulkan-only workflow runs these tests before
 building the toolchain/driver.
 
-- `thread_priority_test.c` includes the real Horizon priority helper and provides
-  mocked libnx query/update services. It checks permitted masks, no promotion,
-  redundant updates and error paths.
+- `thread_priority_test.c` includes the real Horizon priority helper and the core
+  mask helpers, with mocked libnx query/update services. It checks permitted
+  masks, no promotion, redundant updates, error paths, and that a core mask is
+  counted as the number of allowed cores (including non-contiguous masks and an
+  unknown-mask result of zero).
 - `wsi_present_test.c` compiles the **unchanged function body** extracted from
   `wsi_switch.c`, using minimal WSI/libnx types and callbacks to inject failures.
   It tests the function's control flow, not the layout/ABI of the mocked types.

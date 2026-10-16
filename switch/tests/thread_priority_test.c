@@ -5,6 +5,9 @@
 #include "util/u_thread_horizon.h"
 
 static u64 mask;
+static u64 core_mask;
+static Result core_result;
+static unsigned core_calls;
 static s32 current;
 static Result info_result, get_result, set_result;
 static unsigned get_calls, set_calls;
@@ -20,8 +23,13 @@ threadGetCurHandle(void)
 Result
 svcGetInfo(u64 *out, u32 id0, Handle handle, u64 id1)
 {
-   assert(id0 == InfoType_PriorityMask);
    assert(handle == CUR_PROCESS_HANDLE && id1 == 0);
+   if (id0 == InfoType_CoreMask) {
+      core_calls++;
+      *out = core_mask;
+      return core_result;
+   }
+   assert(id0 == InfoType_PriorityMask);
    *out = mask;
    return info_result;
 }
@@ -50,10 +58,49 @@ static void
 reset(u64 allowed, s32 priority)
 {
    mask = allowed;
+   core_mask = 0;
    current = priority;
-   info_result = get_result = set_result = 0;
-   get_calls = set_calls = 0;
+   info_result = core_result = get_result = set_result = 0;
+   get_calls = set_calls = core_calls = 0;
    requested = UINT32_MAX;
+}
+
+/* The two helpers must not disturb each other's service queries. */
+static void
+test_core_mask(void)
+{
+   reset(UINT64_MAX, 0);
+
+   core_mask = 0x7; /* An application: three of the four Cortex-A57 cores. */
+   assert(util_horizon_get_core_mask() == 0x7);
+   assert(util_horizon_get_core_count() == 3);
+
+   core_mask = 0x1; /* An applet: one core. */
+   assert(util_horizon_get_core_count() == 1);
+
+   core_mask = 0xF; /* Even if a loader grants all four. */
+   assert(util_horizon_get_core_count() == 4);
+
+   core_mask = 0x5; /* Non-contiguous masks must count, not measure a span. */
+   assert(util_horizon_get_core_count() == 2);
+
+   core_mask = 0;
+   assert(util_horizon_get_core_mask() == 0);
+   assert(util_horizon_get_core_count() == 0);
+
+   core_mask = 0x7;
+   core_result = 1;
+   assert(util_horizon_get_core_mask() == 0);
+   assert(util_horizon_get_core_count() == 0); /* Unknown, not "four". */
+   assert(get_calls == 0 && set_calls == 0);
+
+   /* A core query must not touch thread priorities, and vice versa. */
+   reset(UINT64_MAX, 44);
+   core_mask = 0x7;
+   assert(util_horizon_get_core_count() == 3);
+   assert(core_calls == 1 && get_calls == 0 && set_calls == 0);
+   assert(util_horizon_set_current_thread_minimum_priority());
+   assert(core_calls == 1 && get_calls == 1 && set_calls == 1);
 }
 
 int
@@ -108,6 +155,9 @@ main(void)
    assert(!util_horizon_set_current_thread_minimum_priority());
    assert(set_calls == 0);
 
-   puts("PASS: Horizon priority selection, permissions, errors and no promotion");
+   test_core_mask();
+
+   puts("PASS: Horizon priority selection, permissions, errors and no promotion; "
+        "core mask counted as the process's allowed cores");
    return 0;
 }

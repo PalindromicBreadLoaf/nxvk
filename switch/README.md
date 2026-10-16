@@ -85,7 +85,10 @@ claiming a performance improvement from `-O3` versus `-O2`.
 
 See [the Tegra X1 source audit](docs/tegra-x1-audit.md) for the Horizon background
 worker priority and present-error fixes, native regression tests, and A/B
-measurement caveats. These are not measured FPS claims.
+measurement caveats. These are not measured FPS claims. [The CPU budget
+note](docs/tegra-x1-cpu-budget.md) explains what Horizon actually gives an
+application (a core mask, not four cores), what Mesa now reads from it, and how
+the ladder's per-app `cpu:` line separates "CPU-bound" from "waiting".
 
 The [documentation-backed Tegra X1 optimization pass](docs/tegra-x1-optimization.md)
 removes unnecessary dirty-range atomics for uncached/coherent internal maps,

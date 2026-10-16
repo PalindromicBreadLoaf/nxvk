@@ -9,7 +9,10 @@ typedef int32_t s32;
 typedef uint32_t Handle;
 typedef uint32_t Result;
 #define CUR_PROCESS_HANDLE 0xFFFF8001u
-#define InfoType_PriorityMask 1u
+#define InfoType_CoreMask 0u        /* bitmask of allowed core ids */
+#define InfoType_PriorityMask 1u    /* bitmask of allowed thread priorities */
+#define InfoType_ThreadTickCount 25u /* HOS 13.0.0+ per-thread CPU ticks */
+#define TickCountInfo_Total UINT64_C(0xFFFFFFFFFFFFFFFF)
 Result svcGetInfo(u64 *out, u32 id0, Handle handle, u64 id1);
 Result svcGetThreadPriority(s32 *priority, Handle handle);
 Result svcSetThreadPriority(Handle handle, u32 priority);
