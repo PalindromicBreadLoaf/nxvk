@@ -319,6 +319,13 @@ carries all of the flags above for you. Use devkitPro's target `pkg-config`:
                            #   -Wl,-u,vk_icdGetInstanceProcAddr -Wl,--gc-sections
 ```
 
+If you are pointing an existing project at this driver rather than writing a
+first app, [Bringing a real application onto this
+driver](docs/bringing-an-application.md) covers where to get a pinned package
+(CI artifacts, with hashes and a build ID), which smoke test to run before your
+own code, and which variables to log so the report separates your CPU time from
+the driver's.
+
 An example being:
 
 ```shell
