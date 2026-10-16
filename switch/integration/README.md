@@ -109,6 +109,15 @@ For presentation, request instance extensions `VK_KHR_surface` and
 for `vkCreateViSurfaceNN`. Check queue-family presentation support and surface
 capabilities. This is not a drop-in Win32/Xlib/Wayland surface or SDL loader.
 
+## Verified integration build
+
+[CI run #10](https://github.com/berlint-hub/nxvk/actions/runs/38943461562), source
+`623323bebc559a61275436a01cdbd5e43095abd5`, successfully built and linked the
+standalone application from a relocated package path containing a space.
+The [integration artifact](https://github.com/berlint-hub/nxvk/actions/runs/38943461562/artifacts/12064098920)
+contains that package and its prebuilt example NRO. This is build/link validation,
+not an execution result for the new example on Switch.
+
 ## Validation boundaries and license
 
 The package check builds the example from a **relocated extracted directory**,

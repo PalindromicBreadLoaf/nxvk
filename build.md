@@ -32,6 +32,14 @@ si ulož. Pokud odkaz později expiruje, použij sestavení níže.
 
 ### Nový integrační balík s hotovým příkladem
 
+**Hotový integrační build č. 10:**
+[stáhnout SDK a samostatnou aplikaci](https://github.com/berlint-hub/nxvk/actions/runs/38943461562/artifacts/12064098920).
+[CI běh](https://github.com/berlint-hub/nxvk/actions/runs/38943461562) pro commit
+`623323bebc559a61275436a01cdbd5e43095abd5` úspěšně sestavil celý Vulkan balík i
+samostatnou CMake aplikaci z přemístěné distribuce. Ověřil AArch64, původ obou
+archivů v link mapě a absenci test runneru. Nová aplikace zatím nebyla ověřena
+spuštěním na konzoli a NetherSX2 tím nebyl automaticky integrován.
+
 Nové běhy workflow přidávají artifact **`nxvk-app-integration-<číslo běhu>`**.
 Obsahuje stejný Vulkan tarball, jeho checksum a samostatné
 `nxvk_app_example.nro` s checksumem a údaji o driveru. V tarballu navíc najdeš:
