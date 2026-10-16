@@ -111,6 +111,14 @@ selection, Cortex-A57 targeting and NEON selection are retained, not presented
 as newly implemented optimizations. No fast-math, forced register cap, affinity
 change, extra worker threads, GPU clock setter or relaxed GPU barrier is added.
 
+## Recorded hardware validation
+
+The [identified build #7 result](https://github.com/berlint-hub/nxvk/blob/arena/068e6f2f-nxvk/switch/docs/build-7-validation.md)
+records **22 PASS, 0 FAIL, 0 GONE, 0 SKIP** for the full Vulkan suite on the
+user's Switch, with source `46972d4` in the embedded build metadata. No functional
+regression was reported in those scenarios. This is not a measured FPS or SD
+throughput improvement and does not replace controlled A/B performance testing.
+
 ## Validation and adoption
 
 `bash switch/tests/run-host-tests.sh` includes the new production-body fixtures
@@ -118,10 +126,10 @@ under ASan/UBSan. Restoring either original hot-path body makes its new regressi
 assertion fail. This verifies the intended work reduction and control flow, not
 Horizon cache coherency, SD throughput, scheduling or GPU execution.
 
-The Vulkan-only CI must still compile/link the real SDK build, validate the
-extracted library package, and rebuild all 22 test apps and the focused probes.
-Then run the **full 22-app suite** on the console for the new build and keep its
-embedded `BUILDINFO.txt` with the results. Build #5 is the prior baseline.
+The Vulkan-only CI compiled/linked the real SDK build, validated the extracted
+library package, and rebuilt all 22 test apps and the focused probes for build #7.
+For further candidates, rerun the **full 22-app suite** on the console and keep
+its embedded `BUILDINFO.txt` with the results. Build #5 is the prior baseline.
 Compare resource-creation/upload costs and real workload frame times under the
 same settled conditions; use `track_uncached_dirty` for an in-build arena control.
 Do not infer a measured end-to-end improvement from the host operation counts.

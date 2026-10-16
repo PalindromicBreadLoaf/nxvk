@@ -91,6 +91,8 @@ The [documentation-backed Tegra X1 optimization pass](docs/tegra-x1-optimization
 removes unnecessary dirty-range atomics for uncached/coherent internal maps and
 avoids rewriting identical shader-cache blobs. CPU publication and GPU cache/
 fence ordering are retained; operation-count tests are not FPS measurements.
+The [build #7 hardware validation](docs/build-7-validation.md) records all 22
+Vulkan tests passing with matching embedded build metadata.
 
 ### GitHub Actions Vulkan-only build
 
