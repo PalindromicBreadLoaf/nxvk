@@ -95,7 +95,7 @@ $(NATIVE_STAMP): | ensure-image
 $(SYSROOT_STAMP): | ensure-image
 	@echo ">> building Rust std sysroot for aarch64-switch-horizon"
 	$(DRUN) bash switch/rust/build-std-sysroot.sh
-	@touch $(SYSROOT_STAMP)
+	@$(DRUN) touch $(SYSROOT_STAMP)
 
 $(CROSS_STAMP): switch/build/configure-mesa.sh switch/crossfiles/switch.cross switch/crossfiles/rust.cross switch/crossfiles/native.txt | $(NATIVE_STAMP) $(SYSROOT_STAMP)
 	@echo ">> configuring Vulkan build"

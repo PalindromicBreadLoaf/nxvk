@@ -126,7 +126,10 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           for log in Path('switch/build/logs').glob('*.log'):
-              text = '\n'.join(log.read_text(errors='replace').splitlines()[-100:])[-45000:]
+              text = '\n'.join(log.read_text(errors='replace').splitlines()[-100:])
+              # The runner truncates each annotation to 4096 bytes. Keep the
+              # end of the log (the actual failure), not a truncated prefix.
+              text = text.encode('utf-8')[-3500:].decode('utf-8', errors='replace')
               text = text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
               print(f'::error title={log.name}::{text}')
           PY
