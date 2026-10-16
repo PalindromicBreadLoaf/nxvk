@@ -84,7 +84,10 @@ Mesa/Zink diagnostics go to `sdmc:/<app>_mesa.log` alongside the app's own log.
 
 ## Running the whole ladder
 
-`nvk_runner` runs all 34 apps unattended. It chainloads each `.nro` in turn.
+`nvk_runner` runs the full suite unattended. It chainloads each `.nro` in turn.
+When built with `NVK_VULKAN_ONLY`, it contains only the 22 Vulkan tests and
+cannot launch OpenGL apps. The Vulkan-only CI bundle and `make vulkan-tests`
+use this mode; see [Vulkan-only hardware validation](VULKAN-TESTING.md).
 Any app that faults partway is recorded, and the test is continued. Leaving
 mid-run causes `nvk_runner` to remember where it left and it will continue 
 from there on the next run.
@@ -109,22 +112,19 @@ The final screen prints the tally and waits for `+` to exit.
 ## Build
 
 ```bash
-# Only needed once
-podman run --rm -v "$PWD:/work:z" -w /work nxvk bash -lc '
-  export PATH=/work/switch/build/native-tools/bin:$PATH
-  bash switch/build/build-native-tools.sh
-  bash switch/build/configure-mesa.sh
-  ninja -k0 -C switch/build/cross src/nouveau/vulkan/libvulkan_nouveau.so || true'
-# (the final .so link fails intentionally. Don't worry about the error)
+# Build the Vulkan driver/package (and its prerequisites) first.
+make CONTAINER=podman all
 
-# regenerate shaders
-podman run --rm -v "$PWD:/work:z" -w /work nxvk bash switch/smoke/shaders/gen-shaders.sh
+# Generate shaders and link all Vulkan tests plus the Vulkan-only runner.
+make CONTAINER=podman vulkan-tests
 
-# build one .nro
-podman run --rm -v "$PWD:/work:z" -w /work nxvk bash switch/build/build-nro.sh nvk_smoke
+# Or link just one test (generate shaders first if it uses shaders/*.h).
+make CONTAINER=podman nro APP=nvk_smoke
 ```
 
-`make nro APP=nvk_smoke` from the repo root does the same thing.
+Use `CONTAINER=docker` for Docker. The full Vulkan suite lands in
+`switch/smoke/out/vulkan/`; individual `nro` builds land in `switch/smoke/out/`.
+These are compile/link steps, not hardware test results.
 
 `nvk_runner` is the one app that links no driver at all, so it can build without a
 cross build or driver build present:

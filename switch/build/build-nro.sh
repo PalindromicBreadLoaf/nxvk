@@ -81,7 +81,10 @@ if [ "$NO_DRIVER" = 0 ]; then
 fi
 
 # Support archives libnvk.a pulls in, in dependency order.
-cd "$BUILD"
+# The standalone runner links only libnx and needs no Mesa build directory.
+if [ "$NO_DRIVER" = 0 ]; then
+  cd "$BUILD"
+fi
 ARCHIVES="
   src/util/libmesa_util.a src/util/libmesa_util_simd.a src/util/blake3/libblake3.a
   src/c11/impl/libmesa_util_c11.a

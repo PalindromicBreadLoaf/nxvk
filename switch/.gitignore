@@ -5,5 +5,7 @@ build/cross/
 build/cross-zink/
 build/pkg/
 build/logs/
+build/package-check/
+build/vulkan-tests/
 build/nxvk-vulkan-*.tar.gz
 build/nxvk-vulkan-*.tar.gz.sha256

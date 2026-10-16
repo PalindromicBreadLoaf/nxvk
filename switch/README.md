@@ -48,6 +48,7 @@ Targets:
 | `make` / `make gl` | build and stage the Vulkan / Vulkan+GL package |
 | `sudo make install` / `sudo make install-gl` | copy the package into `$DEVKITPRO/portlibs/switch` |
 | `make nro APP=nvk_smoke` | link a smoke app into `switch/smoke/out/<app>.nro` (for testing) |
+| `make vulkan-tests` | generate SPIR-V and link all 22 Vulkan tests plus a Vulkan-only runner into `switch/smoke/out/vulkan/` |
 | `make uninstall` | remove the installed nxvk files |
 | `make clean` / `make distclean` | drop the cross builds / native tools |
 
@@ -82,8 +83,9 @@ claiming a performance improvement from `-O3` versus `-O2`.
 ### GitHub Actions Vulkan-only build
 
 The `Switch Vulkan-only` workflow builds the same devkitPro toolchain image
-and runs `make CONTAINER=docker all`, followed by the Vulkan `nvk_smoke` link
-test. It never invokes `make gl` or `configure-zink.sh`. The workflow runs on
+and runs `make CONTAINER=docker all`, validates a consumer of the extracted
+package through `nxvk.pc`, and links all 22 Vulkan tests plus a Vulkan-only
+chainloading runner. It never invokes `make gl` or `configure-zink.sh`. The workflow runs on
 pushes to `arena/068e6f2f-nxvk`, and supports manual dispatch once registered
 by GitHub. It does not run the smoke test on hardware.
 
@@ -92,7 +94,12 @@ Successful runs upload `nxvk-vulkan-tegra-x1-<run number>` with:
 - `nxvk-vulkan-tegra-x1.tar.gz`: `libnvk.a`, `libnvk_support.a`, `nxvk.pc`,
   Vulkan headers, the port license, and source/toolchain build information;
 - the tarball's SHA-256 checksum;
-- `nvk_smoke.nro`, for validation on a real Switch.
+- `nvk_smoke.nro`, linked against the extracted package for validation on a real Switch.
+
+A separate `nxvk-vulkan-tests-<run number>` artifact contains a checksummed
+`nxvk-vulkan-tests.tar.gz` with an SD-ready `switch/nxvk-tests/` directory.
+See [Vulkan-only hardware validation](smoke/VULKAN-TESTING.md) for installation,
+full-memory mode, runner/resume instructions and the logs to collect.
 
 Build logs and the resolved Meson configuration are uploaded separately,
 including on failure. A green run means compilation and linking succeeded,
@@ -108,30 +115,20 @@ Build the toolchain image once (from repo root)
  [podman | docker | whatever] build -t nxvk switch/docker
 ```
 
-One-time native tooling
+Run the build inside the image without nesting another container:
 
 ```shell
- cd nxvk
- [podman | docker | whatever] run --rm -v "$PWD:/work:z" -w /work localhost/nxvk bash -lc '
-     bash switch/build/build-native-tools.sh &&
-     bash switch/build/configure-mesa.sh'
+ [podman | docker | whatever] run --rm -v "$PWD:/work:z" -w /work nxvk bash -euc '
+     make CONTAINER= all
+     make CONTAINER= vulkan-tests'
 ```
 
-Build the driver archives and package the validation `.nro`s:
+This builds the native tools, Rust sysroot, driver archives and package, then
+links the Vulkan validation suite. Each failure stops the build. Target the
+static archives, **not** `libvulkan_nouveau.so`; a failed shared-library link
+is not a successful Switch build.
 
-```shell
- [podman | docker | whatever] run --rm -v "$PWD:/work:z" -w /work localhost/nxvk bash -lc '
-     ninja -k0 -C /work/switch/build/cross src/nouveau/vulkan/libvulkan_nouveau.so || true
-     for app in nvk_smoke nvk_tri nvk_logo nvk_scene nvk_indexed \
-                nvk_multi nvk_textures nvk_cubemap nvk_vi_swapchain; do
-       bash switch/build/build-nro.sh $app || exit 1
-     done'
-```
-
-See [`switch/smoke/README.md`](smoke/README.md) for usage of the validation suit.
-
-The final `libvulkan_nouveau.so` link will fail. This is expected.
-The `|| true` forces every `lib*.a` archive to build regardless.
+See [`switch/smoke/README.md`](smoke/README.md) for the validation suite.
 
 #### With OpenGL
 

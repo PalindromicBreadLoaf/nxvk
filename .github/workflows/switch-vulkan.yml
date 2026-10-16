@@ -33,7 +33,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5 (Node 24)
         with:
           persist-credentials: false
 
@@ -71,6 +71,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import json
+          import shlex
           from pathlib import Path
 
           build = Path('switch/build/cross')
@@ -85,6 +86,15 @@ jobs:
           for name, value in expected.items():
               assert options[name] == value, (name, options[name], value)
           assert '-Ctarget-cpu=cortex-a57' in options['rust_args']
+          commands = json.loads((build / 'compile_commands.json').read_text())
+          command = next(x for x in commands if x['file'].endswith('/nvk_device.c'))
+          args = command.get('arguments') or shlex.split(command['command'])
+          opt_flags = [x for x in args if x.startswith('-O')]
+          assert opt_flags and opt_flags[-1] == '-O3', opt_flags
+          for flag in ('-DNDEBUG', '-mtune=cortex-a57', '-march=armv8-a+crc+crypto'):
+              assert flag in args, flag
+          assert '-ffast-math' not in args
+          assert not any(x.startswith('-flto') for x in args)
           pkg = Path('switch/build/pkg/lib')
           for name in ('libnvk.a', 'libnvk_support.a', 'pkgconfig/nxvk.pc'):
               assert (pkg / name).stat().st_size > 0, name
@@ -92,9 +102,6 @@ jobs:
           assert not Path('switch/build/cross-zink').exists()
           print('PASS: Vulkan-only, release O3, Cortex-A57; no OpenGL/EGL/Zink package')
           PY
-
-      - name: Link Vulkan smoke test (hardware execution is separate)
-        run: make CONTAINER=docker nro APP=nvk_smoke 2>&1 | tee switch/build/logs/smoke.log
 
       - name: Package libraries, headers and license
         run: |
@@ -107,8 +114,33 @@ jobs:
           cd switch/build
           sha256sum nxvk-vulkan-tegra-x1.tar.gz > nxvk-vulkan-tegra-x1.tar.gz.sha256
 
-      - name: Upload Vulkan-only package and smoke test
-        uses: actions/upload-artifact@v4
+      - name: Verify extracted package with an isolated Vulkan client
+        run: |
+          docker run --rm -v "$PWD:/work:z" -w /work nxvk \
+            bash switch/build/verify-package.sh 2>&1 | tee switch/build/logs/package-check.log
+
+      - name: Link Vulkan validation suite (hardware execution is separate)
+        run: make CONTAINER=docker vulkan-tests 2>&1 | tee switch/build/logs/vulkan-tests.log
+
+      - name: Package Vulkan-only tests for the SD card
+        run: |
+          tests=switch/build/vulkan-tests/switch/nxvk-tests
+          mkdir -p "$tests"
+          apps="$(bash switch/build/build-vulkan-tests.sh --list)"
+          for app in $apps; do
+            cp "switch/smoke/out/vulkan/$app.nro" "$tests/"
+          done
+          # Use the bundled-library consumer as the ladder's first test.
+          cp switch/build/package-check/nvk_smoke.nro "$tests/"
+          cp switch/build/logs/BUILDINFO.txt "$tests/"
+          cp switch/smoke/VULKAN-TESTING.md "$tests/README.md"
+          (cd "$tests" && sha256sum *.nro > SHA256SUMS && sha256sum -c SHA256SUMS)
+          tar -czf switch/build/nxvk-vulkan-tests.tar.gz -C switch/build/vulkan-tests switch
+          cd switch/build
+          sha256sum nxvk-vulkan-tests.tar.gz > nxvk-vulkan-tests.tar.gz.sha256
+
+      - name: Upload Vulkan-only package and package-linked smoke test
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5 (Node 24)
         with:
           name: nxvk-vulkan-tegra-x1-${{ github.run_number }}
           if-no-files-found: error
@@ -116,7 +148,17 @@ jobs:
           path: |
             switch/build/nxvk-vulkan-tegra-x1.tar.gz
             switch/build/nxvk-vulkan-tegra-x1.tar.gz.sha256
-            switch/smoke/out/nvk_smoke.nro
+            switch/build/package-check/nvk_smoke.nro
+
+      - name: Upload Vulkan-only hardware test bundle
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5 (Node 24)
+        with:
+          name: nxvk-vulkan-tests-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            switch/build/nxvk-vulkan-tests.tar.gz
+            switch/build/nxvk-vulkan-tests.tar.gz.sha256
 
       # Also expose failure tails as check annotations: useful when an API client
       # cannot reach the separate Actions log-download host.
@@ -136,7 +178,7 @@ jobs:
 
       - name: Upload build logs and configuration
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5 (Node 24)
         with:
           name: nxvk-vulkan-logs-${{ github.run_number }}
           retention-days: 14
@@ -146,3 +188,6 @@ jobs:
             switch/build/cross/meson-logs/
             switch/build/cross/meson-info/intro-buildoptions.json
             switch/build/cross/compile_commands.json
+            switch/build/package-check/elf-header.txt
+            switch/build/package-check/symbols.txt
+            switch/build/package-check/nvk_smoke.map
