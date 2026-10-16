@@ -19,11 +19,29 @@ the driver, links the 22-app ladder against it and publishes
 - `package-check/nvk_smoke.nro` — the same package, linked into a runnable
   smoke test (see below).
 
+GitHub wraps that in a zip, so what you download is
+`nxvk-vulkan-tegra-x1-<run>.zip`; the tarball above is a file **inside** it,
+next to the `.sha256` and the smoke NRO:
+
 ```sh
+unzip nxvk-vulkan-tegra-x1-16.zip     # -> nxvk-vulkan-tegra-x1.tar.gz,
+                                      #    ...tar.gz.sha256,
+                                      #    package-check/nvk_smoke.nro
+sha256sum -c nxvk-vulkan-tegra-x1.tar.gz.sha256
 tar -xzf nxvk-vulkan-tegra-x1.tar.gz -C "$DEVKITPRO/portlibs/switch"
 # or extract anywhere and point pkg-config at it:
 export PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$PWD/portlib/lib/pkgconfig"
 ```
+
+What the recipient still needs from their own devkitPro: the devkitA64
+toolchain, libnx and its `switch.specs`, and the usual portlibs `zlib` and
+`expat` that the link line names. The driver itself, all of its support
+archives, `libnvk_support.a` and the vendored Vulkan headers are in the
+tarball — no Mesa tree, no container, no Rust sysroot.
+
+This package is the **Vulkan** one. If the application's renderer needs
+OpenGL/EGL/Zink, it is not in here: that is `make gl` and `nxvk-gl.pc`, and no
+workflow publishes it yet.
 
 Record the tarball's sha256 and the workflow run URL in your build metadata.
 `BUILDINFO.txt` inside the package names the source commit, the CI run, the
