@@ -37,6 +37,30 @@ class DiagnosticTests(unittest.TestCase):
         subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-Wall', '-Werror', str(self.path/'test.c'), '-o', str(exe)], check=True)
         self.assertEqual(subprocess.check_output([str(exe)], text=True), text)
 
+    def test_every_linked_archive_is_recorded(self):
+        """A support-only change must change the embedded provenance."""
+        info = self.path/'BUILDINFO.txt'
+        info.write_text(f'Commit: {self.revision}\n')
+        driver = self.path/'libnvk.a'
+        support = self.path/'libnvk_support.a'
+        driver.write_bytes(b'driver fixture')
+        support.write_bytes(b'support fixture')
+        missing = self.path/'libnak.a'
+        header, text, build_id = build_info.generate(ROOT, info, [driver, support, missing])
+        self.assertIn(f'Linked libnvk.a SHA256: {hashlib.sha256(driver.read_bytes()).hexdigest()}', text)
+        self.assertIn(f'Linked libnvk_support.a SHA256: {hashlib.sha256(support.read_bytes()).hexdigest()}', text)
+        self.assertIn('Linked libnak.a SHA256: unavailable', text)
+        self.assertEqual(build_id, hashlib.sha256(text.encode()).hexdigest())
+
+        # Changing one support archive alone must change the recorded text and ID.
+        header2, text2, build_id2 = build_info.generate(ROOT, info, [driver, support])
+        support.write_bytes(b'support fixture v2')
+        header3, text3, build_id3 = build_info.generate(ROOT, info, [driver, support])
+        self.assertEqual(text2, text3.replace(hashlib.sha256(b'support fixture v2').hexdigest(),
+                                              hashlib.sha256(b'support fixture').hexdigest()))
+        self.assertNotEqual(build_id2, build_id3)
+        self.assertLess(len(header2), 20000)
+
     def test_old_build_metadata_is_rejected(self):
         info = self.path/'BUILDINFO.txt'
         info.write_text('Commit: wrong-revision\n')

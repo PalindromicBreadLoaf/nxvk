@@ -70,7 +70,11 @@ The primary result is `sdmc:/nxvk_run/summary.log`:
 For a complete clean run, expect **22 PASS, 0 FAIL, 0 GONE, 0 SKIP**. The first
 nine entries are the milestone ladder documented in `switch/smoke/README.md`.
 Preserve the per-app `*.log`, driver `*.mesa.log`, `chain.log` and `BUILDINFO.txt`
-with the summary. Newly built runners also write their embedded `BUILDINFO.txt`
+with the summary. The Mesa log is the driver's own log file: it carries the
+shader-cache `hits/misses` line that `MESA_SHADER_CACHE_SHOW_STATS=1` asks for,
+the shader store's open/close summaries and any driver warning or error, so an
+empty file means the driver logged nothing rather than that nothing was
+captured. Newly built runners also write their embedded `BUILDINFO.txt`
 and `BUILD-ID.txt` directly into the result directory, and copy `SHA256SUMS`
 when present beside the runner. Resuming a different/unknown build is refused;
 back up the earlier results and remove only its `state` file to start afresh.

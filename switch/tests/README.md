@@ -35,7 +35,8 @@ building the toolchain/driver.
   timestamp wrap at 1–64 bits, embedded identity files and mocked read-only clock
   queries (including denied/partial service access).
 - `test_diagnostics.py` checks metadata generation and C-string roundtrips,
-  rejects mismatched build metadata, checks both runner memberships and parses
+  rejects mismatched build metadata, checks that every linked archive is recorded
+  (including one that is missing), checks both runner memberships and parses
   the actual diagnostic/legacy probes against real Vulkan headers with SDK
   stand-ins. Dummy SPIR-V words in that syntax test are never linked or run.
 - `test_build_dependencies.py` exercises a copy of the actual Makefile with

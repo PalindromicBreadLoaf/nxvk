@@ -48,16 +48,58 @@ SECTIONS="-ffunction-sections -fdata-sections"
 INC="-I$SRC/include -I$DKP/libnx/include"
 DEFS="-D__SWITCH__ -D_GNU_SOURCE -D_DEFAULT_SOURCE -DVK_USE_PLATFORM_VI_NN"
 EXTRA_DEFS="${EXTRA_DEFS:-}"
+
+# The archives this .nro links, in link order. Defined before the provenance
+# below so the embedded record and the command line name the same files.
+IS_GL=0
+case "$APP" in
+gl_*|gles*) IS_GL=1 ;;
+esac
+
+ARCHIVES="
+  src/util/libmesa_util.a src/util/libmesa_util_simd.a src/util/blake3/libblake3.a
+  src/c11/impl/libmesa_util_c11.a
+  src/nouveau/compiler/libnak.a src/nouveau/compiler/libnak_rs.a
+  src/compiler/rust/libcompiler_c_helpers.a
+  src/nouveau/headers/libnvidia_headers_c.a
+  src/nouveau/nil/libnil.a src/nouveau/nil/liblibnil_format_table.a
+  src/compiler/nir/libnir.a src/compiler/libcompiler.a
+  src/nouveau/mme/libnouveau_mme.a src/nouveau/winsys/libnouveau_ws.a
+  src/vulkan/util/libvulkan_util.a src/compiler/spirv/libvtn.a
+  src/util/libxmlconfig.a"
+PORTLIBS="$DKP/portlibs/switch/lib/libz.a $DKP/portlibs/switch/lib/libexpat.a"
+
+# Zink/Gallium/GL frontend statics added only for gl_* apps so Vulkan .nros stay lean.
+GL_ARCHIVES="
+  src/egl/libEGL.a
+  src/mesa/libmesa.a
+  src/compiler/glsl/libglsl.a src/compiler/glsl/glcpp/libglcpp.a
+  src/mesa/glapi/shared-glapi/libglapi.a src/mesa/glapi/glapi/libglapi_bridge.a
+  src/gallium/auxiliary/libgallium.a src/gallium/drivers/zink/libzink.a
+  src/gallium/winsys/zink/drm/libzinkwinsys.a
+  src/gallium/winsys/sw/null/libws_null.a src/gallium/winsys/sw/wrapper/libwsw.a"
+
 # Force-include immutable provenance into the runner/diagnostic application.
+# Every linked archive is hashed, not just the driver directory: a support-only
+# change (shader cache, NAK, NIR) must be visible in an uploaded log.
 BUILD_ID_HEADER="${BUILD_ID_HEADER:-$OBJ/nvk_build_id.h}"
 if [[ ! -f "$BUILD_ID_HEADER" || -z "${NVK_BUILD_ID_PREGENERATED:-}" ]]; then
-  python3 "$SRC/switch/diagnostics/make-build-info.py" --source "$SRC" \
-    --info "${BUILDINFO_FILE:-$SRC/switch/build/logs/BUILDINFO.txt}" \
-    --archive "$BUILD/src/nouveau/vulkan/libnvk.a" --header "$BUILD_ID_HEADER"
+  PROVENANCE_ARGS=( )
+  ARCHIVE_LIST=( src/nouveau/vulkan/libnvk.a $ARCHIVES )
+  [[ "$IS_GL" = 0 ]] || ARCHIVE_LIST+=( $GL_ARCHIVES )
+  for a in "${ARCHIVE_LIST[@]}"; do
+    PROVENANCE_ARGS+=( --archive "$BUILD/$a" )
+  done
+  make_info=( python3 "$SRC/switch/diagnostics/make-build-info.py" --source "$SRC"
+    --info "${BUILDINFO_FILE:-$SRC/switch/build/logs/BUILDINFO.txt}"
+    "${PROVENANCE_ARGS[@]}" --header "$BUILD_ID_HEADER" )
+  [[ -z "${BUILDINFO_OUT:-}" ]] || make_info+=( --output-info "$BUILDINFO_OUT" )
+  "${make_info[@]}"
 fi
 BUILD_ID_HEADER="$(realpath "$BUILD_ID_HEADER")"
 
-# Gallium/Zink client headers for gl_* apps.
+# Gallium/Zink client headers for gl_* apps. IS_GL was set with the archive
+# lists above, so the headers and the linked archives cannot disagree.
 GL_INC=""
 GL_DEFS=""
 case "$APP" in
@@ -88,33 +130,11 @@ if [ "$NO_DRIVER" = 0 ]; then
   APP_OBJS="$APP_OBJS $OBJ/nvk_compat.o $OBJ/nvk_chain.o"
 fi
 
-# Support archives libnvk.a pulls in, in dependency order.
+# The support archives are named relative to the build directory.
 # The standalone runner links only libnx and needs no Mesa build directory.
 if [ "$NO_DRIVER" = 0 ]; then
   cd "$BUILD"
 fi
-ARCHIVES="
-  src/util/libmesa_util.a src/util/libmesa_util_simd.a src/util/blake3/libblake3.a
-  src/c11/impl/libmesa_util_c11.a
-  src/nouveau/compiler/libnak.a src/nouveau/compiler/libnak_rs.a
-  src/compiler/rust/libcompiler_c_helpers.a
-  src/nouveau/headers/libnvidia_headers_c.a
-  src/nouveau/nil/libnil.a src/nouveau/nil/liblibnil_format_table.a
-  src/compiler/nir/libnir.a src/compiler/libcompiler.a
-  src/nouveau/mme/libnouveau_mme.a src/nouveau/winsys/libnouveau_ws.a
-  src/vulkan/util/libvulkan_util.a src/compiler/spirv/libvtn.a
-  src/util/libxmlconfig.a"
-PORTLIBS="$DKP/portlibs/switch/lib/libz.a $DKP/portlibs/switch/lib/libexpat.a"
-
-# Zink/Gallium/GL frontend statics added only for gl_* apps so Vulkan .nros stay lean.
-GL_ARCHIVES="
-  src/egl/libEGL.a
-  src/mesa/libmesa.a
-  src/compiler/glsl/libglsl.a src/compiler/glsl/glcpp/libglcpp.a
-  src/mesa/glapi/shared-glapi/libglapi.a src/mesa/glapi/glapi/libglapi_bridge.a
-  src/gallium/auxiliary/libgallium.a src/gallium/drivers/zink/libzink.a
-  src/gallium/winsys/zink/drm/libzinkwinsys.a
-  src/gallium/winsys/sw/null/libws_null.a src/gallium/winsys/sw/wrapper/libwsw.a"
 GL_WHOLE=""
 case "$APP" in
 gl_*|gles*)

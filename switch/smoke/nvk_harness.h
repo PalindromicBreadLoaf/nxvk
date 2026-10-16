@@ -144,11 +144,25 @@ static VkResult nvk_bringup_ex(struct nvk_ctx *c,
 #ifdef NVK_DIAG_MESA_LOG
       /* Preserve diagnostics across all device/instance phases in this app. */
       g_nvk_mesa_log = fopen(NVK_DIAG_MESA_LOG, "a");
-#else
-      g_nvk_mesa_log = fopen("sdmc:/nvk_mesa.log", "w");
-#endif
       if (!g_nvk_mesa_log)
          LOG("bringup: WARN could not open Mesa diagnostic log");
+#else
+      /* The runner harvests sdmc:/nvk_mesa.log as this app's .mesa.log. Mesa
+       * writes its log to stderr by default, which the ladder does not capture,
+       * so hand the file to Mesa instead of opening a second writer for it.
+       * Shader-cache stats/summaries and driver warnings then land in the
+       * uploaded log; debug-utils messages stay in the per-app log. */
+      setenv("MESA_LOG_FILE", "sdmc:/nvk_mesa.log", 1);
+
+      /* Mesa creates the file on its first message and opens it with "w", so
+       * touch it here to keep the harvested file present even when the driver
+       * logs nothing. Do not keep a second writer open on the same path. */
+      FILE *touch = fopen("sdmc:/nvk_mesa.log", "w");
+      if (touch != NULL)
+         fclose(touch);
+      else
+         LOG("bringup: WARN could not create Mesa diagnostic log");
+#endif
    }
 
    LOAD_INST(c, CreateInstance);

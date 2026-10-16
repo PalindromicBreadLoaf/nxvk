@@ -8,7 +8,7 @@ from pathlib import Path
 import subprocess
 
 
-def generate(source, info, archive):
+def generate(source, info, archives):
     source = source.resolve()
     def git(*args):
         return subprocess.check_output(
@@ -30,10 +30,22 @@ def generate(source, info, archive):
         raise ValueError('Unsupported control character in BUILDINFO')
     text = text.rstrip() + '\n'
     text += 'Source tree: ' + ('dirty' if git('status', '--porcelain') else 'clean') + '\n'
-    if archive and archive.is_file():
-        text += 'Linked libnvk.a SHA256: ' + hashlib.sha256(archive.read_bytes()).hexdigest() + '\n'
-    else:
-        text += 'Linked libnvk.a SHA256: unavailable (standalone runner or unbuilt driver)\n'
+    # One line per archive the .nro links, so an upload can be compared against
+    # a rebuild of any single archive instead of only the driver directory.
+    if archives is None:
+        archives = []
+    elif isinstance(archives, (str, Path)):
+        archives = [archives]
+    archives = [a for a in archives if a is not None]
+    if not archives:
+        archives = [None]
+    for archive in archives:
+        if archive is not None and Path(archive).is_file():
+            digest = hashlib.sha256(Path(archive).read_bytes()).hexdigest()
+        else:
+            digest = 'unavailable (standalone runner or unbuilt driver)'
+        label = Path(archive).name if archive is not None else 'libnvk.a'
+        text += f'Linked {label} SHA256: {digest}\n'
     build_id = hashlib.sha256(text.encode()).hexdigest()
     header = ('/* Generated build provenance; do not edit. */\n'
               '#ifndef NVK_GENERATED_BUILD_INFO_H\n#define NVK_GENERATED_BUILD_INFO_H\n'
@@ -46,7 +58,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--info', type=Path, required=True)
-    parser.add_argument('--archive', type=Path)
+    parser.add_argument('--archive', type=Path, action='append',
+                        help='an archive the .nro links; repeat once per archive')
     parser.add_argument('--header', type=Path, required=True)
     parser.add_argument('--output-info', type=Path)
     args = parser.parse_args()

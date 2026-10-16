@@ -20,12 +20,13 @@ STAGE="$STAGING/switch/nxvk-diagnostics"
 TOOLS=/opt/devkitpro/devkitA64/bin/aarch64-none-elf
 mkdir -p "$OUT" "$STAGE"
 test -s "$BUILD/src/nouveau/vulkan/libnvk.a"
-python3 "$SRC/switch/diagnostics/make-build-info.py" --source "$SRC" \
-  --info "${BUILDINFO_FILE:-$SRC/switch/build/logs/BUILDINFO.txt}" \
-  --archive "$BUILD/src/nouveau/vulkan/libnvk.a" \
-  --header "$OUT/nvk_build_id.h" --output-info "$OUT/BUILDINFO.txt"
 export VERSION="$(cat "$SRC/VERSION")"
-export SRC OUTPUT_DIR="$OUT" BUILD_ID_HEADER="$OUT/nvk_build_id.h" NVK_BUILD_ID_PREGENERATED=1
+# build-nro.sh writes the provenance, because it is what knows which archives
+# the .nro links. It also drops the text here for the packaged bundle, and the
+# header stays where the verification below and the probes expect it.
+export SRC OUTPUT_DIR="$OUT" BUILDINFO_OUT="$OUT/BUILDINFO.txt" \
+  BUILD_ID_HEADER="$OUT/nvk_build_id.h"
+rm -f "$OUT/BUILDINFO.txt" "$OUT/nvk_build_id.h"
 bash "$SRC/switch/smoke/shaders/gen-shaders.sh"
 for app in nvk_subtile_diag nvk_subtile_nocache; do
   defs=-DNVK_DIAGNOSTIC

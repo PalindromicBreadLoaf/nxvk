@@ -135,6 +135,39 @@ jobs:
       - name: Build and package Vulkan diagnostic benchmarks (not executed)
         run: make CONTAINER=docker vulkan-diagnostics 2>&1 | tee switch/build/logs/diagnostics.log
 
+      - name: Verify embedded provenance covers every linked archive
+        run: |
+          # The embedded record must name every archive the .nro links, or an
+          # upload cannot prove which support code ran on the console.
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import re
+          from pathlib import Path
+
+          script = Path('switch/build/build-nro.sh').read_text()
+          def archives(name):
+              return re.search(name + r'="(.*?)"', script, re.S).group(1).split()
+          # One line per archive the .nro links: the driver archive plus the
+          # support set, plus the GL set for gl_* apps. Counted from the link
+          # script so this check cannot drift from what is actually linked.
+          expected = 1 + len(archives('ARCHIVES'))
+
+          header = Path('switch/smoke/out/vulkan/obj/nvk_build_id.h').read_text()
+          text = json.loads(re.search(r'#define NVK_BUILD_INFO_TEXT (".*")', header).group(1))
+          lines = [l for l in text.splitlines() if l.startswith('Linked ')]
+          unavailable = [l for l in lines if 'unavailable' in l]
+          assert not unavailable, unavailable
+          assert len(lines) == expected, f'{len(lines)} != {expected}: {[l.split()[1] for l in lines]}'
+          driver = hashlib.sha256(
+              Path('switch/build/cross/src/nouveau/vulkan/libnvk.a').read_bytes()).hexdigest()
+          assert f'Linked libnvk.a SHA256: {driver}' in lines, lines
+          support = hashlib.sha256(
+              Path('switch/build/cross/src/util/libmesa_util.a').read_bytes()).hexdigest()
+          assert f'Linked libmesa_util.a SHA256: {support}' in lines, lines
+          print(f'PASS: embedded provenance records {len(lines)} linked archives, hashes match')
+          PY
+
       - name: Package Vulkan-only tests for the SD card
         run: |
           tests=switch/build/vulkan-tests/switch/nxvk-tests

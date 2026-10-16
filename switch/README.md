@@ -94,7 +94,13 @@ header per interval instead of per blob (`MESA_SHADER_CACHE_COMMIT=per-blob`
 restores the old policy for comparison). Record durability, CRC verification and
 the store format are retained; operation-count tests are not FPS measurements.
 The [build #7 hardware validation](docs/build-7-validation.md) records all 22
-Vulkan tests passing with matching embedded build metadata.
+Vulkan tests passing with matching embedded build metadata. The
+[build #8 review](docs/build-8-validation.md) repeats that for the shader-store
+change, and records the two evidence gaps it exposed: the embedded provenance
+covered only the driver archive (a support-only change was invisible) and the
+ladder captured no driver log at all. Both are fixed here — every linked archive
+is now recorded and checked in CI, and the ladder's `.mesa.log` is Mesa's own
+log file.
 
 ### GitHub Actions Vulkan-only build
 
