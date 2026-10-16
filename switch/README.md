@@ -125,6 +125,9 @@ raw GPU/wall samples and observe clocks without changing them. Results live in
 `sdmc:/nxvk_diag/`, separate from the original suite. See the
 [diagnostic package guide](diagnostics/README.md) for installation and interpretation.
 Build with `make CONTAINER=docker vulkan-diagnostics` after `make all`.
+The [identified build #5 hardware result](docs/diagnostic-results-2026-10-16.md)
+records two passing probes: default and explicit T210 agree after warmup, while
+the large first-sample slowdown coincides with a lower reported clock profile.
 
 ### The hard way
 

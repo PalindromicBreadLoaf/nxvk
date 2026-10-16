@@ -1,5 +1,10 @@
 # Review of uploaded Switch Vulkan logs — 2026-10-16
 
+This report covers the **initial** upload. The later
+[build-identified diagnostic result](diagnostic-results-2026-10-16.md) confirms
+build #5's T210 selection and records the frequency-profile transition behind
+its large first-sample slowdown.
+
 ## Result and provenance
 
 **22 PASS, 0 FAIL, 0 GONE, 0 SKIP** in the user-supplied console logs.

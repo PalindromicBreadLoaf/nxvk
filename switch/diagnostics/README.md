@@ -108,6 +108,13 @@ that every timing is valid, clocks are stable, a variant is faster or a game wil
 have higher FPS. Compare the emitted settings, warm samples, compute controls,
 clock snapshots and repeated defaults before attributing a difference to tuning.
 
+## Recorded hardware result
+
+The [2026-10-16 result](https://github.com/berlint-hub/nxvk/blob/arena/068e6f2f-nxvk/switch/docs/diagnostic-results-2026-10-16.md) identifies build
+#5 and records both probes passing. Default and explicit T210 agree after warmup;
+the slow initial pair coincides with a lower reported CPU/GPU frequency profile.
+This is a result for that uploaded run, not an automatic verdict for future runs.
+
 ## Rebuild and validation
 
 ```sh
