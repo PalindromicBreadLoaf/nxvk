@@ -61,8 +61,20 @@ nvk_queue_state_update(struct nvk_queue *queue,
    mem = nvk_slm_area_get_mem_ref(&dev->slm, &bytes_per_warp, &bytes_per_tpc);
    if (qs->slm.mem != mem || qs->slm.bytes_per_warp != bytes_per_warp ||
        qs->slm.bytes_per_tpc != bytes_per_tpc) {
-      if (qs->slm.mem)
+      if (qs->slm.mem) {
+#ifdef __SWITCH__
+         /* In-flight work may still use the old area, and nvgpu unmaps it
+          * on the last unref.
+          */
+         VkResult result = nvkmd_ctx_sync(queue->exec_ctx, &queue->vk.base);
+         if (result != VK_SUCCESS) {
+            if (mem)
+               nvkmd_mem_unref(mem);
+            return result;
+         }
+#endif
          nvkmd_mem_unref(qs->slm.mem);
+      }
       qs->slm.mem = mem;
       qs->slm.bytes_per_warp = bytes_per_warp;
       qs->slm.bytes_per_tpc = bytes_per_tpc;
