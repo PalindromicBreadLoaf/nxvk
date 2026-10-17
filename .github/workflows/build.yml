@@ -1,0 +1,160 @@
+name: Build NXVK Switch SDK
+
+on:
+  push:
+    branches: [ switch ]
+  pull_request:
+    branches: [ switch ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version. Leave it empty to avoid publishing a release.'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: nxvk
+  # Same layout as a devkitPro install: <zip>/portlibs/switch/{lib,include,licenses}
+  STAGE: sdk-stage
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      # Mesa is built twice (Vulkan and Zink trees) plus the native tools;
+      # the default runner does not have enough free disk for all of it.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force
+          df -h /
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve SDK version
+        id: sdk
+        run: |
+          VERSION="$(cat VERSION)"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "basename=nxvk-${VERSION}-switch-sdk" >> "$GITHUB_OUTPUT"
+          echo "NXVK (Mesa ${VERSION})"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # The toolchain image (Rust nightly, bindgen, cbindgen, LLVM 15, SPIRV)
+      # takes a long time to build; cache its layers between runs.
+      - name: Build toolchain image
+        uses: docker/build-push-action@v6
+        env:
+          # Do not attach the build record (*.dockerbuild) as an artifact.
+          DOCKER_BUILD_RECORD_UPLOAD: false
+        with:
+          context: switch/docker
+          tags: ${{ env.IMAGE }}
+          load: true
+          cache-from: type=gha,scope=nxvk-toolchain
+          cache-to: type=gha,mode=max,scope=nxvk-toolchain
+
+      # Everything runs inside the image with the repo mounted at /work
+      # (build-std-sysroot.sh hardcodes that path). CONTAINER= makes the
+      # Makefile run its steps directly instead of starting nested containers.
+      - name: Build Vulkan + OpenGL driver archives
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work "$IMAGE" \
+            make gl CONTAINER=
+
+      - name: Stage SDK
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work "$IMAGE" \
+            make install-gl CONTAINER= PORTLIB=/work/$STAGE/portlibs/switch
+          sudo chown -R "$(id -u):$(id -g)" "$STAGE" switch/build
+
+      - name: Verify SDK contents
+        run: |
+          sdk="$STAGE/portlibs/switch"
+          missing=0
+          for f in \
+            lib/libnvk.a lib/libnvk_support.a lib/libnvk_gl.a \
+            lib/pkgconfig/nxvk.pc lib/pkgconfig/nxvk-gl.pc \
+            include/vulkan/vulkan.h include/vulkan/vulkan_vi.h \
+            include/vk_video/vulkan_video_codecs_common.h \
+            licenses/nxvk/GPL-2.0-or-later
+          do
+            if [ ! -f "$sdk/$f" ]; then
+              echo "SDK is missing $f" >&2
+              missing=1
+            fi
+          done
+          ls -l "$sdk/lib" "$sdk/lib/pkgconfig"
+          cat "$sdk"/lib/pkgconfig/*.pc
+          exit "$missing"
+
+      # GitHub always serves an artifact as a zip. Uploading the staged
+      # directory makes the download open straight to portlibs/switch.
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.sdk.outputs.basename }}
+          path: ${{ env.STAGE }}/
+          if-no-files-found: error
+
+      - name: Package release zip
+        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+        run: |
+          mkdir -p dist
+          (cd "$STAGE" && zip -r -X "$GITHUB_WORKSPACE/dist/${{ steps.sdk.outputs.basename }}.zip" portlibs)
+
+      - name: Upload release zip
+        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-zip
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload Meson logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meson-logs
+          path: |
+            switch/build/native/meson-logs/
+            switch/build/cross/meson-logs/
+            switch/build/cross-zink/meson-logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ inputs.version }}"
+          name: "NXVK Switch SDK v${{ inputs.version }}"
+          files: '*.zip'
+          draft: false
+          prerelease: false
